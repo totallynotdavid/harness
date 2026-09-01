@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# cap-explore - manage cloned repos for inspection.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+EXPLORE=$CAP_HOME/state/explore
+
+usage() {
+  cat <<'EOF'
+cap explore <owner/repo|url> [--fresh]   clone a repo and print its path
+cap explore --list                       list cloned repos
+cap explore --rm <slug>                  remove a cloned repo
+EOF
+}
+
+slugify() {
+  local s=${1%.git} name owner
+  name=${s##*/}
+  owner=${s%/"$name"}
+  owner=${owner##*/}
+  printf '%s-%s' "$owner" "$name"
+}
+
+resolve_url() {
+  case $1 in
+    http://*|https://*|git@*) printf '%s' "$1" ;;
+    *) printf 'https://github.com/%s' "$1" ;;
+  esac
+}
+
+touch_stamp() {
+  printf '%s' "$(now)" > "$1/.cap-touched"
+}
+
+case ${1:-} in
+  --list)
+    [ -d "$EXPLORE" ] || {
+      echo "nothing explored yet"
+      exit 0
+    }
+
+    found=0
+    for d in "$EXPLORE"/*/; do
+      [ -d "$d/.git" ] || continue
+      found=1
+
+      touched=$(cat "$d/.cap-touched" 2>/dev/null || echo 0)
+      age=$((($(now) - touched) / 3600))
+
+      printf '%-30s %sh since last use  %s\n' "$(basename "$d")" "$age" "${d%/}"
+    done
+
+    [ "$found" = 1 ] || echo "nothing explored yet"
+    exit 0
+    ;;
+
+  --rm)
+    slug=${2:?usage: cap explore --rm <slug>}
+
+    case $slug in
+      */*|..*) die "bad slug '$slug'" ;;
+    esac
+
+    [ -d "$EXPLORE/$slug" ] || die "no explored repo '$slug'"
+
+    rm -rf "${EXPLORE:?}/$slug"
+    printf 'removed %s\n' "$slug"
+    exit 0
+    ;;
+
+  -h|--help|"")
+    usage
+    exit 0
+    ;;
+esac
+
+spec=$1
+shift || true
+
+fresh=0
+[ "${1:-}" = --fresh ] && fresh=1
+
+slug=$(slugify "$spec")
+dir=$EXPLORE/$slug
+
+mkdir -p "$EXPLORE"
+
+[ "$fresh" = 1 ] && rm -rf "$dir"
+
+if [ ! -d "$dir/.git" ]; then
+  git clone --depth 1 "$(resolve_url "$spec")" "$dir" >/dev/null 2>&1 ||
+    die "clone of $spec failed"
+fi
+
+touch_stamp "$dir"
+printf '%s\n' "$dir"

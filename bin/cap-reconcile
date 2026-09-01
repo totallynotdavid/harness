@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# cap-reconcile - show open work across projects and agents.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+remote=0
+[ "${1:-}" = --remote ] && remote=1
+
+[ -f "$PROJECTS" ] || die "no registry; run: cap map --sync"
+
+printf '## Local\n\n'
+
+rows=""
+while IFS=$'\t' read -r n p _mode _model; do
+	[ -d "$p/.git" ] || continue
+
+	br=$(git_branch "$p")
+	dirty=$(git_dirty "$p")
+	ahead=$(git -C "$p" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+	behind=$(git -C "$p" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+	wt=$(git -C "$p" worktree list 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+	stash=$(git -C "$p" stash list 2>/dev/null | wc -l | tr -d ' ')
+
+	open=""
+	[ "$dirty" != 0 ] && open="$open ${dirty}dirty"
+	[ "$ahead" != 0 ] && open="$open ${ahead}unpushed"
+	[ "$behind" != 0 ] && open="$open ${behind}behind"
+	[ "$stash" != 0 ] && open="$open ${stash}stash"
+	[ "$wt" != 0 ] && open="$open ${wt}worktree"
+
+	[ -n "$open" ] && rows="$rows$n\t$br\t${open# }\n"
+done < "$PROJECTS"
+
+if [ -n "$rows" ]; then
+	{
+		printf 'PROJECT\tBRANCH\tOPEN\n'
+		printf "$rows"
+	} | column -t -s"$(printf '\t')"
+else
+	echo "nothing open locally"
+fi
+
+if [ "$remote" = 1 ]; then
+	have gh || die "gh not installed"
+
+	printf '\n## GitHub\n\n'
+
+	printf '### your open PRs\n'
+	gh search prs --author=@me --state=open --limit 30 2>/dev/null || echo "(none)"
+
+	printf '\n### review requested of you\n'
+	gh search prs --review-requested=@me --state=open --limit 30 2>/dev/null || echo "(none)"
+
+	printf '\n### issues assigned to you\n'
+	gh search issues --assignee=@me --state=open --limit 30 2>/dev/null || echo "(none)"
+fi
+
+printf '\n## Crew\n\n'
+"$CAP_HOME/bin/cap-fleet"
+
+# Show open paper cuts.
+if [ -f "$CAP_HOME/paper-cuts.md" ]; then
+	n=$(grep -c '^- \[ \]' "$CAP_HOME/paper-cuts.md" || true)
+	[ "${n:-0}" != 0 ] &&
+		printf '\n## Paper cuts: %s open (cap papercut to read)\n' "$n"
+fi
+
+# Show old explore clones.
+if [ -d "$CAP_HOME/state/explore" ]; then
+	stale=0
+
+	for d in "$CAP_HOME/state/explore"/*/; do
+		[ -d "$d" ] || continue
+
+		touched=$(cat "$d/.cap-touched" 2>/dev/null || echo 0)
+		age=$((($(now) - touched) / 3600))
+
+		[ "$age" -ge 24 ] && stale=$((stale + 1))
+	done
+
+	[ "$stale" != 0 ] &&
+		printf '\n## Explore: %s clone(s) untouched >24h (cap explore --rm <slug>)\n' "$stale"
+fi
+
+exit 0

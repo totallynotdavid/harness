@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# cap-papercut - log a Captain problem.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+text=$*
+
+[ -n "$text" ] || {
+	cat "$CAP_HOME/paper-cuts.md" 2>/dev/null
+	exit 0
+}
+
+f=$CAP_HOME/paper-cuts.md
+
+[ -f "$f" ] ||
+	printf '# Paper cuts\n\nProblems found while using Captain.\n\n' >"$f"
+
+printf -- '- [ ] %s - %s\n' "$(stamp)" "$text" >>"$f"
+printf 'logged\n'

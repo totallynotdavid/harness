@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# cap-fleet - show status for all tasks.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+json=0
+[ "${1:-}" = --json ] && json=1
+
+state_of() {
+	win_live "$1" || {
+		printf 'exited'
+		return
+	}
+
+	local age
+	age=$(task_idle_age "$1" | cut -d' ' -f1)
+
+	[ "$age" -ge "$CAP_IDLE_SECS" ] && printf 'idle' || printf 'working'
+}
+
+rows=""
+
+for s in $(task_slugs); do
+	(task_load "$s") || continue
+
+	# shellcheck disable=SC1090
+	. "$TASKS/$s/task.env"
+
+	st=$(state_of "$s")
+	dirty=$(git_dirty "$CAP_TREE")
+	commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
+	age=$((($(now) - CAP_STARTED) / 60))
+
+	# Mark a stale parent tip with *.
+	parent_display=$(task_field "$s" CAP_PARENT)
+	if [ -n "$parent_display" ]; then
+		tip=$(git -C "$CAP_REPO" rev-parse -q --verify "cap/$parent_display" 2>/dev/null || true)
+		[ "$tip" = "$(task_field "$s" CAP_PARENT_TIP)" ] || parent_display="$parent_display*"
+	fi
+
+	rows="$rows$CAP_SLUG\t$CAP_PROJECT\t$CAP_KIND\t$CAP_MODEL\t$st\t${commits}c/${dirty}d\t${age}m\t$parent_display\n"
+done
+
+if [ "$json" = 1 ]; then
+	printf "$rows" |
+		awk -F'\t' 'NF{printf "{\"task\":\"%s\",\"project\":\"%s\",\"kind\":\"%s\",\"model\":\"%s\",\"state\":\"%s\",\"work\":\"%s\",\"age\":\"%s\",\"stack\":\"%s\"}\n",$1,$2,$3,$4,$5,$6,$7,$8}'
+	exit 0
+fi
+
+[ -n "$rows" ] || {
+	echo "no tasks running"
+	exit 0
+}
+
+{
+	printf 'TASK\tPROJECT\tSHAPE\tMODEL\tSTATE\tWORK\tAGE\tSTACK\n'
+	printf "$rows"
+} | column -t -s"$(printf '\t')"

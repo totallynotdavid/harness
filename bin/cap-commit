@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# cap-commit - commit a task with a separate agent.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:?usage: cap commit <slug> [profile]}
+profile=${2:-$CAP_ROLE_COMMIT}
+task_load "$slug"
+
+[ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to commit"
+
+# Snapshot the full working-tree state (tracked, staged, and untracked) before
+# the commit agent reshapes it into commits, so the result can be checked
+# against it afterward: same tree, different history. A throwaway index keeps
+# this from touching the real one the agent is about to stage with. The
+# snapshot commit itself is never pushed or kept, so it does not need the
+# user's signature.
+tmp_index=$(mktemp -u)
+GIT_INDEX_FILE=$tmp_index git -C "$CAP_TREE" add -A
+snap_tree=$(GIT_INDEX_FILE=$tmp_index git -C "$CAP_TREE" write-tree)
+rm -f "$tmp_index"
+snap_commit=$(git -C "$CAP_TREE" commit-tree --no-gpg-sign "$snap_tree" -p HEAD -m "cap-commit snapshot: $slug")
+snap_ref="log/$slug-$(now)"
+git -C "$CAP_TREE" branch "$snap_ref" "$snap_commit"
+
+prompt="Read $CAP_HOME/rules/commits.md in full. Some or all changes may
+already be staged - the captain may have run git add . to review them. That
+is normal, not a grouping signal. Unstage everything first (git restore
+--staged . or git reset), then stage and commit every change in this
+worktree yourself. Use git add -p to split unrelated changes into separate
+commits. Do not edit files. Do not push."
+
+"$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
+
+final_tree=$(git -C "$CAP_TREE" rev-parse HEAD^{tree})
+if [ "$final_tree" = "$snap_tree" ]; then
+  git -C "$CAP_TREE" branch -D "$snap_ref" >/dev/null 2>&1
+else
+  die "$slug's history no longer matches its code: HEAD's tree differs from the snapshot at $snap_ref. Compare with: git -C $CAP_TREE diff $snap_ref HEAD"
+fi

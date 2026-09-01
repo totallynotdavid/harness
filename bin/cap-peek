@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# cap-peek - show recent agent output.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:?usage: cap peek <slug> [lines]}
+
+win_live "$slug" || die "window '$slug' is not live"
+
+pane_tail "$slug" "${2:-60}"

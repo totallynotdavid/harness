@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# cap-ask - run a profile and print its output.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+if [ "${1:-}" = --list ]; then
+  printf 'PROFILE\tHARNESS\tMODEL\n'
+  printf '%s\n' "$CAP_ASK_PROFILES" | awk 'NF==3{print $1"\t"$2"\t"$3}'
+  exit 0
+fi
+
+profile=${1:?usage: cap ask <profile> "<prompt>" [--dir D]}
+shift
+
+prompt=${1:?usage: cap ask <profile> "<prompt>"}
+shift || true
+
+dir=$PWD
+[ "${1:-}" = --dir ] && {
+  dir=${2:?}
+  shift 2
+}
+
+[ "$prompt" = "-" ] && prompt=$(cat)
+
+read -r harness model <<<"$(ask_profile "$profile")"
+
+have "$harness" || die "$harness is not installed"
+require_herdr
+
+harness_trust "$harness" "$dir"
+
+# Use the harness default model when none is set.
+margs=()
+[ "$model" != '-' ] && margs=(--model "$model")
+
+case $harness in
+  claude)
+    cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" claude "${margs[@]}" $CAP_WORKER_FLAGS "$prompt")
+    ;;
+  codex)
+    cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" codex "${margs[@]}"
+         --dangerously-bypass-approvals-and-sandbox "$prompt")
+    ;;
+  *)
+    die "unknown harness '$harness'"
+    ;;
+esac
+
+read -r pane _ <<<"$(herdr_open "$dir" "ask-$profile-$$")"
+herdr pane run "$pane" "$(printf '%q ' "${cmd[@]}")" >/dev/null 2>&1 ||
+  die "herdr pane run failed"
+
+# Wait for the agent to appear.
+for _ in $(seq 1 50); do
+  herdr agent get "$pane" >/dev/null 2>&1 && break
+  sleep 0.1
+done
+
+# Wait for the agent to start and finish.
+: "$(herdr agent wait "$pane" --until working --timeout 10000 2>&1)"
+herdr agent wait "$pane" >/dev/null 2>&1 ||
+  die "herdr agent wait failed for $pane"
+
+out=$(herdr pane read "$pane" --source recent-unwrapped --format text 2>/dev/null)
+
+herdr pane close "$pane" >/dev/null 2>&1
+
+printf '%s\n' "$out"

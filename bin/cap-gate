@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# cap-gate - two independent reviews of a task's changes, before it lands.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:?usage: cap gate <slug>}
+task_load "$slug"
+
+commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
+dirty=$(git_dirty "$CAP_TREE")
+[ "$commits" -gt 0 ] || [ "$dirty" != 0 ] || die "$slug has no changes against $CAP_BASE"
+
+prompt="Read $CAP_HOME/rules/code.md, then review every change in this
+worktree against $CAP_BASE (git diff $CAP_BASE, plus any uncommitted change).
+Report concrete defects: what is wrong, where, and the failure it causes. Do
+not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL."
+
+out_dir=$CAP_HOME/notes/$CAP_PROJECT
+mkdir -p "$out_dir"
+
+for pair in "A $CAP_GATE_A" "B $CAP_GATE_B"; do
+  set -- $pair
+  label=$1
+  profile=$2
+  out=$out_dir/$slug.gate-$label.md
+
+  printf '## gate %s (%s)\n\n' "$label" "$profile"
+  "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" | tee "$out"
+  printf '\n'
+done
+
+printf 'reports: %s/%s.gate-A.md %s/%s.gate-B.md\n' "$out_dir" "$slug" "$out_dir" "$slug"

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# cap-cleanup - clean up comments and readability with a separate model.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:?usage: cap cleanup <slug> [profile]}
+profile=${2:-$CAP_ROLE_CLEANUP}
+
+task_load "$slug"
+
+[ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to clean up"
+
+prompt="Read $CAP_HOME/rules/comments.md and the Readability section of
+$CAP_HOME/rules/code.md, then apply them to every changed file in this
+worktree.
+
+Only clean up comments and readability. Remove comments that repeat the code.
+Shorten comments that stay. Rename only misleading names. Remove obvious dead
+code. Do not change behavior, run tests, or commit. Leave all edits unstaged.
+
+If a section does not need changes, leave it alone."
+
+exec "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"

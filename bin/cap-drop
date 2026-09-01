@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# cap-drop - remove a task without losing work.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:?usage: cap drop <slug> [--force]}
+shift || true
+
+force=0
+[ "${1:-}" = --force ] && force=1
+
+task_load "$slug"
+
+if [ "$force" = 0 ]; then
+	dirty=$(git_dirty "$CAP_TREE")
+	[ "$dirty" = 0 ] ||
+		die "refusing: $dirty uncommitted change(s) in $CAP_TREE (--force to discard)"
+
+	kids=$(task_children "$slug" | tr '\n' ' ')
+	[ -z "$kids" ] ||
+		die \
+			"refusing: ${kids% } stacked on $slug; the branch survives the drop but the record does not, so cap land $slug --merge could never restack them (--force to drop anyway)"
+
+	if [ "$CAP_KIND" = scout ]; then
+		[ -s "$CAP_HOME/notes/$CAP_PROJECT/$slug.md" ] ||
+			die "refusing: scout has no report yet (--force to discard)"
+	else
+		# A squash merge never lands CAP_BRANCH's own commit, so branch --contains
+		# can't see it; ask the PR itself when one was recorded.
+		landed=0
+		pr=$(task_field "$slug" CAP_PR)
+		if [ -n "$pr" ] && have gh; then
+			[ "$(gh pr view "$pr" --json state -q .state 2>/dev/null)" = MERGED ] && landed=1
+		fi
+		[ "$landed" = 1 ] ||
+			landed=$(git -C "$CAP_REPO" branch --contains "$CAP_BRANCH" --merged 2>/dev/null | grep -c . || true)
+		pushed=$(git -C "$CAP_TREE" rev-parse --verify "origin/$CAP_BRANCH" >/dev/null 2>&1 && echo 1 || echo 0)
+		commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
+
+		[ "$commits" = 0 ] || [ "$landed" -gt 0 ] || [ "$pushed" = 1 ] ||
+			die "refusing: $commits commit(s) on $CAP_BRANCH are neither merged nor pushed (--force to discard)"
+	fi
+fi
+
+win_live "$slug" && win_kill "$slug"
+
+git -C "$CAP_REPO" worktree remove --force "$CAP_TREE" 2>/dev/null ||
+	rm -rf "$CAP_TREE"
+
+git -C "$CAP_REPO" worktree prune
+rm -rf "$(task_dir "$slug")"
+
+printf 'dropped %s (branch %s kept in %s)\n' "$slug" "$CAP_BRANCH" "$CAP_REPO"

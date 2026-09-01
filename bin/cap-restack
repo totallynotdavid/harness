@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# cap-restack - move the tasks stacked on a task onto its current tip.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:?usage: cap restack <slug> [--undo [SNAPSHOT]]}
+shift || true
+
+undo=0
+snapshot=""
+while [ $# -gt 0 ]; do
+	case $1 in
+	--undo)
+		undo=1
+		shift
+		case ${1:-} in
+		'' | -*) ;;
+		*)
+			snapshot=$1
+			shift
+			;;
+		esac
+		;;
+	*) die "usage: cap restack <slug> [--undo [SNAPSHOT]]" ;;
+	esac
+done
+
+task_load "$slug"
+
+# Find the worktree that checks out a branch.
+tree_of() {
+	git -C "$CAP_REPO" worktree list --porcelain |
+		awk -v r="$1" '/^worktree /{p=$2} $0==("branch " r){print p; exit}'
+}
+
+if [ "$undo" = 1 ]; then
+	if [ -z "$snapshot" ]; then
+		snapshot=$(ls -1t "$CAP_HOME/state/restacks/$slug-"*.snapshot 2>/dev/null | head -1 || true)
+	fi
+	[ -n "$snapshot" ] && [ -f "$snapshot" ] ||
+		die "no snapshot for $slug in $CAP_HOME/state/restacks"
+
+	n=0
+	while read -r a b c d; do
+		[ -n "${a:-}" ] || continue
+
+		if [ "$a" = FIELD ]; then
+			task_env_set "$b" "$c" "$d"
+			printf 'restored %s %s to %s\n' "$b" "$c" "$d"
+			continue
+		fi
+
+		sha=$a
+		ref=$b
+		tree=$(tree_of "$ref")
+		dirty=0
+		[ -n "$tree" ] && dirty=$(git_dirty "$tree")
+
+		git -C "$CAP_REPO" update-ref "$ref" "$sha"
+		printf 'restored %s to %s\n' "$ref" "$sha"
+		n=$((n + 1))
+
+		# Restore clean worktrees. Preserve uncommitted edits made after the rebase.
+		[ -n "$tree" ] || continue
+		if [ "$dirty" = 0 ]; then
+			git -C "$tree" reset --hard "$sha" >/dev/null
+		else
+			warn "$tree has $dirty uncommitted change(s); its files still match the rebase"
+		fi
+	done <"$snapshot"
+
+	printf 'undid %s ref(s) from %s\n' "$n" "$snapshot"
+	exit 0
+fi
+
+git -C "$CAP_REPO" rev-parse --verify -q "$CAP_BRANCH" >/dev/null ||
+	die "no branch $CAP_BRANCH in $CAP_REPO"
+
+[ -n "$(task_children "$slug")" ] || {
+	printf 'no tasks are stacked on %s\n' "$slug"
+	exit 0
+}
+
+new_tip=$(git -C "$CAP_REPO" rev-parse "$CAP_BRANCH")
+snapshot=$(stack_snapshot_new "$slug")
+
+rc=0
+stack_cascade "$slug" "$new_tip" "$snapshot" || rc=$?
+
+# Do not keep empty snapshots; there is nothing to undo.
+[ "$STACK_MOVED" != 0 ] || rm -f "$snapshot"
+
+if [ "$rc" = 0 ]; then
+	printf 'restacked %s task(s) onto %s\n' "$STACK_MOVED" "$new_tip"
+	[ "$STACK_MOVED" = 0 ] || printf 'undo: cap restack %s --undo\n' "$slug"
+	exit 0
+fi
+
+warn "stopped at $STACK_CONFLICT; the tasks stacked under it were left alone"
+[ "$STACK_MOVED" = 0 ] ||
+	warn "$STACK_MOVED branch(es) already moved: cap restack $slug --undo rolls them back"
+exit 1

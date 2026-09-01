@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# cap-send - send a message to a running agent.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:?usage: cap send <slug> "<text>"}
+shift
+
+text=$*
+[ -n "$text" ] || die "nothing to send"
+win_live "$slug" || die "window '$slug' is not live"
+
+win_send "$slug" "$text"
+
+for _ in 1 2 3; do
+	sleep 0.4
+	win_enter "$slug"
+	sleep 0.6
+
+	# Stop retrying once the message is sent.
+	pane_tail "$slug" 6 | grep -qF "${text:0:40}" || break
+done
+
+printf 'sent to %s\n' "$slug"

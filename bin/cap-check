@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# cap-check - run checks for a task or project.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+repo=""
+base=""
+project=""
+
+if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
+	task_load "$1"
+	repo=$CAP_TREE
+	base=$CAP_BASE
+	project=$CAP_PROJECT
+	shift
+else
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--repo)
+			project=${2:?}
+			repo=$(proj_path "$2")
+			shift 2
+			;;
+		--base)
+			base=${2:?}
+			shift 2
+			;;
+		*) die "usage: cap check <slug> | cap check --repo <project> [--base REF]" ;;
+		esac
+	done
+fi
+
+[ -n "$repo" ] || die "usage: cap check <slug> | cap check --repo <project> [--base REF]"
+: "${base:=$(git_base "$repo")}"
+
+git -C "$repo" rev-parse --verify -q "$base" >/dev/null || die "no base ref '$base'"
+
+conv=$CAP_HOME/cases/$project/conventions.md
+changed=$({
+	git -C "$repo" diff --name-only "$base"
+	git -C "$repo" ls-files --others --exclude-standard
+} | sort -u)
+
+[ -n "$changed" ] || {
+	echo "no changes against $base"
+	exit 0
+}
+
+findings=0
+
+note() {
+	findings=$((findings + 1))
+	printf '  ! %s\n' "$*"
+}
+
+# Find matches outside changed files.
+outside() {
+	{
+		git -C "$repo" grep -lE "\\b$1" -- . 2>/dev/null || true
+	} | {
+		grep -vxF "$changed" || true
+	} | head -5
+}
+
+diff_text=$(git -C "$repo" diff -U0 "$base")
+
+printf '## changed (worktree vs %s)\n' "$base"
+printf '%s\n' "$changed" | sed 's/^/  /'
+
+# Check related files that should change together.
+printf '\n## surfaces\n'
+if [ -f "$conv" ] && grep -q '^```surfaces' "$conv"; then
+	while read -r trigger _arrow required; do
+		case ${trigger:-} in '' | '#'*) continue ;; esac
+		[ -n "${required:-}" ] || continue
+		printf '%s\n' "$changed" | grep -qE "$trigger" || continue
+		printf '%s\n' "$changed" | grep -qE "$required" ||
+			note "changed $trigger without $required"
+	done < <(sed -n '/^```surfaces/,/^```$/p' "$conv" | grep -v '^```')
+
+	[ "$findings" = 0 ] && echo "  ok"
+else
+	echo "  no surface map - run: cap conventions ${project:-<project>}"
+fi
+
+# Check removed names for remaining references.
+printf '\n## stale\n'
+removed=$({
+	printf '%s\n' "$diff_text" |
+		grep '^-[^-]' |
+		grep -oE '\b(export (const|function|class)|def|fn|func) [A-Za-z_][A-Za-z0-9_]*' |
+		awk '{print $NF}' |
+		sort -u
+} || true)
+
+stale=0
+for id in $removed; do
+	printf '%s\n' "$diff_text" | grep -q "^+.*\b$id\b" && continue
+
+	hits=$(outside "$id")
+	[ -n "$hits" ] && {
+		note "removed '$id' still referenced:"
+		printf '%s\n' "$hits" | sed 's/^/      /'
+		stale=1
+	}
+done
+
+[ "$stale" = 0 ] && echo "  ok"
+
+# Show callers of changed functions.
+printf '\n## callers\n'
+touched=$({
+	printf '%s\n' "$diff_text" |
+		grep '^[+-][^+-]' |
+		grep -oE '\b(export (async )?function|async function|function|def|fn|func) [A-Za-z_][A-Za-z0-9_]*' |
+		awk '{print $NF}' |
+		sort -u
+} || true)
+
+callers=0
+for fn in $touched; do
+	sites=$(outside "$fn *\\(")
+	[ -n "$sites" ] && {
+		printf '  ? %s called outside the diff:\n' "$fn"
+		printf '%s\n' "$sites" | sed 's/^/      /'
+		callers=1
+	}
+done
+
+[ "$callers" = 0 ] && echo "  ok"
+[ "$callers" = 1 ] && echo "  (check each caller or acknowledge it)"
+
+# Find files related to changed filenames.
+printf '\n## siblings\n'
+sib=0
+for f in $changed; do
+	key=$(basename "$f" | sed 's/\.[^.]*$//')
+	[ ${#key} -ge 5 ] || continue
+
+	hits=$(outside "$key")
+	[ -n "$hits" ] && {
+		printf '  ? %s mentioned in:\n' "$key"
+		printf '%s\n' "$hits" | sed 's/^/      /'
+		sib=1
+	}
+done
+
+[ "$sib" = 0 ] && echo "  ok"
+
+printf '\n%s deterministic finding(s)\n' "$findings"
+[ "$findings" = 0 ]

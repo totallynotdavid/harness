@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# cap-conventions - create a project's convention file.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+project=${1:?usage: cap conventions <project>}
+repo=$(proj_path "$project")
+out=$CAP_HOME/cases/$project/conventions.md
+
+mkdir -p "$(dirname "$out")"
+
+[ -f "$out" ] && {
+	printf '%s\n' "$out"
+	exit 0
+}
+
+srcs=""
+for f in AGENTS.md CLAUDE.md CONTRIBUTING.md docs/README.md README.md; do
+	[ -f "$repo/$f" ] && srcs="$srcs $f"
+done
+
+cat >"$out" <<EOF
+# $project conventions
+
+Initialized from:${srcs:- none found}
+
+Project-specific rules used by cap check and review.
+Project instruction files remain authoritative.
+
+## Surfaces
+
+Rules for files that should change together.
+
+\`\`\`surfaces
+# changed-pattern -> required-pattern
+# ^src/cli/ -> ^docs/
+\`\`\`
+
+## House norms
+
+Project-specific rules that change or add to the default checks.
+
+## Subsystem invariants
+
+Important system rules that cannot be detected from a diff alone.
+
+## Gate-miss ledger
+
+Record missed review findings, why they were missed, and how to prevent them.
+EOF
+
+printf 'wrote %s\n' "$out"
+[ -n "$srcs" ] && printf 'read these project instructions:%s\n' "$srcs"

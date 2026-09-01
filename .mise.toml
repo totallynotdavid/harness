@@ -1,0 +1,7 @@
+[tools]
+gh = "2.98.0"
+jq = "1.7"
+shfmt = "3.14.0"
+
+[tasks.format]
+run = "find . -type f -name '*.sh' -exec shfmt -ln bash -i 2 -w {} +"

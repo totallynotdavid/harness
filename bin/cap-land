@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# cap-land - deliver a finished task.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:?usage: cap land <slug> [--merge]}
+shift || true
+
+do_merge=0
+[ "${1:-}" = --merge ] && do_merge=1
+
+task_load "$slug"
+
+dirty=$(git_dirty "$CAP_TREE")
+[ "$dirty" = 0 ] || die "$slug has $dirty uncommitted change(s); commit them first"
+
+if [ "$CAP_KIND" = scout ]; then
+	report=$CAP_HOME/notes/$CAP_PROJECT/$slug.md
+	[ -s "$report" ] || die "no scout report at $report"
+
+	printf 'scout report: %s\n' "$report"
+	printf 'run: cap drop %s\n' "$slug"
+	exit 0
+fi
+
+commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD")
+[ "$commits" -gt 0 ] || die "$slug has no commits to land"
+
+case $CAP_MODE in
+local)
+	git -C "$CAP_REPO" rev-parse --verify "$CAP_BASE" >/dev/null 2>&1 ||
+		die "no base branch $CAP_BASE"
+
+	[ "$(git_dirty "$CAP_REPO")" = 0 ] ||
+		die "$CAP_REPO has uncommitted changes"
+
+	git -C "$CAP_REPO" checkout "$CAP_BASE" >/dev/null 2>&1
+	git -C "$CAP_REPO" merge --no-ff -m "merge $CAP_BRANCH ($slug)" "$CAP_BRANCH"
+
+	printf 'merged %s into %s (%s commits)\n' "$CAP_BRANCH" "$CAP_BASE" "$commits"
+	;;
+
+pr)
+	have gh || die "gh not installed; install it or use local mode"
+
+	# GitHub needs the PR base ref on the remote.
+	if [ -n "${CAP_PARENT:-}" ]; then
+		git -C "$CAP_REPO" ls-remote --exit-code origin "cap/$CAP_PARENT" >/dev/null 2>&1 ||
+			die "$slug is stacked on $CAP_PARENT, which is not on the remote yet; run: cap land $CAP_PARENT"
+	fi
+
+	git -C "$CAP_TREE" push -u origin "$CAP_BRANCH"
+	repo_url=$(git -C "$CAP_REPO" remote get-url origin)
+
+	# A push needs a moment to propagate before GitHub will accept a PR against it.
+	url=""
+	for _ in 1 2 3 4 5; do
+		url=$(gh pr create --repo "$repo_url" --head "$CAP_BRANCH" --base "$CAP_BASE" --fill 2>/dev/null) && break
+		url=$(gh pr view "$CAP_BRANCH" --repo "$repo_url" --json url -q .url 2>/dev/null) && break
+		sleep 3
+	done
+	[ -n "$url" ] || die "could not open a PR for $CAP_BRANCH"
+
+	task_env_set "$slug" CAP_PR "$url"
+	printf 'PR: %s\n' "$url"
+
+	if [ "$do_merge" = 1 ]; then
+		kids=$(task_children "$slug")
+
+		# Keep the branch until any stacked PRs are retargeted: GitHub closes a PR,
+		# unrecoverably, the moment its base branch is deleted.
+		if [ -n "$kids" ]; then
+			gh pr merge "$url" --squash
+		else
+			gh pr merge "$url" --squash --delete-branch
+		fi
+		printf 'merged %s\n' "$url"
+
+		# Keep the local base ref in step with the remote squash merge, or every
+		# later "commits ahead of CAP_BASE" check (fleet, drop) reads it as stale.
+		if git -C "$CAP_REPO" fetch origin "$CAP_BASE:$CAP_BASE" 2>/dev/null; then
+			:
+		elif [ "$(git -C "$CAP_REPO" symbolic-ref -q --short HEAD 2>/dev/null)" = "$CAP_BASE" ]; then
+			git -C "$CAP_REPO" pull --ff-only origin "$CAP_BASE" >/dev/null 2>&1 ||
+				warn "could not update local $CAP_BASE; commit counts against it may look stale"
+		else
+			warn "could not update local $CAP_BASE; commit counts against it may look stale"
+		fi
+
+		if [ -n "$kids" ]; then
+			git -C "$CAP_REPO" fetch origin "$CAP_BASE"
+			tip=$(git -C "$CAP_REPO" rev-parse "origin/$CAP_BASE")
+			snapshot=$(stack_snapshot_new "$slug")
+
+			rc=0
+			stack_cascade_landed "$slug" "$tip" "$snapshot" || rc=$?
+			[ "$STACK_MOVED" != 0 ] || rm -f "$snapshot"
+
+			printf 'restacked %s task(s) onto %s\n' "$STACK_MOVED" "$CAP_BASE"
+			if [ "$rc" = 0 ]; then
+				git -C "$CAP_REPO" push origin --delete "$CAP_BRANCH" 2>/dev/null ||
+					warn "could not delete remote branch $CAP_BRANCH; delete it by hand"
+			else
+				warn "$slug is merged, but $STACK_CONFLICT and anything stacked under it still need a hand-rebase"
+				warn "$CAP_BRANCH was left on the remote so the stack under it stays retargetable"
+			fi
+		fi
+	else
+		printf 'not merged. Run: cap land %s --merge\n' "$slug"
+	fi
+	;;
+
+*)
+	die "unknown mode '$CAP_MODE'"
+	;;
+esac

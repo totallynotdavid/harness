@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# cap-watch - wait for task activity or timeout.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+timeout=1800
+interval=10
+
+while [ $# -gt 0 ]; do
+	case $1 in
+	--timeout)
+		timeout=${2:?}
+		shift 2
+		;;
+	--interval)
+		interval=${2:?}
+		shift 2
+		;;
+	*) die "unknown flag $1" ;;
+	esac
+done
+
+deadline=$(($(now) + timeout))
+events=""
+
+report() {
+	events="$events$1 $2 $3"$'\n'
+	printf '%s %s %s\n' "$1" "$2" "$3"
+}
+
+while [ "$(now)" -lt "$deadline" ]; do
+	live=0
+
+	for s in $(task_slugs); do
+		[ -f "$TASKS/$s/task.env" ] || continue
+		reported=$TASKS/$s/reported
+
+		if ! win_live "$s"; then
+			if [ -f "$reported" ] && grep -qx exited "$reported" 2>/dev/null; then
+				continue
+			fi
+
+			echo exited >"$reported"
+			report EXITED "$s" "window closed - cap land $s or cap drop $s"
+			continue
+		fi
+
+		live=$((live + 1))
+		read -r age changed <<<"$(task_idle_age "$s")"
+
+		[ "$changed" = 1 ] && rm -f "$reported"
+
+		if [ "$age" -ge "$CAP_IDLE_SECS" ]; then
+			grep -qx idle "$reported" 2>/dev/null && continue
+			echo idle >"$reported"
+			report IDLE "$s" "quiet ${age}s - cap peek $s"
+		fi
+	done
+
+	[ -n "$events" ] && exit 0
+	[ "$live" = 0 ] && [ -n "$(task_slugs)" ] && exit 0
+
+	if [ -z "$(task_slugs)" ]; then
+		echo "NONE no agents running"
+		exit 0
+	fi
+
+	sleep "$interval"
+done
+
+echo "TIMEOUT no agent needed input in ${timeout}s"

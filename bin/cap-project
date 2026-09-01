@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# cap-project - show or change project settings.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+name=${1:-}
+
+[ -n "$name" ] || {
+	printf 'PROJECT\tPATH\tMODE\tMODEL\n'
+	cat "$PROJECTS" 2>/dev/null
+	exit 0
+}
+
+mode=${2:-}
+model=${3:-}
+path=$(proj_path "$name")
+
+if [ -z "$mode" ]; then
+	printf '%s\t%s\t%s\t%s\n' \
+		"$name" "$path" "$(proj_mode "$name")" "$(proj_model "$name")"
+	exit 0
+fi
+
+case $mode in
+pr | local | scout) ;;
+*) die "mode must be pr|local|scout" ;;
+esac
+
+: "${model:=$(proj_model "$name")}"
+
+tmp=$(mktemp)
+awk -F'\t' -v OFS='\t' -v n="$name" -v m="$mode" -v md="${model:--}" \
+	'$1==n{$3=m; $4=md} {print}' "$PROJECTS" >"$tmp" &&
+	mv "$tmp" "$PROJECTS"
+
+printf '%s -> mode=%s model=%s\n' "$name" "$mode" "${model:--}"

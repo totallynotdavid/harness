@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# cap-skills - manage skill snapshots.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+SKILLS=$CAP_HOME/.claude/skills
+# Sources: user, repo, path.
+SOURCES=$CAP_HOME/config/skill-sources.tsv
+# Installed external snapshots.
+SNAPSHOTS=$CAP_HOME/config/skill-snapshots.list
+
+usage() { cat <<'EOF'
+cap skills list [nick]        list skills from a source
+cap skills add <nick>/<name>  install a skill snapshot
+cap skills rm <name>          remove an installed snapshot
+cap skills diff <name>        compare a snapshot with its source
+cap skills sync               refresh all source clones
+cap skills sources            list configured sources
+EOF
+}
+
+src_repo() { awk -F'\t' -v n="$1" '$1==n{print $2}' "$SOURCES"; }
+src_path() { awk -F'\t' -v n="$1" '$1==n{print $3}' "$SOURCES"; }
+
+ensure() {
+  local repo
+  repo=$(src_repo "$1")
+  [ -n "$repo" ] || die "unknown source '$1' (cap skills sources)"
+  "$CAP_HOME/bin/cap-explore" "$repo" ${2:-}
+}
+
+find_skills() {
+  local d
+  d=$(ensure "$1")
+  local sub
+  sub=$(src_path "$1")
+  find "$d/${sub:-.}" -name SKILL.md 2>/dev/null | sort
+}
+
+skill_name() { grep -m1 '^name:' "$1" | cut -d' ' -f2-; }
+
+find_named() {
+  local f
+  for f in $(find_skills "$1"); do
+    [ "$(skill_name "$f")" = "$2" ] && {
+      printf '%s' "$f"
+      return
+    }
+  done
+}
+
+case ${1:-list} in
+  sources)
+    [ -f "$SOURCES" ] && {
+      printf 'NICK\tREPO\tPATH\n'
+      cat "$SOURCES"
+    } | column -t -s"$(printf '\t')"
+    ;;
+
+  list)
+    nicks=${2:-$(cut -f1 "$SOURCES")}
+    for n in $nicks; do
+      for f in $(find_skills "$n"); do
+        name=$(skill_name "$f")
+        desc=$(awk '/^description:/{d=substr($0,13); gsub(/^ +| +$/,"",d);
+                     if (d=="" || d==">" || d=="|" || d=="|-" || d==">-") { getline; d=$0 }
+                     gsub(/^ +|"/,"",d); print d; exit}' "$f" | cut -c1-96)
+        mark=" "
+        [ -e "$SKILLS/$name" ] && mark="*"
+        printf '%s %-34s %s\n' "$mark" "$n/$name" "$desc"
+      done
+    done
+    printf '\n* = installed\n'
+    ;;
+
+  add)
+    spec=${2:?usage: cap skills add <nick>/<name>}
+    nick=${spec%%/*}
+    name=${spec#*/}
+
+    hit=$(find_named "$nick" "$name")
+    [ -n "$hit" ] || die "no skill named '$name' in $nick"
+    [ -e "$SKILLS/$name" ] && die "'$name' is already installed"
+
+    cp -r "$(dirname "$hit")" "$SKILLS/$name"
+    grep -qxF "$spec" "$SNAPSHOTS" 2>/dev/null ||
+      printf '%s\n' "$spec" >> "$SNAPSHOTS"
+
+    printf 'added %s from %s\n' "$name" "$spec"
+    ;;
+
+  rm|remove)
+    name=${2:?usage: cap skills rm <name>}
+
+    grep -qE "/$name\$" "$SNAPSHOTS" 2>/dev/null ||
+      die "'$name' is not an external snapshot"
+
+    rm -rf "${SKILLS:?}/$name"
+
+    tmp=$(mktemp)
+    grep -v "/$name\$" "$SNAPSHOTS" > "$tmp" || true
+    mv "$tmp" "$SNAPSHOTS"
+
+    printf 'removed %s\n' "$name"
+    ;;
+
+  diff)
+    name=${2:?usage: cap skills diff <name>}
+    spec=$(grep -E "/$name\$" "$SNAPSHOTS" 2>/dev/null | head -1)
+
+    [ -n "$spec" ] || die "'$name' has no recorded source"
+    [ -d "$SKILLS/$name" ] ||
+      die "'$name' is recorded but not installed (cap skills add $spec)"
+
+    nick=${spec%%/*}
+    hit=$(ensure "$nick" --fresh >/dev/null; find_named "$nick" "$name")
+    [ -n "$hit" ] || die "'$name' no longer exists in $nick"
+
+    if diff -rq "$(dirname "$hit")" "$SKILLS/$name" >/dev/null 2>&1; then
+      printf '%s is up to date with %s\n' "$name" "$spec"
+    else
+      printf '%s differs from %s:\n\n' "$name" "$spec"
+      diff -ru "$SKILLS/$name" "$(dirname "$hit")" || true
+    fi
+    ;;
+
+  sync)
+    for n in $(cut -f1 "$SOURCES"); do
+      d=$(ensure "$n" --fresh)
+      printf '%-10s %s\n' "$n" "$d"
+    done
+    ;;
+
+  *)
+    usage
+    exit 1
+    ;;
+esac

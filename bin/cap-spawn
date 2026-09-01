@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# cap-spawn - start an agent in its own worktree and terminal.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:-}; project=${2:-}; shift 2 2>/dev/null || true
+[ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [--scout] [-f BRIEF]"
+case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]";; esac
+
+model=""
+harness=$CAP_WORKER_HARNESS
+harness_set=0
+kind=ship
+base=""
+brief_src=""
+parent=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    -m|--model)   model=${2:?}; shift 2 ;;
+    -H|--harness) harness=${2:?}; harness_set=1; shift 2 ;;
+    --base)       base=${2:?}; shift 2 ;;
+    --stack)      parent=${2:?}; shift 2 ;;
+    -f|--brief)   brief_src=${2:?}; shift 2 ;;
+    --scout)      kind=scout; shift ;;
+    --heavy)      model=$CAP_HEAVY_MODEL; shift ;;
+    *) die "unknown flag $1" ;;
+  esac
+done
+
+repo=$(proj_path "$project")
+mode=$(proj_mode "$project")
+[ -d "$repo/.git" ] || die "$repo is not a git repo"
+[ "$kind" = ship ] || mode=scout
+
+# Use the parent's branch as this task's base.
+parent_tip=""
+if [ -n "$parent" ]; then
+  [ -z "$base" ] || die "use --base or --stack, not both"
+  [ -f "$TASKS/$parent/task.env" ] || die "no such task '$parent'"
+  [ "$(task_field "$parent" CAP_PROJECT)" = "$project" ] ||
+    die "$parent belongs to project $(task_field "$parent" CAP_PROJECT), not $project"
+  [ "$(task_field "$parent" CAP_KIND)" != scout ] || die "cannot stack on a scout task"
+
+  base=cap/$parent
+  parent_tip=$(git -C "$repo" rev-parse "$base" 2>/dev/null) ||
+    die "$parent has no branch $base in $repo"
+fi
+
+if [ -z "$model" ]; then
+  model=$(proj_model "$project" || true)
+  [ -n "$model" ] && [ "$model" != '-' ] || \
+    { [ "$kind" = scout ] && model=$CAP_SCOUT_MODEL || model=$CAP_WORKER_MODEL; }
+fi
+
+# Resolve model names that refer to cap-ask profiles.
+if [ "$harness_set" = 0 ] &&
+  printf '%s\n' "$CAP_ASK_PROFILES" | awk -v p="$model" '$1==p{f=1} END{exit !f}' 2>/dev/null; then
+  read -r harness model <<<"$(ask_profile "$model")"
+fi
+
+dir=$(task_dir "$slug")
+[ -e "$dir" ] && die "task '$slug' already exists (cap drop $slug first)"
+win_live "$slug" && die "a window named '$slug' is already live"
+
+mkdir -p "$dir"
+if [ "$brief_src" = "-" ]; then
+  cat > "$dir/brief.md"
+elif [ -n "$brief_src" ]; then
+  cp "$brief_src" "$dir/brief.md"
+else
+  die "a task needs a brief: -f <file> or -f - (stdin)"
+fi
+[ -s "$dir/brief.md" ] || { rm -rf "$dir"; die "brief is empty"; }
+
+tree=$CAP_WORK_ROOT/$slug
+: "${base:=$(git_base "$repo")}"
+mkdir -p "$CAP_WORK_ROOT"
+if [ "$kind" = scout ]; then
+  # A scout never commits, so it gets a clean, detached, branch-free view
+  # instead of the primary checkout - which may be dirty with the user's own
+  # work - and leaves nothing behind for cap-drop to reconcile.
+  branch=""
+  git -C "$repo" worktree add --detach "$tree" "$base" >/dev/null 2>&1 \
+    || { rm -rf "$dir"; die "worktree add failed"; }
+else
+  branch=cap/$slug
+  git -C "$repo" worktree add -b "$branch" "$tree" "$base" >/dev/null 2>&1 \
+    || { rm -rf "$dir"; die "worktree add failed (branch $branch may exist)"; }
+fi
+
+cleanup() {
+  [ "${done:-0}" = 1 ] && return
+  git -C "$repo" worktree remove --force "$tree" 2>/dev/null || rm -rf "$tree"
+  git -C "$repo" worktree prune 2>/dev/null || true
+  [ -z "$branch" ] || git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
+  rm -rf "$dir"
+}
+trap cleanup EXIT
+
+cat > "$dir/task.env" <<EOF
+CAP_SLUG=$slug
+CAP_PROJECT=$project
+CAP_REPO=$repo
+CAP_TREE=$tree
+CAP_BRANCH=$branch
+CAP_BASE=$base
+CAP_PARENT=$parent
+CAP_PARENT_TIP=$parent_tip
+CAP_MODE=$mode
+CAP_KIND=$kind
+CAP_MODEL=$model
+CAP_HARNESS=$harness
+CAP_STARTED=$(now)
+EOF
+
+report=$CAP_HOME/notes/$project/$slug.md
+if [ "$kind" = scout ]; then
+  deliverable="Write a report at $report. Read the code; leave it unchanged."
+else
+  deliverable="Leave your changes uncommitted. Do not run git commit, git push, or open a pull request."
+fi
+
+cat > "$dir/contract.md" <<EOF
+# Task: $slug
+
+- $deliverable
+- Report failures plainly, with the output that shows them.
+- Found a second problem? Report it; it becomes its own task.
+
+---
+
+$(cat "$dir/brief.md")
+EOF
+
+harness_trust "$harness" "$tree"
+
+scrub=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
+kick="Read $dir/contract.md and carry it out."
+
+margs=()
+[ "$model" != '-' ] && margs=(--model "$model")
+
+case $harness in
+  claude)
+    cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_WORKER_FLAGS "$kick")
+    ;;
+  codex)
+    cmd=("${scrub[@]}" codex "${margs[@]}"
+         --dangerously-bypass-approvals-and-sandbox "$kick")
+    ;;
+  *)
+    die "unknown harness '$harness'"
+    ;;
+esac
+
+require_herdr
+cmdstr=$(printf '%q ' "${cmd[@]}")
+read -r pane tabid <<<"$(herdr_open "$tree" "$slug")"
+herdr pane run "$pane" "$cmdstr" >/dev/null 2>&1 || die "herdr pane run failed"
+printf 'CAP_PANE=%s\nCAP_TAB=%s\n' "$pane" "$tabid" >> "$dir/task.env"
+
+done=1
+printf 'spawned %s  project=%s  model=%s(%s)  shape=%s  window=%s\n' \
+  "$slug" "$project" "$model" "$harness" "$kind" "$pane"
