@@ -35,7 +35,7 @@ margs=()
 
 case $harness in
   claude)
-    cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" claude "${margs[@]}" $CAP_WORKER_FLAGS "$prompt")
+    cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$prompt")
     ;;
   codex)
     cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" codex "${margs[@]}"

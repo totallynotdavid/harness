@@ -8,7 +8,7 @@ usage() {
 cat <<'EOF'
 cap <command> - run coding agents from one place.
 
-FLEET
+AGENTS
   cap spawn <slug> <project> [-m MODEL] [-H claude|codex] [--scout]
                              [--heavy] [--base REF] [--stack SLUG]
                              [-f BRIEF|-]                          start an agent
@@ -16,6 +16,8 @@ FLEET
   cap peek <slug> [lines]                     show recent agent output
   cap send <slug> "<text>"                    send a message to an agent
   cap watch [--timeout S] [--interval S]      wait until an agent needs input
+
+REVIEW AND DELIVERY
   cap check <slug>                            run checks for an agent
   cap check --repo <project> [--base REF]     run checks for a project
   cap cleanup <slug> [profile]                clean up comments and readability

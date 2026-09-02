@@ -4,6 +4,6 @@
 
 slug=${1:?usage: cap peek <slug> [lines]}
 
-win_live "$slug" || die "window '$slug' is not live"
+pane_live "$slug" || die "pane '$slug' is not live"
 
 pane_tail "$slug" "${2:-60}"

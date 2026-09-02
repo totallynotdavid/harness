@@ -34,13 +34,13 @@ while [ "$(now)" -lt "$deadline" ]; do
 		[ -f "$TASKS/$s/task.env" ] || continue
 		reported=$TASKS/$s/reported
 
-		if ! win_live "$s"; then
+		if ! pane_live "$s"; then
 			if [ -f "$reported" ] && grep -qx exited "$reported" 2>/dev/null; then
 				continue
 			fi
 
 			echo exited >"$reported"
-			report EXITED "$s" "window closed - cap land $s or cap drop $s"
+			report EXITED "$s" "pane closed - cap land $s or cap drop $s"
 			continue
 		fi
 

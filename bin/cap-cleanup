@@ -3,7 +3,7 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 slug=${1:?usage: cap cleanup <slug> [profile]}
-profile=${2:-$CAP_ROLE_CLEANUP}
+profile=${2:-$CAP_PROFILE_CLEANUP}
 
 task_load "$slug"
 

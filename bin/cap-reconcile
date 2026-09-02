@@ -54,7 +54,7 @@ if [ "$remote" = 1 ]; then
 	gh search issues --assignee=@me --state=open --limit 30 2>/dev/null || echo "(none)"
 fi
 
-printf '\n## Crew\n\n'
+printf '\n## Fleet\n\n'
 "$CAP_HOME/bin/cap-fleet"
 
 # Show open paper cuts.

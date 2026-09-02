@@ -5,7 +5,7 @@ Captain is a shell CLI. Each part of its state has one source of truth.
 | Concern | Source | Code |
 | --- | --- | --- |
 | Projects | `config/projects.tsv` | `bin/cap-map`, `bin/lib.sh` |
-| Models and roles | `config/captain.conf` | `bin/lib.sh`, `bin/cap-spawn` |
+| Models and profiles | `config/captain.conf` | `bin/lib.sh`, `bin/cap-spawn` |
 | Tasks | `state/tasks/<slug>/` | `bin/cap-spawn`, `bin/lib.sh` |
 | Worktrees | Git and `CAP_WORK_ROOT` | `bin/cap-spawn`, `bin/cap-drop` |
 | Restack snapshots | `state/restacks/` | `bin/cap-restack`, `bin/lib.sh` |

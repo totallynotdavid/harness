@@ -6,7 +6,7 @@ json=0
 [ "${1:-}" = --json ] && json=1
 
 state_of() {
-	win_live "$1" || {
+	pane_live "$1" || {
 		printf 'exited'
 		return
 	}
@@ -52,6 +52,6 @@ fi
 }
 
 {
-	printf 'TASK\tPROJECT\tSHAPE\tMODEL\tSTATE\tWORK\tAGE\tSTACK\n'
+	printf 'TASK\tPROJECT\tKIND\tMODEL\tSTATE\tWORK\tAGE\tSTACK\n'
 	printf "$rows"
 } | column -t -s"$(printf '\t')"

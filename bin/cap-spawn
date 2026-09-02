@@ -7,7 +7,7 @@ slug=${1:-}; project=${2:-}; shift 2 2>/dev/null || true
 case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]";; esac
 
 model=""
-harness=$CAP_WORKER_HARNESS
+harness=$CAP_AGENT_HARNESS
 harness_set=0
 kind=ship
 base=""
@@ -48,7 +48,7 @@ fi
 if [ -z "$model" ]; then
   model=$(proj_model "$project" || true)
   [ -n "$model" ] && [ "$model" != '-' ] || \
-    { [ "$kind" = scout ] && model=$CAP_SCOUT_MODEL || model=$CAP_WORKER_MODEL; }
+    { [ "$kind" = scout ] && model=$CAP_SCOUT_MODEL || model=$CAP_AGENT_MODEL; }
 fi
 
 # Resolve model names that refer to cap-ask profiles.
@@ -59,7 +59,7 @@ fi
 
 dir=$(task_dir "$slug")
 [ -e "$dir" ] && die "task '$slug' already exists (cap drop $slug first)"
-win_live "$slug" && die "a window named '$slug' is already live"
+pane_live "$slug" && die "a pane named '$slug' is already live"
 
 mkdir -p "$dir"
 if [ "$brief_src" = "-" ]; then
@@ -141,7 +141,7 @@ margs=()
 
 case $harness in
   claude)
-    cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_WORKER_FLAGS "$kick")
+    cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$kick")
     ;;
   codex)
     cmd=("${scrub[@]}" codex "${margs[@]}"
@@ -159,5 +159,5 @@ herdr pane run "$pane" "$cmdstr" >/dev/null 2>&1 || die "herdr pane run failed"
 printf 'CAP_PANE=%s\nCAP_TAB=%s\n' "$pane" "$tabid" >> "$dir/task.env"
 
 done=1
-printf 'spawned %s  project=%s  model=%s(%s)  shape=%s  window=%s\n' \
+printf 'spawned %s  project=%s  model=%s(%s)  kind=%s  pane=%s\n' \
   "$slug" "$project" "$model" "$harness" "$kind" "$pane"

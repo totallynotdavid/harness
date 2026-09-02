@@ -41,7 +41,7 @@ if [ "$force" = 0 ]; then
 	fi
 fi
 
-win_live "$slug" && win_kill "$slug"
+pane_live "$slug" && pane_kill "$slug"
 
 git -C "$CAP_REPO" worktree remove --force "$CAP_TREE" 2>/dev/null ||
 	rm -rf "$CAP_TREE"

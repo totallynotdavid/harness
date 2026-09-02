@@ -7,13 +7,13 @@ shift
 
 text=$*
 [ -n "$text" ] || die "nothing to send"
-win_live "$slug" || die "window '$slug' is not live"
+pane_live "$slug" || die "pane '$slug' is not live"
 
-win_send "$slug" "$text"
+pane_send "$slug" "$text"
 
 for _ in 1 2 3; do
 	sleep 0.4
-	win_enter "$slug"
+	pane_enter "$slug"
 	sleep 0.6
 
 	# Stop retrying once the message is sent.

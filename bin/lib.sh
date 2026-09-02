@@ -90,7 +90,7 @@ herdr_open() {
 
 task_pane() { awk -F= '$1=="CAP_PANE"{print $2}' "$TASKS/$1/task.env" 2>/dev/null; }
 
-win_live() {
+pane_live() {
   local p
   p=$(task_pane "$1")
   [ -n "$p" ] && herdr pane get "$p" >/dev/null 2>&1
@@ -100,19 +100,19 @@ pane_tail() {
   p=$(task_pane "$1")
   [ -n "$p" ] && herdr pane read "$p" --source visible --lines "${2:-60}" 2>/dev/null || true
 }
-win_kill() {
+pane_kill() {
   local p
   p=$(task_pane "$1")
   [ -n "$p" ] && herdr pane close "$p" >/dev/null 2>&1
 }
 
 # Send text without pressing Enter.
-win_send() {
+pane_send() {
   local p
   p=$(task_pane "$1")
   [ -n "$p" ] && herdr pane send-text "$p" "$2" >/dev/null 2>&1
 }
-win_enter() {
+pane_enter() {
   local p
   p=$(task_pane "$1")
   [ -n "$p" ] && herdr pane send-keys "$p" enter >/dev/null 2>&1
