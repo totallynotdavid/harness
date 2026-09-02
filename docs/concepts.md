@@ -13,7 +13,7 @@ An agent is told only what its task needs: where to work and what to leave uncom
 ## Task lifecycle
 
 1. `cap spawn` creates the branch, worktree, task record, and agent session.
-2. `cap fleet`, `cap peek`, and `cap watch` show what agents are doing.
+2. `cap crew`, `cap peek`, and `cap watch` show what agents are doing.
 3. `cap check` checks changed and untracked files for problems.
 4. `cap cleanup` cleans up comments and readability.
 5. `cap commit` stages and commits the changes.

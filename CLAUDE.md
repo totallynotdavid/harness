@@ -14,7 +14,7 @@ The usual delivery path is:
 
 1. Write a brief here.
 2. Run `cap spawn` to create the worktree and start the agent session.
-3. Supervise with `cap fleet` and `cap watch`.
+3. Supervise with `cap crew` and `cap watch`.
 4. Run `cap check`, then `cap cleanup`.
 5. Run `cap commit` and `cap land` only after the result is accepted.
 

@@ -7,7 +7,7 @@ Run `cap help` for all flags.
 | Command | What it does |
 | --- | --- |
 | `cap spawn <slug> <project>` | Start an agent for a project. |
-| `cap fleet` | Show all agents and their status. |
+| `cap crew` | Show all agents and their status. |
 | `cap peek <slug> [lines]` | Show recent agent output. |
 | `cap send <slug> "<text>"` | Send a message to an agent. |
 | `cap watch` | Wait until an agent needs input. |

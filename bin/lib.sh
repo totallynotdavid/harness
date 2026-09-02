@@ -143,6 +143,58 @@ task_idle_age() {
   fi
 }
 
+# Read complete status lines appended since the task's last status check.
+task_status_lines() {
+  local f=$TASKS/$1/status.log cursor start line bytes
+  local LC_ALL=C
+
+  [ -f "$f" ] || return 0
+
+  cursor=$TASKS/$1/status.cursor
+  start=0
+  if [ -f "$cursor" ]; then
+    IFS= read -r start <"$cursor" || start=0
+    case $start in
+      ''|*[!0-9]*) start=0 ;;
+    esac
+  fi
+
+  bytes=$(wc -c <"$f")
+  [ "$start" -le "$bytes" ] || start=0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line"
+    start=$((start + ${#line} + 1))
+  done < <(tail -c +$((start + 1)) "$f")
+
+  printf '%s\n' "$start" >"$cursor"
+}
+
+task_status_verb() {
+  case $1 in
+    done:*)       printf 'done' ;;
+    blocked:*)    printf 'blocked' ;;
+    needs-input:*) printf 'needs-input' ;;
+    failed:*)     printf 'failed' ;;
+    working:*)    printf 'working' ;;
+  esac
+}
+
+# Return the latest recognized status event in the task's append-only log.
+task_status_latest() {
+  local f=$TASKS/$1/status.log line verb latest=
+  [ -f "$f" ] || return 0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    verb=$(task_status_verb "$line")
+    [ -n "$verb" ] && latest=$verb
+  done <"$f"
+
+  if [ -n "$latest" ]; then
+    printf '%s' "$latest"
+  fi
+}
+
 git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
 git_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null || echo '-'; }
 git_base() {

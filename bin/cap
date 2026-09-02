@@ -12,7 +12,7 @@ AGENTS
   cap spawn <slug> <project> [-m MODEL] [-H claude|codex] [--scout]
                              [--heavy] [--base REF] [--stack SLUG]
                              [-f BRIEF|-]                          start an agent
-  cap fleet [--json]                          show agent status
+  cap crew [--json]                           show agent status
   cap peek <slug> [lines]                     show recent agent output
   cap send <slug> "<text>"                    send a message to an agent
   cap watch [--timeout S] [--interval S]      wait until an agent needs input
@@ -49,7 +49,7 @@ EOF
 
 cmd=${1:-help}; shift || true
 case $cmd in
-  spawn|fleet|peek|send|watch|land|restack|drop|ask|cleanup|commit|gate|map|reconcile|papercut|project|skills|check|conventions|explore|history)
+  spawn|crew|peek|send|watch|land|restack|drop|ask|cleanup|commit|gate|map|reconcile|papercut|project|skills|check|conventions|explore|history)
     exec "$CAP_HOME/bin/cap-$cmd" "$@" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 1 ;;

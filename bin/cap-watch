@@ -45,6 +45,20 @@ while [ "$(now)" -lt "$deadline" ]; do
 		fi
 
 		live=$((live + 1))
+		status_event=0
+		status_lines=$(task_status_lines "$s")
+		while IFS= read -r line; do
+			verb=$(task_status_verb "$line")
+			case $verb in
+				done)       report DONE "$s" "$line"; status_event=1 ;;
+				blocked)    report BLOCKED "$s" "$line"; status_event=1 ;;
+				needs-input) report NEEDS_INPUT "$s" "$line"; status_event=1 ;;
+				failed)     report FAILED "$s" "$line"; status_event=1 ;;
+			esac
+		done <<<"$status_lines"
+
+		[ "$status_event" = 1 ] && continue
+
 		read -r age changed <<<"$(task_idle_age "$s")"
 
 		[ "$changed" = 1 ] && rm -f "$reported"

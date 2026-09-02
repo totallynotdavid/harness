@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Block delegation tools. Use cap spawn instead.
 #
-# cap spawn tracks agents so fleet, watch, and land can manage them.
+# cap spawn tracks agents so crew, watch, and land can manage them.
 # Set CAP_ALLOW_SUBAGENT=1 to allow research-only delegation.
 set -u
 [ -n "${CAP_ALLOW_SUBAGENT:-}" ] && exit 0

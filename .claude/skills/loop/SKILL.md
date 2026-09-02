@@ -22,7 +22,7 @@ Choosing wrong is expensive in both directions. Say which one you picked.
 An agent builds it in its own worktree (`crew` skill). This session supervises with
 `cap watch` and does not write project code.
 
-**Complete when:** the branch carries commits and `cap fleet` shows the task idle.
+**Complete when:** the branch carries commits and `cap crew` shows the task idle.
 
 ## 2. Check, then review
 

@@ -1,6 +1,6 @@
 ---
 name: reconcile
-description: Start-of-day orientation - read what is actually open across every project and the live fleet, then propose what to work on. Use when the captain asks where things stand, what is pending, or what to do next.
+description: Start-of-day orientation - read what is actually open across every project and the live crew, then propose what to work on. Use when the captain asks where things stand, what is pending, or what to do next.
 ---
 
 # Reconcile
@@ -8,7 +8,7 @@ description: Start-of-day orientation - read what is actually open across every 
 Read the world; do not ask the captain to remember it.
 
 ```sh
-cap reconcile           # local: dirty trees, unpushed commits, stashes, stray worktrees, fleet
+cap reconcile           # local: dirty trees, unpushed commits, stashes, stray worktrees, crew
 cap reconcile --remote  # adds your open PRs, review requests, assigned issues
 ```
 

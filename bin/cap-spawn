@@ -62,6 +62,9 @@ dir=$(task_dir "$slug")
 pane_live "$slug" && die "a pane named '$slug' is already live"
 
 mkdir -p "$dir"
+dir=$(cd "$dir" && pwd)
+status=$dir/status.log
+: >"$status"
 if [ "$brief_src" = "-" ]; then
   cat > "$dir/brief.md"
 elif [ -n "$brief_src" ]; then
@@ -125,6 +128,18 @@ cat > "$dir/contract.md" <<EOF
 - $deliverable
 - Report failures plainly, with the output that shows them.
 - Found a second problem? Report it; it becomes its own task.
+
+## Status protocol
+
+Append exactly one line per event to $status. Use only these prefixes and nothing else:
+
+- done: <one-line summary> when finished. For ship, say the branch is ready for review. For scout, say the report is written and where it is.
+- blocked: <reason> when stuck on something external.
+- needs-input: <question> when a decision from the captain is required before continuing.
+- failed: <what and why> when the task cannot be completed.
+- working: <note> optionally when resuming after any of the above.
+
+This protocol is the same for ship and scout tasks. It is in addition to, not instead of, the rule to report failures plainly. Append the line, then stop when you have finished or cannot continue.
 
 ---
 

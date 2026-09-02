@@ -14,8 +14,9 @@ imported skills (`config/skill-snapshots.list`; see `docs/skills.md`).
 - **operator**: the human. Sets direction and makes the calls that need human judgment.
   Not the captain - the captain is a seat, the operator is a person.
 - **agent**: one spawned actor, running a task in its own worktree.
-- **crew**: agents as a group, at the relationship level - the brief you write them, how
-  you supervise them. Not a status table; see `fleet`.
+- **crew**: agents as a group - the brief you write them, how you supervise them, and the
+  live status view (the command `cap crew` and its table). One word for both; context
+  carries the difference the way "my team" and "check the team" don't need separate nouns.
 
 ## A task
 
@@ -33,8 +34,9 @@ imported skills (`config/skill-snapshots.list`; see `docs/skills.md`).
 
 - **pane**: the terminal surface an agent runs in. Herdr's own word (`herdr pane ...`,
   `CAP_PANE`). Not "window".
-- **fleet**: the live set of running tasks - the command (`cap fleet`) and its status
-  table. The concrete, current-state word; `crew` is the soft one.
+- **status**: a task's current condition - `done`, `blocked`, `needs-input`, `failed`,
+  `working`, `idle`, or `exited` (`status.log`, `task_status_*`, `cap crew`'s STATUS
+  column). Not "state".
 - **watch**: block until a task needs input or exits (`cap watch`).
 
 ## Landing

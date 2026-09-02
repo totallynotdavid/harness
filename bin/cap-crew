@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
-# cap-fleet - show status for all tasks.
+# cap-crew - show status for all tasks.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 json=0
 [ "${1:-}" = --json ] && json=1
 
-state_of() {
+status_of() {
+	local status age
+	status=$(task_status_latest "$1")
+	case $status in
+		done|blocked|needs-input|failed)
+			printf '%s' "$status"
+			return
+			;;
+	esac
+
 	pane_live "$1" || {
 		printf 'exited'
 		return
 	}
 
-	local age
 	age=$(task_idle_age "$1" | cut -d' ' -f1)
 
 	[ "$age" -ge "$CAP_IDLE_SECS" ] && printf 'idle' || printf 'working'
@@ -25,7 +33,7 @@ for s in $(task_slugs); do
 	# shellcheck disable=SC1090
 	. "$TASKS/$s/task.env"
 
-	st=$(state_of "$s")
+	st=$(status_of "$s")
 	dirty=$(git_dirty "$CAP_TREE")
 	commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
 	age=$((($(now) - CAP_STARTED) / 60))
@@ -42,7 +50,7 @@ done
 
 if [ "$json" = 1 ]; then
 	printf "$rows" |
-		awk -F'\t' 'NF{printf "{\"task\":\"%s\",\"project\":\"%s\",\"kind\":\"%s\",\"model\":\"%s\",\"state\":\"%s\",\"work\":\"%s\",\"age\":\"%s\",\"stack\":\"%s\"}\n",$1,$2,$3,$4,$5,$6,$7,$8}'
+		awk -F'\t' 'NF{printf "{\"task\":\"%s\",\"project\":\"%s\",\"kind\":\"%s\",\"model\":\"%s\",\"status\":\"%s\",\"work\":\"%s\",\"age\":\"%s\",\"stack\":\"%s\"}\n",$1,$2,$3,$4,$5,$6,$7,$8}'
 	exit 0
 fi
 
@@ -52,6 +60,6 @@ fi
 }
 
 {
-	printf 'TASK\tPROJECT\tKIND\tMODEL\tSTATE\tWORK\tAGE\tSTACK\n'
+	printf 'TASK\tPROJECT\tKIND\tMODEL\tSTATUS\tWORK\tAGE\tSTACK\n'
 	printf "$rows"
 } | column -t -s"$(printf '\t')"

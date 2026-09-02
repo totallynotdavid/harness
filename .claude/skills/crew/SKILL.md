@@ -31,7 +31,7 @@ unchanged. Ship tasks produce a branch that can be reviewed and delivered.
 
 ## Supervise
 
-Use `cap watch` to wait for an idle or exited session. When it returns, run `cap fleet`
+Use `cap watch` to wait for an idle or exited session. When it returns, run `cap crew`
 and inspect the named task with `cap peek`. A quiet agent may be finished, blocked, or
 stuck. Send a correction only after reading its output.
 

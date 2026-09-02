@@ -76,7 +76,7 @@ pr)
 		printf 'merged %s\n' "$url"
 
 		# Keep the local base ref in step with the remote squash merge, or every
-		# later "commits ahead of CAP_BASE" check (fleet, drop) reads it as stale.
+		# later "commits ahead of CAP_BASE" check (crew, drop) reads it as stale.
 		if git -C "$CAP_REPO" fetch origin "$CAP_BASE:$CAP_BASE" 2>/dev/null; then
 			:
 		elif [ "$(git -C "$CAP_REPO" symbolic-ref -q --short HEAD 2>/dev/null)" = "$CAP_BASE" ]; then

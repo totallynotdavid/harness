@@ -23,7 +23,7 @@ cap spawn fix-login crm --brief /path/to/brief.md
 Check the agent or wait for it to finish:
 
 ```sh
-cap fleet
+cap crew
 cap watch
 cap peek fix-login
 ```
