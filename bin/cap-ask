@@ -47,8 +47,7 @@ case $harness in
 esac
 
 read -r pane _ <<<"$(herdr_open "$dir" "ask-$profile-$$")"
-herdr pane run "$pane" "$(printf '%q ' "${cmd[@]}")" >/dev/null 2>&1 ||
-  die "herdr pane run failed"
+pane_launch "$pane" "${cmd[@]}"
 
 # Wait for the agent to appear.
 for _ in $(seq 1 50); do

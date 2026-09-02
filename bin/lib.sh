@@ -90,6 +90,18 @@ herdr_open() {
 
 task_pane() { awk -F= '$1=="CAP_PANE"{print $2}' "$TASKS/$1/task.env" 2>/dev/null; }
 
+# Run a command in a pane via a temp script. herdr pane run types its argument
+# into the pane's cooked-mode pty; a prompt of a few KB overruns the tty's
+# line-length limit and truncates mid-quote, hanging the shell. A short
+# "bash <script>" line never does.
+pane_launch() {
+  local pane=$1 script
+  shift
+  script=$(mktemp)
+  { printf '#!/usr/bin/env bash\n'; printf 'exec %s\n' "$(printf '%q ' "$@")"; } > "$script"
+  herdr pane run "$pane" "bash $script" >/dev/null 2>&1 || die "herdr pane run failed"
+}
+
 pane_live() {
   local p
   p=$(task_pane "$1")

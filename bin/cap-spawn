@@ -153,9 +153,8 @@ case $harness in
 esac
 
 require_herdr
-cmdstr=$(printf '%q ' "${cmd[@]}")
 read -r pane tabid <<<"$(herdr_open "$tree" "$slug")"
-herdr pane run "$pane" "$cmdstr" >/dev/null 2>&1 || die "herdr pane run failed"
+pane_launch "$pane" "${cmd[@]}"
 printf 'CAP_PANE=%s\nCAP_TAB=%s\n' "$pane" "$tabid" >> "$dir/task.env"
 
 done=1
