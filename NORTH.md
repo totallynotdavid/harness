@@ -34,3 +34,10 @@ spends attention on decisions that need human judgment.
 
 - Does the pane-idle heuristic remain reliable for harnesses that animate while idle?
 - How should project convention records be refreshed without adding a permanent scheduler?
+- Both harnesses keep a resumable session on disk after their pane closes (`codex resume
+  --last`, `claude --resume <id>`), but Captain records only the pane id, never the
+  harness's own session id. A closed pane today reads as a dead task with no way back,
+  even though the conversation is not actually gone. Claude can be handed a session id at
+  launch (`--session-id`); Codex has no equivalent seen so far, so recovering its id means
+  finding it after the fact. Worth a `cap resume <slug>`, or worth leaving as a manual
+  `claude --resume` / `codex resume` escape hatch?
