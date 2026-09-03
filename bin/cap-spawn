@@ -3,10 +3,11 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 slug=${1:-}; project=${2:-}; shift 2 2>/dev/null || true
-[ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [--scout] [-f BRIEF]"
+[ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [--scout] [-f BRIEF]"
 case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]";; esac
 
 model=""
+effort=""
 harness=$CAP_AGENT_HARNESS
 harness_set=0
 kind=ship
@@ -16,6 +17,7 @@ parent=""
 while [ $# -gt 0 ]; do
   case $1 in
     -m|--model)   model=${2:?}; shift 2 ;;
+    -e|--effort)  effort=${2:?}; shift 2 ;;
     -H|--harness) harness=${2:?}; harness_set=1; shift 2 ;;
     --base)       base=${2:?}; shift 2 ;;
     --stack)      parent=${2:?}; shift 2 ;;
@@ -111,6 +113,7 @@ CAP_PARENT_TIP=$parent_tip
 CAP_MODE=$mode
 CAP_KIND=$kind
 CAP_MODEL=$model
+CAP_EFFORT=$effort
 CAP_HARNESS=$harness
 CAP_STARTED=$(now)
 EOF
@@ -156,9 +159,18 @@ margs=()
 
 case $harness in
   claude)
+    # claude's --effort accepts low|medium|high|xhigh|max and falls back to
+    # the active model's highest supported level on its own (confirmed:
+    # notes/captain/effort-levels.md) - no validation needed here.
+    [ -n "$effort" ] && margs+=(--effort "$effort")
     cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$kick")
     ;;
   codex)
+    # codex has no --effort flag; model_reasoning_effort is a config override,
+    # and which levels a model actually accepts varies by model (e.g. luna
+    # has no "ultra") with no clear client-side rejection of a bad value
+    # (notes/captain/effort-levels.md) - pass through and trust the caller.
+    [ -n "$effort" ] && margs+=(-c "model_reasoning_effort=$effort")
     cmd=("${scrub[@]}" codex "${margs[@]}"
          --dangerously-bypass-approvals-and-sandbox "$kick")
     ;;

@@ -9,8 +9,8 @@ cat <<'EOF'
 cap <command> - run coding agents from one place.
 
 AGENTS
-  cap spawn <slug> <project> [-m MODEL] [-H claude|codex] [--scout]
-                             [--heavy] [--base REF] [--stack SLUG]
+  cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [-H claude|codex]
+                             [--scout] [--heavy] [--base REF] [--stack SLUG]
                              [-f BRIEF|-]                          start an agent
   cap crew [--json]                           show agent status
   cap peek <slug> [lines]                     show recent agent output
