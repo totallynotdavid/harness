@@ -2,6 +2,7 @@
 acueducto-recon	/home/dubu/git/acueducto-recon	pr	-
 atu	/home/dubu/git/atu	pr	-
 atu-p2p-frontend	/home/dubu/git/atu-p2p-frontend	pr	-
+captain	/home/dubu/git/captain	local	-
 chatbot	/home/dubu/git/chatbot	pr	-
 chimes	/home/dubu/git/chimes	pr	-
 claude-code	/home/dubu/git/claude-code	pr	-
@@ -10,6 +11,7 @@ crm	/home/dubu/git/crm	pr	-
 cv	/home/dubu/git/cv	pr	-
 data	/home/dubu/git/data	pr	-
 demo-bug-env	/home/dubu/git/demo-bug-env	pr	-
+dokploy-status	/home/dubu/git/dokploy-status	pr	-
 downloader	/home/dubu/git/downloader	pr	-
 drive	/home/dubu/git/drive	pr	-
 factura	/home/dubu/git/factura	pr	-
@@ -31,6 +33,7 @@ qly	/home/dubu/git/qly	pr	-
 real-state	/home/dubu/git/real-state	pr	-
 scraping	/home/dubu/git/scraping	pr	-
 terminal	/home/dubu/git/terminal	pr	-
+test	/home/dubu/git/test	pr	-
 totallynotdavid.github.io	/home/dubu/git/totallynotdavid.github.io	pr	-
 track	/home/dubu/git/track	pr	-
 twenty	/home/dubu/git/twenty	pr	-
@@ -39,5 +42,3 @@ video-chunker	/home/dubu/git/video-chunker	pr	-
 vision	/home/dubu/git/vision	pr	-
 vulf	/home/dubu/git/vulf	pr	-
 yt_utils	/home/dubu/git/yt_utils	pr	-
-captain	/home/dubu/git/captain	local	-
-test	/home/dubu/git/test	pr	-
