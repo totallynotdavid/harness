@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Block dangerous git commands in this repo.
-# Only checks the start of each command segment.
-# The captain can bypass this guard with CAP_ALLOW_DANGEROUS_GIT=1.
+# Block dangerous git commands. Only checks the start of each command segment.
+# Set CAP_ALLOW_DANGEROUS_GIT=1 to bypass this check.
 set -u
 [ -n "${CAP_ALLOW_DANGEROUS_GIT:-}" ] && exit 0
 
@@ -13,10 +12,8 @@ command -v jq >/dev/null 2>&1 || exit 0
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
 [ -n "$cmd" ] || exit 0
 
-# A force-push rewrites a ref others may already have; a plain push only
-# publishes a branch and is trivial to undo, so only force variants are
-# blocked. Destructive local commands are blocked only for the captain,
-# because agent commands run in isolated worktrees.
+# Agents use isolated worktrees, so only block destructive local commands
+# when Captain runs them directly.
 patterns=()
 if [ -z "${CAP_TASK:-}" ]; then
   patterns+=(
@@ -29,7 +26,8 @@ if [ -z "${CAP_TASK:-}" ]; then
   )
 fi
 
-# Ignore heredoc bodies to avoid matching command text written into files.
+# Ignore heredoc bodies. A heredoc can hold text that looks like a dangerous
+# command but is only being written out or piped as data, not run.
 strip_heredocs() {
   local line delim='' in_heredoc=0
   while IFS= read -r line || [ -n "$line" ]; do
@@ -37,33 +35,41 @@ strip_heredocs() {
       [ "$line" = "$delim" ] && in_heredoc=0
       continue
     fi
+
     if [[ $line =~ \<\<-?[[:space:]]*[\'\"]?([A-Za-z_][A-Za-z0-9_]*)[\'\"]? ]]; then
       delim=${BASH_REMATCH[1]}
       in_heredoc=1
     fi
+
     printf '%s\n' "$line"
   done
 }
 
-# A segment is a force-push if it's `git [-C dir] push ...` with a --force,
-# --force-with-lease, or -f token anywhere after `push`.
+# A force-push rewrites a ref others may already have; a plain push only
+# publishes a branch and is trivial to undo. Force-push is blocked in every
+# process, agent or captain.
 is_force_push() {
   local seg=$1 words i n
   read -ra words <<<"$seg"
   n=${#words[@]}
+
   [ "${words[0]:-}" = git ] || return 1
   i=1
+
   if [ "${words[$i]:-}" = -C ]; then
     i=$((i + 2))
   fi
+
   [ "${words[$i]:-}" = push ] || return 1
   i=$((i + 1))
+
   while [ "$i" -lt "$n" ]; do
     case "${words[$i]}" in
     --force | --force-with-lease | --force-with-lease=* | -f) return 0 ;;
     esac
     i=$((i + 1))
   done
+
   return 1
 }
 
