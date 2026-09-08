@@ -5,6 +5,9 @@
 slug=${1:?usage: cap gate <slug>}
 task_load "$slug"
 
+sync_base "$CAP_TREE" "$CAP_BASE" ||
+  die "$slug: worktree is mid-conflict after syncing onto $CAP_BASE; resolve before gating (see docs/pipeline-notes.md)"
+
 commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
 dirty=$(git_dirty "$CAP_TREE")
 [ "$commits" -gt 0 ] || [ "$dirty" != 0 ] || die "$slug has no changes against $CAP_BASE"

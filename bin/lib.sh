@@ -196,6 +196,48 @@ task_status_latest() {
 }
 
 git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
+
+# Sync a worktree onto the current tip of its base branch before review, so
+# an unrelated task landing on base since this one branched never gets
+# misread by a gate as this branch deleting/reverting that feature (see
+# docs/pipeline-notes.md, "Stale-base false positives"). Safe by
+# construction: proceeds only when both the merge and any stash reapply are
+# conflict-free. On any conflict it leaves the worktree exactly as a human
+# doing this by hand would (merge aborted, or mid-conflict with the original
+# work recoverable from the stash) and reports rather than guessing.
+# Returns 1 only when the worktree is left mid-conflict and should not be
+# gated this round.
+sync_base() {
+  local tree=$1 base=$2 base_tip merge_base dirty stashed=0
+
+  base_tip=$(git -C "$tree" rev-parse "$base" 2>/dev/null) || return 0
+  merge_base=$(git -C "$tree" merge-base HEAD "$base" 2>/dev/null) || return 0
+  [ "$base_tip" = "$merge_base" ] && return 0 # already current
+
+  dirty=$(git_dirty "$tree")
+  if [ "$dirty" != 0 ]; then
+    git -C "$tree" stash push -u -m "cap-gate auto-sync" >/dev/null 2>&1 || {
+      warn "$tree: could not stash before syncing onto $base; gating the stale diff as-is"
+      return 0
+    }
+    stashed=1
+  fi
+
+  if ! git -C "$tree" merge "$base" --no-edit >/dev/null 2>&1; then
+    git -C "$tree" merge --abort >/dev/null 2>&1
+    [ "$stashed" = 1 ] && git -C "$tree" stash pop >/dev/null 2>&1
+    warn "$tree: $base moved and merging it conflicts; gating the stale diff as-is (see docs/pipeline-notes.md)"
+    return 0
+  fi
+
+  if [ "$stashed" = 1 ] && ! git -C "$tree" stash pop >/dev/null 2>&1; then
+    warn "$tree: merged $base, but reapplying stashed work conflicts. The worktree is now mid-conflict; not gating this round. Resolve it (see docs/pipeline-notes.md), ideally by asking the task's own agent to run 'git stash pop' and fix the conflict itself."
+    return 1
+  fi
+
+  printf 'cap: synced %s onto current %s before gating\n' "$tree" "$base" >&2
+  return 0
+}
 git_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null || echo '-'; }
 git_base() {
   local b
