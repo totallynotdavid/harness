@@ -22,4 +22,6 @@ Agents do not commit or deliver. The captain decides whether work lands or is di
 `cap check` compares tracked worktree changes with the base and lists untracked files.
 
 For comment cleanup, read `rules/comments.md`. For commit shape, read `rules/commits.md`.
-For code style, read `rules/code.md`.
+For code style, read `rules/code.md`. For gate economics and known pipeline pitfalls
+(stale-base false positives, the trust-file race, session-limit recognition), read
+`docs/pipeline-notes.md` before running many `cap gate` rounds on the same task.

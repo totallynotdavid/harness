@@ -33,9 +33,50 @@ harness_trust "$harness" "$dir"
 margs=()
 [ "$model" != '-' ] && margs=(--model "$model")
 
+# Resuming after a session-limit rejection (see docs/pipeline-notes.md).
+# Claude-harness only: this is the account-quota rejection cap-ask detects
+# below, which codex/luna does not hit. Keyed on the exact (profile, dir,
+# prompt) triple so a genuine retry of the same call finds it, and any
+# other call does not. Policy is a hard threshold, not a judgment call:
+#   - pending session under 30% context used  -> resume directly.
+#   - pending session at/above 30%            -> start fresh, UNLESS the
+#     caller explicitly sets CAP_ASK_RESUME=force, in which case resume but
+#     always compact first (never resume a large session uncompacted).
+resume_id=""
+resume_compact=0
+resume_file=""
+if [ "$harness" = claude ]; then
+  resume_key=$(printf '%s\x1e%s\x1e%s' "$profile" "$dir" "$prompt" | sha256sum | cut -c1-16)
+  resume_file="$CAP_HOME/state/ask-resume/$resume_key.json"
+  if [ -f "$resume_file" ]; then
+    prev_id=$(jq -r '.session_id // empty' "$resume_file" 2>/dev/null || true)
+    prev_ctx=$(jq -r '.ctx_pct // empty' "$resume_file" 2>/dev/null || true)
+    if [ -n "$prev_id" ]; then
+      if [ -n "$prev_ctx" ] && [ "$prev_ctx" -lt 30 ] 2>/dev/null; then
+        resume_id=$prev_id
+      elif [ "${CAP_ASK_RESUME:-}" = force ]; then
+        resume_id=$prev_id
+        resume_compact=1
+      else
+        warn "pending session $prev_id is at ${prev_ctx:-an unknown}% context (>=30%); starting fresh instead of resuming. Set CAP_ASK_RESUME=force to resume it (always compacts first)."
+        rm -f "$resume_file"
+      fi
+    fi
+  fi
+fi
+
+continue_prompt="Continue exactly where you left off in this conversation and finish the task. If you already reached a final conclusion before being interrupted, just restate it clearly now."
+
+launch_prompt=$prompt
+resume_args=()
+if [ -n "$resume_id" ]; then
+  resume_args=(--resume "$resume_id")
+  launch_prompt=$([ "$resume_compact" = 1 ] && printf '/compact' || printf '%s' "$continue_prompt")
+fi
+
 case $harness in
   claude)
-    cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$prompt")
+    cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" claude "${resume_args[@]}" "${margs[@]}" $CAP_AGENT_FLAGS "$launch_prompt")
     ;;
   codex)
     cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" codex "${margs[@]}"
@@ -60,8 +101,40 @@ done
 herdr agent wait "$pane" >/dev/null 2>&1 ||
   die "herdr agent wait failed for $pane"
 
+# Compact-then-continue is two turns in the same session: /compact above,
+# then the real continuation prompt submitted into the same still-open pane.
+if [ "$resume_compact" = 1 ]; then
+  herdr agent prompt "$pane" "$continue_prompt" --wait >/dev/null 2>&1 || true
+  herdr agent wait "$pane" >/dev/null 2>&1 ||
+    die "herdr agent wait failed for $pane (after compact)"
+fi
+
 out=$(herdr pane read "$pane" --source recent-unwrapped --format text 2>/dev/null)
+
+session_id=""
+if [ "$harness" = claude ]; then
+  session_id=$(herdr agent get "$pane" 2>/dev/null | jq -r '.result.agent.agent_session.value // empty' 2>/dev/null || true)
+fi
 
 herdr pane close "$pane" >/dev/null 2>&1
 
 printf '%s\n' "$out"
+
+# The claude harness can silently truncate its response when the account is
+# out of quota, producing output that looks like a terse-but-normal answer.
+# Fail loudly and distinctly instead of letting a caller mistake this for a
+# real result (e.g. an empty gate verdict) - and record enough to resume
+# this exact call next time instead of paying to re-derive it from scratch.
+if [ "$harness" = claude ] && printf '%s' "$out" | grep -qF "hit your session limit"; then
+  reset_at=$(printf '%s' "$out" | grep -oE "resets [^·]*\(UTC\)" | head -1)
+  ctx_pct=$(printf '%s' "$out" | grep -oE "ctx [0-9]+% used" | grep -oE '[0-9]+' | head -1)
+  if [ -n "$session_id" ] && [ -n "$resume_file" ]; then
+    mkdir -p "$(dirname "$resume_file")"
+    jq -n --arg id "$session_id" --arg ctx "${ctx_pct:-100}" \
+      '{session_id: $id, ctx_pct: ($ctx | tonumber)}' >"$resume_file" 2>/dev/null || true
+  fi
+  die "claude harness hit its session limit (${reset_at:-reset time unknown}); output above is truncated, not a real result. Retrying this exact call later will resume session ${session_id:-unknown} (recorded at ${ctx_pct:-unknown}% context)."
+fi
+
+# A retry that succeeded past a recorded rejection has nothing left to resume.
+[ -n "$resume_file" ] && rm -f "$resume_file"
