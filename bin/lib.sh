@@ -211,6 +211,11 @@ harness_trust() {
   case $harness in
   claude)
     [ -f "$HOME/.claude.json" ] || return 0
+    # Skip the read-modify-write when already trusted: every call used to
+    # rewrite this shared file unconditionally, so N parallel gate/ask calls
+    # raced on the same mv and one crashed with "File exists".
+    jq -e --arg d "$dir" '.projects[$d].hasTrustDialogAccepted == true' \
+      "$HOME/.claude.json" >/dev/null 2>&1 && return 0
     tmpj=$(mktemp)
     if jq --arg d "$dir" '.projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true})' \
          "$HOME/.claude.json" >"$tmpj" 2>/dev/null && [ -s "$tmpj" ]; then
