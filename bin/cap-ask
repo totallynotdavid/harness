@@ -60,7 +60,16 @@ margs=()
 # Claude-harness only: this is the account-quota rejection cap-ask detects
 # below, which codex/luna does not hit. Keyed on the exact (profile, dir,
 # prompt) triple so a genuine retry of the same call finds it, and any
-# other call does not. Policy is a hard threshold, not a judgment call:
+# other call does not.
+#
+# A caller whose prompt stays byte-identical across calls that mean different
+# things must add its own discriminator in CAP_ASK_KEY. cap-gate sends the same
+# review prompt every round, so without one, a gate round resumed the previous
+# round's finished review and it restated that verdict verbatim: local-env's
+# Gate A reported a defect that had already been fixed, against a worktree it
+# never read. cap-gate passes the worktree fingerprint.
+#
+# Policy is a hard threshold, not a judgment call:
 #   - pending session under 30% context used  -> resume directly.
 #   - pending session at/above 30%            -> start fresh, UNLESS the
 #     caller explicitly sets CAP_ASK_RESUME=force, in which case resume but
@@ -69,7 +78,8 @@ resume_id=""
 resume_compact=0
 resume_file=""
 if [ "$harness" = claude ]; then
-  resume_key=$(printf '%s\x1e%s\x1e%s' "$profile" "$dir" "$prompt" | sha256sum | cut -c1-16)
+  resume_key=$(printf '%s\x1e%s\x1e%s\x1e%s' \
+    "$profile" "$dir" "$prompt" "${CAP_ASK_KEY:-}" | sha256sum | cut -c1-16)
   resume_file="$CAP_HOME/state/ask-resume/$resume_key.json"
   if [ -f "$resume_file" ]; then
     prev_id=$(jq -r '.session_id // empty' "$resume_file" 2>/dev/null || true)

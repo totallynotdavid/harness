@@ -79,8 +79,12 @@ for pair in "${profiles[@]}"; do
   # truncated the report before the review had produced a byte, so a session
   # that died on a quota rejection destroyed the last good one: local-env's
   # gate-A.md was found at zero bytes with the previous round's findings gone.
+  # The review prompt is byte-identical every round, so cap-ask's resume key
+  # cannot tell one round from the next on its own. Without the fingerprint it
+  # resumed the previous round's finished review, which restated its old
+  # verdict against code it had never read.
   tmp=$(mktemp)
-  if ! "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$tmp"; then
+  if ! CAP_ASK_KEY=$fp "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$tmp"; then
     warn "gate $label ($profile) did not run to completion"
   fi
   printf '\n'
