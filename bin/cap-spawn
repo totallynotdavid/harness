@@ -73,6 +73,12 @@ fi
 # Resolve model names that refer to cap-ask profiles.
 if [ "$harness_set" = 0 ] &&
   printf '%s\n' "$CAP_ASK_PROFILES" | awk -v p="$model" '$1==p{f=1} END{exit !f}' 2>/dev/null; then
+  # Check before the worktree exists. A profile naming a model the account
+  # cannot reach fails on the agent's first turn, long after cap spawn has
+  # built a worktree and taken a pane for it.
+  if ! problem=$(profile_check "$model"); then
+    die "profile '$model': $problem (run cap models)"
+  fi
   read -r harness model profile_effort <<<"$(ask_profile "$model")"
   # -e on the command line beats the profile's own default.
   [ -n "$effort" ] || [ "$profile_effort" = '-' ] || effort=$profile_effort

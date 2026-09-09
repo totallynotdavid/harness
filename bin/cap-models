@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# cap-models - what each harness offers, and whether the profile table agrees.
+#
+# The profile table in config/captain.conf names models and reasoning efforts.
+# Those are facts about the account, and one harness will state them, so this
+# is where a captain checks the table against reality instead of against
+# memory. It answers three questions: what can this account reach, does every
+# profile still name something real, and what is going unused.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+# The catalog is cached for a day, which is right for a list that changes when
+# a provider ships a model. --refresh is for the day one ships.
+if [ "${1:-}" = --refresh ]; then
+  rm -f "$CAP_USAGE_DIR/codex-models.json"
+  shift
+fi
+
+# Normalised to four fields so awk, jq and read all see the same rows.
+rows=$(printf '%s\n' "$CAP_ASK_PROFILES" | awk 'NF {print $1, $2, $3, ($4 == "" ? "-" : $4)}')
+
+catalog=""
+if ! catalog=$(codex_catalog); then
+  warn "the codex app-server did not answer; codex profiles are unchecked"
+fi
+
+if [ -n "$catalog" ]; then
+  printf 'CODEX MODELS\n'
+  {
+    printf 'MODEL\tDEFAULT\tACCEPTS\tPROFILE\n'
+    printf '%s' "$catalog" | jq -r --arg rows "$rows" '
+      ($rows | split("\n") | map(split(" ")) | map(select(length == 4))) as $p
+      | (.data // [])[]
+      | . as $m
+      | ($p | map(select(.[1] == "codex" and .[2] == $m.model)) | map(.[0]) | join(",")) as $claimed
+      | [$m.model,
+         ($m.defaultReasoningEffort // "-"),
+         ((.supportedReasoningEfforts // []) | map(.reasoningEffort) | join(" ")),
+         (if $claimed == "" then "-" else $claimed end)]
+      | @tsv'
+  } | column -t -s $'\t' | sed 's/^/  /'
+  printf '\n'
+fi
+
+# The claude harness has no equivalent request. Its aliases resolve at session
+# start and bin/cap-statusline records what they resolved to, so the only
+# honest report here is what Captain has actually watched a session run under.
+printf 'CLAUDE MODELS\n'
+printf '  no catalog request exists; aliases resolve at session start\n'
+if usage_files; then
+  seen=$(jq -rs '
+    map(select((.harness // "claude") == "claude" and (.model_id // "") != ""))
+    | group_by(.model_id) | map(max_by(.at)) | sort_by(.at) | reverse
+    | map([.model_id, "seen \((now - .at) / 3600 | floor)h ago as \(.model)"] | @tsv)
+    | join("\n")' "$CAP_USAGE_DIR"/*.json 2>/dev/null || true)
+  if [ -n "$seen" ]; then
+    printf '%s\n' "$seen" | column -t -s $'\t' | sed 's/^/  /'
+  fi
+fi
+printf '\n'
+
+# Check before printing. A while loop on the left of a pipe runs in a subshell,
+# so a verdict set inside one never reaches the exit status.
+report=""
+bad=0
+while read -r name harness model effort; do
+  if problem=$(profile_check "$name"); then
+    status=ok
+  else
+    status=$problem
+    bad=1
+  fi
+  report+=$(printf '%s\t%s\t%s\t%s\t%s' "$name" "$harness" "$model" "$effort" "$status")$'\n'
+done <<<"$rows"
+
+printf 'PROFILES\n'
+{ printf 'PROFILE\tHARNESS\tMODEL\tEFFORT\tSTATUS\n'; printf '%s' "$report"; } |
+  column -t -s $'\t' | sed 's/^/  /'
+
+# A wrong table is a failed dispatch, so say so in the exit status too.
+if [ "$bad" != 0 ]; then
+  printf '\n'
+  warn "a profile names something its harness does not offer; fix config/captain.conf"
+  exit 1
+fi

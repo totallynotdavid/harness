@@ -35,6 +35,7 @@ Run `cap help` for all flags.
 | `cap reconcile [--remote]` | Show open work across projects. |
 | `cap project <name> [mode] [model]` | Show or change project settings. |
 | `cap budget` | Show measured quota, and what each dispatch role resolves to now. |
+| `cap models [--refresh]` | Show what each harness offers, and check the profile table against it. |
 | `cap papercut "<text>"` | Log a problem with Captain. |
 | `cap explore <owner/repo> [--fresh]` | Clone a repo for inspection. |
 | `cap history --repo <name>\|--task <slug> [opts]` | Search past agent sessions. |

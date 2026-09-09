@@ -32,6 +32,7 @@ CONSULT
   cap ask <profile|@role> "<prompt>" [--dir D] run a one-shot agent
   cap ask --list                              list profiles
   cap budget                                  show what can be dispatched now
+  cap models [--refresh]                      show what each harness offers
 
 REPO
   cap map [--sync]                            rebuild map.md; --sync adds new projects
@@ -51,7 +52,7 @@ EOF
 
 cmd=${1:-help}; shift || true
 case $cmd in
-  spawn|crew|peek|send|watch|land|restack|drop|ask|budget|cleanup|commit|gate|map|reconcile|papercut|project|skills|check|verify|conventions|explore|history)
+  spawn|crew|peek|send|watch|land|restack|drop|ask|budget|models|cleanup|commit|gate|map|reconcile|papercut|project|skills|check|verify|conventions|explore|history)
     exec "$CAP_HOME/bin/cap-$cmd" "$@" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 1 ;;

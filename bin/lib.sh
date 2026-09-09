@@ -533,14 +533,132 @@ CAP_BLOCK_DIR=$CAP_HOME/state/usage/blocked
 
 usage_files() { compgen -G "$CAP_USAGE_DIR/*.json" >/dev/null 2>&1; }
 
-# The codex harness has no status line hook, so nothing records a reading for
-# it as it runs. It does write one to disk anyway: every turn appends a
-# token_count event to the session's rollout, and that event carries the same
-# two windows the claude harness reports, under different names. primary is the
-# five-hour window, secondary the weekly one.
+# --- what the harness offers -----------------------------------------------
 #
-# The same record also carries plan_type ("plus", "pro"). Captain does not read
-# it. Knowing the percentage is measuring the account; knowing the plan is
+# A profile names a model and a reasoning effort. Both are facts about the
+# account rather than settings, and codex will state them on request: its
+# app-server answers model/list with every model the account can reach, each
+# one carrying the efforts it accepts and the effort it defaults to. Captain
+# asks instead of guessing, so a profile naming a retired model or an effort
+# its model does not take fails at cap models, not three minutes into a review.
+#
+# What the catalog does not carry, and never will, is which tier a model
+# belongs to. It says gpt-5.6-terra exists and accepts xhigh. It does not say
+# terra is the right reviewer for work that has to be right the first time.
+# Facts are discovered. That judgment stays in config/captain.conf.
+#
+# The claude harness publishes no equivalent, so its profiles go unchecked.
+# Its aliases (opus, sonnet, haiku, fable) resolve at session start and the
+# status line reports what they resolved to, which is discovery after the fact.
+
+# One JSON-RPC round trip to the codex app-server. The server answers
+# asynchronously and interleaves notifications, so this holds the request pipe
+# open until the reply carrying the matching id arrives. Writing both requests
+# and closing stdin does not work: the server sees EOF and exits before it has
+# answered.
+codex_rpc() {
+  local method=$1 params=${2:-'{}'} d writer server rc=1 i
+  command -v codex >/dev/null 2>&1 || return 1
+  d=$(mktemp -d) || return 1
+  if ! mkfifo "$d/in" 2>/dev/null; then
+    rm -rf "$d"
+    return 1
+  fi
+  {
+    printf '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"captain","version":"1"}}}\n'
+    printf '{"id":2,"method":"%s","params":%s}\n' "$method" "$params"
+    # Become the sleep, so killing this pid closes the write end of the fifo.
+    exec sleep 30
+  } >"$d/in" 2>/dev/null &
+  writer=$!
+  timeout 30 codex app-server <"$d/in" >"$d/out" 2>/dev/null &
+  server=$!
+  for ((i = 0; i < 100; i++)); do
+    if grep -q '"id":2' "$d/out" 2>/dev/null; then
+      rc=0
+      break
+    fi
+    if ! kill -0 "$server" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  kill "$writer" "$server" 2>/dev/null || true
+  wait "$writer" "$server" 2>/dev/null || true
+  if [ "$rc" = 0 ]; then grep -h '"id":2' "$d/out" | tail -1; fi
+  rm -rf "$d"
+  return "$rc"
+}
+
+# The result of one app-server method, cached on disk. Sizing is supposed to be
+# free, so nothing here may cost a dispatch a network round trip it can avoid.
+# A failure is cached too, as an empty file: a codex that is logged out or
+# offline would otherwise charge every single dispatch a fresh timeout.
+codex_cached() {
+  local file=$1 ttl=$2 method=$3 params=${4:-'{}'} age out
+  mkdir -p "$CAP_USAGE_DIR" 2>/dev/null || return 1
+  file=$CAP_USAGE_DIR/$file
+  if [ -f "$file" ]; then
+    age=$(($(now) - $(stat -c %Y "$file" 2>/dev/null || echo 0)))
+    if [ "$age" -lt "$ttl" ]; then
+      [ -s "$file" ] || return 1
+      cat "$file"
+      return 0
+    fi
+  fi
+  out=$(codex_rpc "$method" "$params" 2>/dev/null | jq -c '.result // empty' 2>/dev/null) || out=""
+  if [ -z "$out" ] && [ -s "$file" ]; then
+    # A catalog from yesterday is still the catalog. Keep it and stop asking
+    # for one TTL rather than throwing away the only answer Captain has.
+    touch "$file"
+    cat "$file"
+    return 0
+  fi
+  printf '%s' "$out" >"$file"
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+# Every model this account can reach, as the harness reports it. Cached for a
+# day: the list changes when OpenAI ships a model, not between dispatches.
+codex_catalog() { codex_cached codex-models.json 86400 model/list '{"includeHidden":false}'; }
+
+# Whether a profile names something the harness will accept. Prints what is
+# wrong and returns 1 when it does not. Silent and successful when the profile
+# is fine, when its harness publishes no catalog, and when the catalog cannot
+# be read at all, because "Captain could not check" is not "the captain is
+# wrong".
+profile_check() {
+  local profile=$1 harness model effort catalog problem
+  read -r harness model effort <<<"$(ask_profile "$profile")"
+  [ "$harness" = codex ] || return 0
+  [ "$model" != '-' ] || return 0
+  catalog=$(codex_catalog) || return 0
+  problem=$(printf '%s' "$catalog" | jq -r --arg m "$model" --arg e "$effort" '
+    (.data // []) as $all
+    | ($all | map(select(.model == $m or .id == $m)) | first) as $found
+    | if $found == null then
+        "codex has no model \($m); it offers \($all | map(.model) | join(", "))"
+      elif $e != "-" and (($found.supportedReasoningEfforts // []) | map(.reasoningEffort) | index($e)) == null then
+        "\($m) does not accept effort \($e); it accepts \(($found.supportedReasoningEfforts // []) | map(.reasoningEffort) | join(", "))"
+      else empty end
+  ' 2>/dev/null) || return 0
+  [ -n "$problem" ] || return 0
+  printf '%s' "$problem"
+  return 1
+}
+
+# The codex harness has no status line hook, so nothing records a reading for
+# it as it runs. Two places have one anyway.
+#
+# The app-server answers account/rateLimits/read with the windows as they stand
+# right now. That is the reading Captain wants, because the moment it most needs
+# to know whether codex has room is the moment no codex session is running.
+#
+# Failing that, every turn appends a token_count event to the session's rollout,
+# carrying the same two windows under snake_case names. It is a real reading but
+# a retrospective one: it is exactly as old as the last codex turn.
+#
+# Both records also carry plan_type ("plus", "pro"). Captain does not read it.
+# Knowing the percentage is measuring the account; knowing the plan is
 # describing it, and a description is the thing that goes stale.
 codex_rollout() {
   find "$HOME/.codex/sessions" -type f -name 'rollout-*.jsonl' -newermt '-24 hours' \
@@ -554,12 +672,36 @@ codex_limit_reached() {
   codex_rate_limits | jq -r '.rate_limit_reached_type // empty' 2>/dev/null || true
 }
 
-codex_rate_limits() {
+codex_rollout_limits() {
   local f
   f=$(codex_rollout)
   [ -n "$f" ] || return 1
   grep -h '"rate_limits"' "$f" 2>/dev/null | tail -1 |
     jq -e '.payload.rate_limits // empty' 2>/dev/null
+}
+
+# The live reading when the app-server answers, the rollout when it does not.
+# The two spell the same fields differently, so the live one is renamed into the
+# rollout's shape and every caller below stays written once. The source travels
+# with the reading so cap budget can say which one a number came from.
+codex_rate_limits() {
+  local live
+  if live=$(codex_cached codex-limits.json "${CAP_USAGE_TTL:-900}" account/rateLimits/read); then
+    if printf '%s' "$live" | jq -e '
+      .rateLimits
+      | {primary: (if .primary then {used_percent: .primary.usedPercent,
+                                     resets_at: .primary.resetsAt,
+                                     window_minutes: .primary.windowDurationMins} else null end),
+         secondary: (if .secondary then {used_percent: .secondary.usedPercent,
+                                         resets_at: .secondary.resetsAt,
+                                         window_minutes: .secondary.windowDurationMins} else null end),
+         rate_limit_reached_type: .rateLimitReachedType,
+         source: "app-server"}
+    ' 2>/dev/null; then
+      return 0
+    fi
+  fi
+  codex_rollout_limits | jq -e '. + {source: "rollout"}' 2>/dev/null
 }
 
 
@@ -605,7 +747,7 @@ usage_read() {
       (now) as $n
       | (if (.primary.resets_at // 0) > $n then (.primary.used_percent // 0) else 0 end) as $p
       | (if (.secondary.resets_at // 0) > $n then (.secondary.used_percent // 0) else 0 end) as $s
-      | "\([$p, $s] | max | floor) \(.primary.resets_at // 0) rollout"
+      | "\([$p, $s] | max | floor) \(.primary.resets_at // 0) \(.source // "rollout")"
     ' 2>/dev/null) || out=""
     if [ -n "$out" ]; then
       printf '%s\n' "$out"
@@ -648,7 +790,9 @@ usage_detail() {
       ;;
     codex:*)
       codex_rate_limits | jq -r '
-        "5h \(.primary.used_percent // 0 | floor)%, 7d \(.secondary.used_percent // 0 | floor)%, from the newest codex rollout"
+        (if .source == "app-server" then "live from the codex app-server"
+         else "from the newest codex rollout" end) as $src
+        | "5h \(.primary.used_percent // 0 | floor)%, 7d \(.secondary.used_percent // 0 | floor)%, \($src)"
       ' 2>/dev/null || true
       ;;
   esac

@@ -59,6 +59,19 @@ no peer is admissible Captain refuses and says when capacity returns.
 
 `cap budget` shows the readings, the tiers, and what each role resolves to.
 
+The model and effort a profile names are facts about the account, so Captain asks rather
+than trusting the table. The codex app-server answers `model/list` with every model the
+account can reach and the efforts each one accepts, and `cap models` prints that against
+`CAP_ASK_PROFILES`: a profile naming a model or an effort the account does not have is
+refused by `cap ask` and `cap spawn` before a session starts. The claude harness publishes
+no equivalent, so its aliases go unchecked and `cap models` reports only what the status
+line has watched a session resolve them to.
+
+Which tier a model belongs to is not in that answer and never will be. The catalog says
+`gpt-5.6-terra` exists and accepts `xhigh`. It does not say terra is the right reviewer for
+work that has to be right the first time. Facts are discovered; that judgment stays in
+`config/captain.conf`.
+
 ## Project conventions
 
 `cases/<project>/conventions.md` stores project-specific checks.

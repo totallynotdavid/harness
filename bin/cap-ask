@@ -33,7 +33,19 @@ dir=$PWD
 
 [ "$prompt" = "-" ] && prompt=$(cat)
 
-read -r harness model effort <<<"$(ask_profile "$profile")"
+# ask_profile dies inside the command substitution, which only kills the
+# subshell. Without this the run carried on with an empty harness and reported
+# " is not installed" underneath the real error.
+pair=$(ask_profile "$profile") || exit 1
+read -r harness model effort <<<"$pair"
+
+# Refuse a profile the account cannot actually run. The harness accepts any
+# model string on the command line and only fails on the first turn, which
+# costs a pane and reads as an agent problem rather than a configuration one.
+# Silent when the profile is fine, and when the harness cannot be asked.
+if ! problem=$(profile_check "$profile"); then
+  die "profile '$profile': $problem (run cap models)"
+fi
 
 have "$harness" || die "$harness is not installed"
 require_herdr
