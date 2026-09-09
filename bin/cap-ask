@@ -146,7 +146,12 @@ if [ "$resume_compact" = 1 ]; then
     die "herdr agent wait failed for $pane (after compact)"
 fi
 
-out=$(herdr pane read "$pane" --source recent-unwrapped --format text 2>/dev/null)
+# Without --lines, herdr reads only the visible viewport (~80 lines), not the
+# scrollback. A long review response silently loses its earliest findings -
+# the tail (verdict, cost line) survives, the top does not. 1000 is herdr's
+# own hard ceiling for this call (anything >= 1000 returns the same 999
+# lines); asking for more buys nothing.
+out=$(herdr pane read "$pane" --source recent-unwrapped --format text --lines 1000 2>/dev/null)
 
 session_id=""
 if [ "$harness" = claude ]; then
