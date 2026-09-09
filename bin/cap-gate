@@ -37,11 +37,26 @@ mkdir -p "$TASKS/$slug"
 # Both are roles, not models. cap-ask sizes each one against the account's
 # current window, so a gate round late in a heavy day runs a smaller reviewer
 # instead of failing to run at all.
+# Resolve both gates here rather than letting each cap-ask call size itself.
+# Independently sized, the two ladders converge on the same profile once the
+# window fills, and a gate reviewed twice by one model is not two opinions.
+# Gate B steps down instead, which is the cheaper concession to make.
 profiles=()
+gate_a=""
 if [ "$full" = 1 ]; then
-  profiles+=("A @gate-a")
+  gate_a=$(role_profile_or_die gate-a)
+  profiles+=("A $gate_a")
 fi
-profiles+=("B @gate-b")
+gate_b=$(role_profile gate-b "$gate_a" || true)
+if [ -z "$gate_b" ]; then
+  if [ -n "$gate_a" ]; then
+    warn "no second profile is available below $gate_a; running gate B on $gate_a too, which is one opinion, not two"
+    gate_b=$gate_a
+  else
+    gate_b=$(role_profile_or_die gate-b)
+  fi
+fi
+profiles+=("B $gate_b")
 
 fp=$(gate_fingerprint "$CAP_TREE" "$CAP_BASE")
 

@@ -640,8 +640,10 @@ role_ladder() {
 # ladder strongest first and takes the first rung that the account has not
 # rejected, that is not stronger than the captain's own session, and whose
 # utilization ceiling the current reading is still under.
+# The optional second argument is a profile to skip, so a caller that needs two
+# genuinely independent opinions can ask for a second one.
 role_profile() {
-  local role=$1 ladder rung profile top pct ceil rank
+  local role=$1 avoid=${2:-} ladder rung profile top pct ceil rank
   ladder=$(role_ladder "$role")
   [ -n "$ladder" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
 
@@ -651,6 +653,9 @@ role_profile() {
   for rung in $ladder; do
     profile=${rung%%:*}
     top=${rung##*:}
+    if [ "$profile" = "$avoid" ]; then
+      continue
+    fi
     if profile_blocked "$profile"; then
       continue
     fi
