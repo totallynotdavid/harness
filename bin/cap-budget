@@ -5,13 +5,13 @@
 # a captain looks when the answer surprises them.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-# One line per harness that any ladder actually reaches for. A harness with no
+# One line per harness that any tier actually reaches for. A harness with no
 # reading is reported as unmeasured rather than left out, because "Captain is
 # not watching this account at all" is the thing a captain most needs told.
 harnesses=$(
-  for role in crew scout gate-a gate-b chore; do
-    for rung in $(role_ladder "$role"); do
-      ask_profile "${rung%%:*}" | awk '{print $1}'
+  for tier in heavy standard cheap; do
+    for profile in $(tier_peers "$tier"); do
+      ask_profile "$profile" 2>/dev/null | awk '{print $1}'
     done
   done | sort -u
 )
@@ -28,24 +28,6 @@ for h in $harnesses; do
   fi
 done
 
-case ${CAP_CEILING:-auto} in
-  none) printf '\nceiling      none\n' ;;
-  auto)
-    m=$(captain_model)
-    if [ -n "$m" ]; then
-      # Name the rung rather than its rank. The rank is an implementation
-      # detail; the profile is the thing a captain would pin by hand.
-      top=$(printf '%s\n' "${CAP_PROFILE_RANK:-}" | tr ' ' '\n' |
-        awk -F: -v c="$(ceiling_rank)" '$2==c {print $1; exit}')
-      printf '\nceiling      %s on %s (auto: this session is running %s)\n' \
-        "${top:-none}" "$(captain_harness)" "$m"
-    else
-      printf '\nceiling      none (auto, but no status line reading from %s yet)\n' "$CAP_HOME"
-    fi
-    ;;
-  *) printf '\nceiling      %s (pinned)\n' "$CAP_CEILING" ;;
-esac
-
 blocked=""
 for f in "$CAP_BLOCK_DIR"/*; do
   [ -f "$f" ] || continue
@@ -56,9 +38,12 @@ for f in "$CAP_BLOCK_DIR"/*; do
 done
 printf 'rate limited %s\n' "${blocked:-none}"
 
-printf '\n%-9s %-10s %s\n' ROLE DISPATCHES LADDER
+printf '\n%-9s %-9s %-8s %-4s %s\n' ROLE TIER DISPATCH ADMIT PEERS
 for role in crew scout gate-a gate-b chore; do
-  printf '%-9s %-10s %s\n' "$role" "$(role_profile "$role" || printf -- '-')" "$(role_ladder "$role")"
+  tier=$(role_tier "$role")
+  printf '%-9s %-9s %-8s %-4s %s\n' \
+    "$role" "$tier" "$(role_profile "$role" || printf -- '-')" \
+    "$(tier_admit "$tier")" "$(tier_peers "$tier")"
 done
 
 if [ -s "$CAP_DISPATCH_LOG" ]; then

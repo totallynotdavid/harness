@@ -41,30 +41,23 @@ Agents write code. Captain handles commits, delivery, and cleanup.
 
 `scout` writes a report without delivering code changes.
 
-## Models, profiles and roles
+## Models, profiles, tiers and roles
 
-A profile is a harness plus a model, named in `config/captain.conf`. `cap ask <profile>`
-runs a one-shot agent under one.
+A profile is a harness, a model and a default effort, named in `config/captain.conf`.
+`cap ask <profile>` runs a one-shot agent under one.
+
+A tier is a capability class: `heavy`, `standard`, `cheap`. Its members are interchangeable
+for the kind of thinking it names and live on different accounts on purpose.
 
 A role is what a dispatch is for: `crew`, `scout`, `gate-a`, `gate-b`, `chore`. Each role
-has a ladder of profiles, strongest first, and Captain picks a rung when the dispatch
-happens rather than when the config was written. `cap ask @gate-a` and an unpinned
-`cap spawn` both go through a ladder; `cap ask sonnet` and `cap spawn -m opus` do not.
+belongs to a tier and does not leave it.
 
-Captain picks the rung from two measurements, never from a plan or a quota tier:
+Captain resolves a role at the moment of dispatch, from measurements only: the account's
+rate-limit windows, and whether a harness has actually rejected a profile. A full window
+moves work to a peer on another account. It never moves work to a smaller model, and when
+no peer is admissible Captain refuses and says when capacity returns.
 
-- The account's rate-limit windows, which the harness reports to the status line and
-  `bin/cap-statusline` records for every session in the fleet. Each rung declares the
-  utilization it is still worth spending at, so the fleet steps down as the window fills
-  and back up after it resets.
-- Whether the harness has actually rejected a profile for a session limit. A rejected
-  profile leaves every ladder until its window resets.
-
-`CAP_CEILING=auto` also keeps a dispatch at or below the model the captain's own session
-is running. That is the one model choice the user made deliberately, and it is the only
-evidence Captain needs about what the account can afford.
-
-`cap budget` shows the current reading and what each role resolves to.
+`cap budget` shows the readings, the tiers, and what each role resolves to.
 
 ## Project conventions
 

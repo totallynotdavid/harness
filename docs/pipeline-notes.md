@@ -160,63 +160,81 @@ for panes with `"agent_status":"unknown"` sitting in a task's worktree (a leftov
 with no tracked agent, from a call that crashed or never got its `herdr pane close`).
 `kill -9` genuine orphaned processes; `herdr pane close <pane_id>` empty leftover panes.
 
-## Dispatch sizing: measure the account, do not describe it
+## Dispatch sizing: quota routes work, it does not cheapen it
 
 Captain used to name a model at every dispatch site (`CAP_AGENT_MODEL`, `CAP_GATE_A`, and
-so on). That is a description of one account on one day. It is wrong for a different plan,
-and it is wrong for the same plan six hours later.
+so on). That is a description of one account on one day, wrong for a different plan and
+wrong for the same plan six hours later.
 
-Every dispatch now names a role and resolves it at the moment it runs, from two things
-Captain can actually measure:
+Every dispatch now names a role. A role belongs to a capability tier and never leaves it:
 
-- The rate-limit windows the harness reports to the status line. `bin/cap-statusline`
-  prints the line and records the reading in `state/usage/<session>.json`. Every session
-  Captain starts renders it, so the whole fleet keeps the reading fresh for free, with no
-  agent, no API call and no polling.
-- Session-limit rejections. `cap ask` already recognised these; it now also writes the
-  profile to `state/usage/blocked/<profile>` until the reported reset time, which takes
-  that profile out of every ladder.
+| tier | what it is for | peers |
+| --- | --- | --- |
+| `heavy` | judgment that has to be right the first time | `opus`, `terra` |
+| `standard` | follows a brief, writes code, reviews code | `sonnet`, `terra` |
+| `cheap` | narrow, well-specified work: commits, comment cleanup, lookups | `haiku`, `luna` |
 
-Wire the status line up once, in `~/.claude/settings.json`:
+`crew`, `scout` and `gate-b` are `standard`. `gate-a` is `heavy`. `chore`, which is
+`cap cleanup` and `cap commit`, is `cheap`.
 
-```json
-"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }
-```
+The peers inside a tier are interchangeable in capability and deliberately live on
+different accounts. That is where quota acts: when the claude window fills, `standard` work
+moves to `terra` on the codex account, at the same capability. It does not move to `haiku`.
+A smaller model is not a cheaper version of the same agent, it is a different agent that
+makes different decisions, and a bad decision is paid for twice: once for the session that
+made it, again for the rounds that find and undo it.
 
-Without it Captain reports `unmeasured` and dispatches the top of each ladder. That is the
-deliberate failure mode: an unreadable meter is a reason to stop holding back, not a
-reason to stop working. The harness also caches a reading in `~/.claude.json`, which
-`cap budget` will fall back to, but that cache is refreshed rarely - it was 25 hours stale
-and reporting 3% while the live windows were at 70%, so it is a fallback and nothing more.
+Quota gets exactly two powers. It chooses which account runs the work, and it decides
+whether the work starts at all. `CAP_ADMIT_*` is the utilization above which a tier stops
+being admitted: 88 for heavy, 92 for standard, 97 for cheap. A crew agent runs for hours,
+so one started at 95% dies mid-task; a short cheap call can safely use what is left. When
+no peer is admissible, `cap spawn` and `cap gate` refuse and name the earliest time
+capacity returns. Refusing is the correct answer. The gap below 100 is also the headroom
+the captain's own session runs on.
 
-Readings are per harness. An Anthropic window says nothing about an OpenAI one, so a codex
-rung is never sized against the claude meter.
+`--heavy` raises the tier rather than bypassing the sizing, because starting a heavy agent
+on an exhausted account is the failure this exists to prevent. `-m <model>` is the escape
+hatch for a captain who means to spend it anyway.
+
+### Where the numbers come from
+
+Two measurements, no settings that describe the account:
+
+- The rate-limit windows the harness reports. `bin/cap-statusline` prints Claude Code's
+  status line and records the reading; every session Captain starts renders it, so the
+  fleet keeps it fresh for free. Wire it up once in `~/.claude/settings.json`:
+  `"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }`.
+- Session-limit rejections. `cap ask` writes the profile to
+  `state/usage/blocked/<profile>` until the reported reset, which takes it out of its tier.
+
+Without a status line reading Captain reports `unmeasured` and admits everything. That is
+the deliberate failure mode: an unreadable meter is a reason to stop holding back, not a
+reason to stop working. `~/.claude.json` caches a reading too and is used as a fallback,
+but it was 25 hours stale and reporting 3% while the live windows were at 70%.
+
+Readings are per harness. An Anthropic window says nothing about an OpenAI one.
 
 Codex is read differently because it has no status line hook. It writes the same
 information to disk anyway: every turn appends a `token_count` event to its rollout under
 `~/.codex/sessions/`, carrying `rate_limits.primary` (the 300-minute window) and
 `.secondary` (the 10080-minute one), each with `used_percent` and `resets_at`. Captain
 reads the newest rollout. A window whose `resets_at` has passed counts as empty, not full,
-which matters here and not for claude: a status line rewrites its reading every few
-seconds, a rollout reading can easily outlive its own window.
+which matters more for a rollout than for a status line rewritten every few seconds. Codex
+reports exhaustion as a field rather than a sentence, `rate_limits.rate_limit_reached_type`,
+and `cap ask` blocks the profile on it.
 
-That record also carries `plan_type`. Captain does not read it, and should not. Reading
-the percentage is measuring the account. Reading the plan is describing it, and the
-description is the part that goes stale.
+That record also carries `plan_type`. Captain does not read it, and should not. Reading the
+percentage measures the account. Reading the plan describes it, and the description is the
+part that goes stale.
 
-Codex reports an exhausted window as a field rather than a sentence:
-`rate_limits.rate_limit_reached_type` becomes non-null, and `cap ask` blocks the profile on
-it, the same way the claude "hit your session limit" banner does.
+There is no inferred ceiling. An earlier version capped dispatch at the model the captain's
+own session was running, which guessed at what an account can afford; a rejection answers
+the same question from evidence, and a captain who runs haiku to save quota should still be
+able to dispatch a real reviewer.
 
-A harness Captain cannot read at all is printed by `cap budget` as `unmeasured` rather than
-omitted, so the gap is visible instead of silent.
-
-`CAP_CEILING=auto` additionally keeps a dispatch at or below the model the captain's own
-session is running, and only for rungs on the captain's own harness, because ranking
-models across vendors is not a comparison that means anything. An account with no Opus
-access belongs to someone who did not start Opus, so this bounds the fleet correctly
-without Captain ever reading a plan, a seat tier or a quota tier.
-
-Run `cap budget` to see the reading, the ceiling, any rate-limited profiles, and what each
-role resolves to right now. `cap spawn --heavy` and `cap spawn -m <model>` still override
-the sizing, which is what a captain overriding it on purpose should look like.
+Sizing decisions are not announced. A captain running `cap spawn` is an agent with a context
+window, and routine "role crew -> sonnet" chatter spends it on something the reader did not
+ask for and cannot act on. Resolutions append to `state/usage/dispatch.log` with the command
+that asked; `cap budget` reads them back. Warnings that change what the captain does next, a
+gate that did not complete or a tier naming a profile that does not exist, still go to
+stderr.

@@ -3,8 +3,8 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 if [ "${1:-}" = --list ]; then
-  printf 'PROFILE\tHARNESS\tMODEL\n'
-  printf '%s\n' "$CAP_ASK_PROFILES" | awk 'NF==3{print $1"\t"$2"\t"$3}'
+  printf 'PROFILE\tHARNESS\tMODEL\tEFFORT\n'
+  printf '%s\n' "$CAP_ASK_PROFILES" | awk 'NF==4{print $1"\t"$2"\t"$3"\t"$4}'
   exit 0
 fi
 
@@ -33,7 +33,7 @@ dir=$PWD
 
 [ "$prompt" = "-" ] && prompt=$(cat)
 
-read -r harness model <<<"$(ask_profile "$profile")"
+read -r harness model effort <<<"$(ask_profile "$profile")"
 
 have "$harness" || die "$harness is not installed"
 require_herdr
@@ -90,6 +90,9 @@ case $harness in
     cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" claude "${resume_args[@]}" "${margs[@]}" $CAP_AGENT_FLAGS "$launch_prompt")
     ;;
   codex)
+    # A profile's effort is part of what the profile means: terra at xhigh is
+    # the reviewer, terra at its default is a different reviewer.
+    [ "$effort" != '-' ] && margs+=(-c "model_reasoning_effort=$effort")
     cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" codex "${margs[@]}"
          --dangerously-bypass-approvals-and-sandbox "$prompt")
     ;;
@@ -138,7 +141,7 @@ if [ "$harness" = codex ]; then
   if [ -n "$reached" ]; then
     read -r _ codex_resets _ <<<"$(usage_read codex)"
     profile_block "$profile" "$codex_resets"
-    die "codex harness reported a rate limit ($reached); the output above is not a complete result. $profile is out of every ladder until $(date -d "@$codex_resets" '+%H:%M')."
+    die "codex harness reported a rate limit ($reached); the output above is not a complete result. $profile is out of its tier until $(date -d "@$codex_resets" '+%H:%M')."
   fi
 fi
 
@@ -150,7 +153,7 @@ fi
 if [ "$harness" = claude ] && printf '%s' "$out" | grep -qF "hit your session limit"; then
   reset_at=$(printf '%s' "$out" | grep -oE "resets [^·]*\(UTC\)" | head -1)
   ctx_pct=$(printf '%s' "$out" | grep -oE "ctx [0-9]+% used" | grep -oE '[0-9]+' | head -1)
-  # Take this profile out of every ladder until its window resets. This is the
+  # Take this profile out of its tier until its window resets. This is the
   # only quota signal that is never an estimate: the account itself said no.
   profile_block "$profile" "$(limit_reset_epoch "$harness" "$reset_at")"
   if [ -n "$session_id" ] && [ -n "$resume_file" ]; then

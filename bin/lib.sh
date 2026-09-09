@@ -515,7 +515,7 @@ CAP_CACHE_ENV=(
 )
 
 ask_profile() {
-  printf '%s\n' "$CAP_ASK_PROFILES" | awk -v p="$1" '$1==p {print $2, $3; found=1} END{exit !found}' ||
+  printf '%s\n' "$CAP_ASK_PROFILES" | awk -v p="$1" '$1==p {print $2, $3, ($4 == "" ? "-" : $4); found=1} END{exit !found}' ||
     die "unknown ask profile '$1' (see config/captain.conf)"
 }
 
@@ -654,48 +654,7 @@ usage_detail() {
   esac
 }
 
-# The model the captain's own session is running, from the status line
-# recording made in this repository. Only this repository: a haiku crewmate's
-# reading must not cap what the captain can dispatch.
-captain_model() { captain_field model_id; }
-
-# The harness that model runs under. The ceiling only bounds rungs on this same
-# harness, because a rank comparison across harnesses is meaningless: "opus is
-# stronger than sonnet" is a fact about one vendor's line-up, not a currency.
-captain_harness() { captain_field harness; }
-
-captain_field() {
-  usage_files || return 0
-  jq -rs --arg home "$CAP_HOME" --arg f "$1" '
-    map(select((.cwd // "") == $home or (.project_dir // "") == $home))
-    | if length == 0 then "" else (max_by(.at) | .[$f] // "") end
-  ' "$CAP_USAGE_DIR"/*.json 2>/dev/null || true
-}
-
-profile_rank() {
-  printf '%s\n' "${CAP_PROFILE_RANK:-}" | tr ' ' '\n' |
-    awk -F: -v p="$1" '$1==p {print $2; found=1} END{exit !found}' || printf '0'
-}
-
-# The strongest rank a dispatch may use right now.
-ceiling_rank() {
-  local m
-  case ${CAP_CEILING:-auto} in
-    none) printf '99'; return 0 ;;
-    auto) ;;
-    *) profile_rank "$CAP_CEILING"; return 0 ;;
-  esac
-  m=$(captain_model)
-  case $m in
-    *fable*) profile_rank fable ;;
-    *opus*) profile_rank opus ;;
-    *sonnet*) profile_rank sonnet ;;
-    *haiku*) profile_rank haiku ;;
-    *) printf '99' ;;
-  esac
-}
-
-# A profile the harness has rejected for a session limit is out of every ladder
+# A profile the harness has rejected for a session limit is out of its tier
 # until its window resets. This is the one signal that is never a guess: the
 # account said no.
 profile_block() {
@@ -734,51 +693,54 @@ dispatch_log() {
   fi
 }
 
-role_ladder() {
+# What kind of thinking a role needs, and which profiles can supply it.
+role_tier() {
   local var
-  var=CAP_LADDER_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
+  var=CAP_ROLE_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
   printf '%s' "${!var:-}"
 }
 
-# Resolve a role to the profile it should dispatch to right now. Walks the
-# ladder strongest first and takes the first rung that the account has not
-# rejected, that is not stronger than the captain's own session, and whose
-# utilization ceiling the current reading is still under.
-# The optional second argument is a profile to skip, so a caller that needs two
-# genuinely independent opinions can ask for a second one.
-role_profile() {
-  local role=$1 avoid=${2:-} ladder rung profile top pct ceil rank harness home_harness pair
-  ladder=$(role_ladder "$role")
-  [ -n "$ladder" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
+tier_peers() {
+  local var
+  var=CAP_TIER_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
+  printf '%s' "${!var:-}"
+}
 
-  ceil=$(ceiling_rank)
-  home_harness=$(captain_harness)
+tier_admit() {
+  local var
+  var=CAP_ADMIT_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
+  printf '%s' "${!var:-100}"
+}
 
-  for rung in $ladder; do
-    profile=${rung%%:*}
-    top=${rung##*:}
+# Pick a profile from one tier. Peers within a tier are interchangeable in
+# capability and live on different accounts, so a full window moves work
+# sideways rather than downwards. Quota chooses which account runs the work and
+# whether it starts at all; it never chooses how capable the agent is.
+#
+# `avoid` lets a caller that needs two independent opinions ask for a second.
+tier_profile() {
+  local tier=$1 role=$2 avoid=${3:-} peers profile admit pct pair harness
+  peers=$(tier_peers "$tier")
+  [ -n "$peers" ] || die "tier '$tier' lists no profiles (see config/captain.conf)"
+  admit=$(tier_admit "$tier")
+
+  for profile in $peers; do
     if [ "$profile" = "$avoid" ]; then
       continue
     fi
     if profile_blocked "$profile"; then
       continue
     fi
-    # A rung naming a profile that does not exist is a typo in the config, not
-    # a dispatch. Skipping it silently would size the ladder against a harness
-    # of "", which measures nothing and therefore holds nothing back.
+    # A peer naming a profile that does not exist is a typo in the config, not
+    # a dispatch. Skipping it silently would size it against a harness of "",
+    # which measures nothing and therefore holds nothing back.
     if ! pair=$(ask_profile "$profile" 2>/dev/null); then
-      warn "ladder for role '$role' names unknown profile '$profile'; skipping it"
+      warn "tier '$tier' names unknown profile '$profile'; skipping it"
       continue
     fi
     read -r harness _ <<<"$pair"
-    if [ "$harness" = "$home_harness" ]; then
-      rank=$(profile_rank "$profile")
-      if [ "$rank" != 0 ] && [ "$rank" -gt "$ceil" ]; then
-        continue
-      fi
-    fi
     read -r pct _ _ <<<"$(usage_read "$harness")"
-    if [ "$pct" != '-' ] && [ "$pct" -gt "$top" ]; then
+    if [ "$pct" != '-' ] && [ "$pct" -gt "$admit" ]; then
       continue
     fi
     dispatch_log "$role" "$profile" "$harness" "$pct"
@@ -788,32 +750,13 @@ role_profile() {
   return 1
 }
 
-# The strongest rung of a ladder, ignoring utilization and the ceiling. This is
-# what an explicit captain override means: spend it. A blocked profile is still
-# skipped, because a blocked profile cannot run at all.
-role_top() {
-  local role=$1 ladder rung profile
-  ladder=$(role_ladder "$role")
-  [ -n "$ladder" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
-  for rung in $ladder; do
-    profile=${rung%%:*}
-    if profile_blocked "$profile"; then
-      continue
-    fi
-    dispatch_log "$role" "$profile" override -
-    printf '%s' "$profile"
-    return 0
-  done
-  return 1
+role_profile() {
+  local role=$1 tier
+  tier=$(role_tier "$role")
+  [ -n "$tier" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
+  tier_profile "$tier" "$role" "${2:-}"
 }
 
-# Same, but explains itself instead of returning empty. A dispatch that cannot
-# be sized is a dispatch that must not happen: starting the last rung anyway
-# spends the remainder of the window on a session that will die part-way.
-# When the harness rejects a call for a session limit, believe the reset time it
-# reports. The status line recording carries an exact epoch; the rejection
-# banner carries only a human time like "resets 11pm (UTC)". Zero means neither
-# was readable, and profile_block falls back to its own window.
 limit_reset_epoch() {
   local harness=${1:-claude} human=${2:-} t
   t=$(usage_read "$harness" | awk '{print $2}')
@@ -832,33 +775,41 @@ limit_reset_epoch() {
 }
 
 role_profile_or_die() {
-  local role=$1 p pct resets src rung profile until blocked="" soonest=0 msg ladder harness
-  if p=$(role_profile "$role"); then
+  local role=$1 tier=${2:-} p peers profile pair harness pct resets src until soonest=0 msg detail=""
+  [ -n "$tier" ] || tier=$(role_tier "$role")
+  [ -n "$tier" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
+  if p=$(tier_profile "$tier" "$role"); then
     printf '%s' "$p"
     return 0
   fi
 
-  # Report the reading for the ladder's own harness, not some other account's.
-  ladder=$(role_ladder "$role")
-  read -r harness _ <<<"$(ask_profile "${ladder%%:*}" 2>/dev/null || printf 'claude -')"
-  read -r pct resets src <<<"$(usage_read "$harness")"
-  [ "$pct" != '-' ] || pct=unmeasured
-  for rung in $ladder; do
-    profile=${rung%%:*}
+  peers=$(tier_peers "$tier")
+  for profile in $peers; do
     if profile_blocked "$profile"; then
-      blocked="$blocked $profile"
       until=$(profile_block_until "$profile")
+      detail="$detail $profile(rate limited until $(date -d "@$until" '+%H:%M'))"
       if [ "$soonest" = 0 ] || [ "$until" -lt "$soonest" ]; then
         soonest=$until
+      fi
+      continue
+    fi
+    pair=$(ask_profile "$profile" 2>/dev/null) || continue
+    read -r harness _ <<<"$pair"
+    read -r pct resets src <<<"$(usage_read "$harness")"
+    detail="$detail $profile($harness at $pct%, source $src)"
+    if [ "$resets" -gt "$(now)" ] 2>/dev/null; then
+      if [ "$soonest" = 0 ] || [ "$resets" -lt "$soonest" ]; then
+        soonest=$resets
       fi
     fi
   done
 
-  msg="no profile is dispatchable for role '$role' at $harness utilization $pct (source $src)"
-  [ -z "$blocked" ] ||
-    msg="$msg; rate limited:$blocked, first back at $(date -d "@$soonest" '+%H:%M')"
-  if [ -z "$blocked" ] && [ "$resets" -gt "$(now)" ] 2>/dev/null; then
-    msg="$msg; the window resets at $(date -d "@$resets" '+%H:%M')"
+  # Say no rather than quietly running a smaller model. Work of this tier needs
+  # a model of this tier; a cheaper one produces a session that has to be found
+  # and undone, which costs more than the wait.
+  msg="no $tier profile can take role '$role' right now:$detail"
+  if [ "$soonest" -gt "$(now)" ] 2>/dev/null; then
+    msg="$msg. Earliest capacity at $(date -d "@$soonest" '+%H:%M')"
   fi
   die "$msg. run: cap budget"
 }

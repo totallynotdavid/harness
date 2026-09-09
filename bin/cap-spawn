@@ -60,11 +60,11 @@ if [ -z "$model" ] && [ "$heavy" = 0 ]; then
   [ -n "$model" ] && [ "$model" != '-' ] || model=""
 fi
 if [ -z "$model" ]; then
-  # --heavy is the captain overriding the sizing on purpose: take the top of
-  # the ladder and spend it, ahead of any project pin.
+  # --heavy raises the tier, it does not bypass the sizing. Starting a heavy
+  # agent on an exhausted account is the failure this exists to prevent, and
+  # -m is still there for a captain who means to spend it anyway.
   if [ "$heavy" = 1 ]; then
-    model=$(role_top "$role") ||
-      die "every profile for role '$role' is rate limited; run: cap budget"
+    model=$(role_profile_or_die "$role" heavy)
   else
     model=$(role_profile_or_die "$role")
   fi
@@ -73,7 +73,9 @@ fi
 # Resolve model names that refer to cap-ask profiles.
 if [ "$harness_set" = 0 ] &&
   printf '%s\n' "$CAP_ASK_PROFILES" | awk -v p="$model" '$1==p{f=1} END{exit !f}' 2>/dev/null; then
-  read -r harness model <<<"$(ask_profile "$model")"
+  read -r harness model profile_effort <<<"$(ask_profile "$model")"
+  # -e on the command line beats the profile's own default.
+  [ -n "$effort" ] || [ "$profile_effort" = '-' ] || effort=$profile_effort
 fi
 
 dir=$(task_dir "$slug")

@@ -38,9 +38,9 @@ mkdir -p "$TASKS/$slug"
 # current window, so a gate round late in a heavy day runs a smaller reviewer
 # instead of failing to run at all.
 # Resolve both gates here rather than letting each cap-ask call size itself.
-# Independently sized, the two ladders converge on the same profile once the
-# window fills, and a gate reviewed twice by one model is not two opinions.
-# Gate B steps down instead, which is the cheaper concession to make.
+# Independently sized, both gates land on the same profile whenever they share
+# a tier, and a change reviewed twice by one model is not two opinions. Gate B
+# asks its tier for a different peer instead.
 profiles=()
 gate_a=""
 if [ "$full" = 1 ]; then
