@@ -1,80 +1,80 @@
-  ▝▝ ▝▝    ~/.cap-work/local-env
+  $delta = time() - $lastcron;
+  if ($delta > $expectedfrequency + MINSECS) {
+      $status = result::WARNING;
+      if ($delta > DAYSECS) {
+          $status = result::CRITICAL;
+      }
+
+  Nothing in this stack schedules cron — dev-install.sh:62-69 says so explicitly and runs it exactly once, on a fresh install. On any later mise run check, dev:install takes
+  the "already installed" early exit at dev-install.sh:41-43 and never runs cron, so $delta is at least the age of the last install. More than 120 s → exit 1; more than a
+  day → exit 2. Either way set -e kills the task and mise run check fails with no output explaining why. The task that is supposed to be the health signal is red on a
+  perfectly healthy stack.
+
+  2. dev:reset deletes a production config.php that dev:install deliberately refuses to touch. .devstack/dev-reset.sh:13
+
+
+  compose down -v
+  rm -f "$REPO_ROOT/config.php"
+
+  generate-config.sh:16-23 goes out of its way to detect exactly this case and abort:
+
+  ▎ config.php already exists but its $CFG->wwwroot is not http://localhost. ... Refusing to touch it: move it aside yourself if you want the dev stack to generate its own.
+
+❯ Read /home/dubu/git/captain/rules/code.md, then review every change in this worktree against master (git diff master, plus any uncommitted change). Report concrete defec…
+
+  dev-reset.sh applies no such check. A developer who has .cicat/config.php.example filled in with live credentials sitting at the repo root — the precise scenario
+  generate-config.sh guards against — loses it to mise run dev:reset. config.php is git-ignored (.gitignore:8), so there is no copy to recover from. The two scripts disagree
+  about whether an unrecognised config.php is the dev stack's to destroy.
 
 
 
+  3. The stale-schema recovery path can silently do nothing. .devstack/dev-install.sh:44-47
 
+  elif [ "$schema_exit" -eq 1 ]; then
+      echo "Installed schema does not match install.xml (a plugin or core upgrade is pending). Running admin/cli/upgrade.php..."
+      "$DEVSTACK_DIR/dev-upgrade.sh"
+      exit 0
 
-❯ Read /home/dubu/git/captain/rules/code.md, then review every change in this
-  worktree against master (git diff master, plus any uncommitted change).
-  Report concrete defects: what is wrong, where, and the failure it causes. Do
-  not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL.
+  Exit 1 from check_database_schema.php means "the live schema differs from install.xml", which is not the same as "an upgrade is pending". When the mismatch comes from an
+  install.xml edited without a version.php bump — the routine hazard in a repo whose job is merging vendor Moodle with local plugins — admin/cli/upgrade.php:163-165 takes
+  this branch:
 
-  Searched for 1 pattern, read 19 files, ran 3 shell commands
+  if (!moodle_needs_upgrading(false)) {
+      cli_error(get_string('cliupgradenoneed', 'core_admin', $newversion), 0);
+  }
 
+  cli_error with code 0 exits successfully. dev-upgrade.sh returns 0, dev-install.sh reaches its exit 0, and the developer is told the upgrade ran while the schema is still
+  wrong. Nothing re-runs check_database_schema.php afterwards to confirm the fix landed. LOCAL-ENV.md:32-38 sells this path as "runs admin/cli/upgrade.php automatically ...
+  instead of dead-ending"; in this case it dead-ends quietly.
 
-● Explore(Verify local_certengine and customcert element APIs)
-  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  4. Two clones or worktrees of this repo share one stack. .devstack/lib.sh:34
 
-● While that verification runs in the background, let me check the deploy.yml full context and mise task interface convention.
+  compose() {
+      (cd "$DEVSTACK_DIR" && $COMPOSE "$@")
+  }
 
-  Read 2 files, ran 3 shell commands, recalled 1 memory
-  ⎿  Recalled this user's machine standardizes dev-environment commands as mise tasks, not custom shell scripts a person runs directly
+  Compose derives the project name from the directory it runs in, which is always devstack. Every clone and every git worktree of this repository therefore resolves to the
+  same project: the same devstack_db-data and devstack_moodledata volumes and the same container names. Running mise run dev in a second worktree does not stand up a second
+  stack — it recreates the existing containers (the bind mount source changed) against the other tree's database. This repo is worked on in worktrees; you are reviewing from
+  one now. Setting an explicit project name derived from $REPO_ROOT, or accepting the collision in writing, would settle it.
 
+  Lower severity
 
+  - .devstack/nginx/default.conf.template:21-29 — the \.php(/|$) location has no try_files $uri =404, so every .php-suffixed URI is forwarded to php-fpm whether or not the
+    file exists. Not exploitable here (Moodle keeps no user uploads inside the docroot, and php-fpm answers "Primary script unknown"), and the listener is loopback-only, but
+    it is the one place in the stack where a boundary goes unvalidated.
+  - .devstack/render-test-certificate.php:190 hardcodes $CFG->dataroot . '/temp/' rather than $CFG->tempdir. install_init_dataroot() (lib/installlib.php:108-112) creates
+    that directory, so it works today; if it ever does not, the failure surfaces as the misleading could not write the full PDF to ....
 
-● Good, that comment's claim checks out (6 tracked files, matching the count). Now let's wait for the certificate-verification agent and also double check the .gitignore
-  diff for correctness and the mise.toml dev:seed argument-passing question.
+  Not verified by execution: I did not stand the stack up or run check:certificate, because doing so writes config.php into the worktree and creates databases — outside a
+  read-only review. Findings 1–3 are read off the code paths quoted above.
 
+  GATE: FAIL
 
-  Listed 1 directory, ran 5 shell commands
-
-
-● Confirmed and reproduced: dev-upgrade.sh lacks the executable bit while dev-install.sh invokes it as a direct executable, not via bash. This is a real, triggerable failure
-  in the primary upgrade path. Let me check in on the background verification agent for the certificate script.
-
-  Ran 1 shell command
-
-● Good, that part checks out independently. Let me wait for the full agent report before finalizing.
-
-  Searched for 1 pattern
-
-● I'll wait for the exploration agent's findings rather than duplicate its work further.
-
-  Searched for 1 pattern, ran 2 shell commands
-
-● All exact-match sed patterns line up with the real file. This part is solid — good, since the script has its own self-check guard anyway. Now let's check the deploy.yml
-  exclude ordering doesn't break rsync syntax, and double check .gitignore's /.devstack/.env pattern actually matches (leading dot directory).
-
-  Ran 1 shell command
-
-● That's correct. Now let's check whether .devstack/ itself (minus .env) will actually get committed — i.e., confirm nothing else under .devstack/ is accidentally ignored by
-  other gitignore rules (like the *.log or vendor/ patterns).
-
-  Ran 1 shell command
-
-● Good — only the intended .env is ignored. Now waiting for the background verification agent's report on the certificate script before finalizing.
-
-  Searched for 2 patterns, ran 2 shell commands
-
-● Good, matches by shortname works fine. This part checks out. Let me check the DB schema for local_certengine_asset and local_certengine_slot tables for required columns
-  not being set.
-
-  Searched for 4 patterns, read 1 file, ran 2 shell commands
-
-● Agent "Verify local_certengine and customcert element APIs" finished · 2m 16s
-
-● Confirmed — that's the only such call, and it's the one that's broken. That's sufficient to finalize the report.
-
-● Code review(review · 1 finding)
-  ⎿  .devstack/dev-upgrade.sh
-       ● dev-upgrade.sh is not executable, but dev-install.sh invokes it directly as a binary rather than via `bash`
-
-● GATE: FAIL
-
-✻ Worked for 3m 46s · done 11:51 AM
+✻ Worked for 9m 7s · done 4:40 PM
 
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Sonnet 5  |  ctx 10% used  90% left  |  in:95086 out:544  |  5h:80% 7d:15%                                                                                            /rc
-  ⏵⏵ bypass permissions on (shift+tab to cycle) · 1 memory recalled · /tasks to see subagents · ← for agents
+  Opus 5  |  ctx 12% used  88% left  |  in:117779 out:3  |  5h:23% 7d:19%                                                                                               /rc
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
