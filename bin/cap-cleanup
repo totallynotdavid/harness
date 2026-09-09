@@ -6,6 +6,7 @@ slug=${1:?usage: cap cleanup <slug> [profile]}
 profile=${2:-@chore}
 
 task_load "$slug"
+task_lock "$slug"
 
 [ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to clean up"
 

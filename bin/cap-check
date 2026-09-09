@@ -8,6 +8,7 @@ project=""
 
 if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
 	task_load "$1"
+	task_lock "$1"
 	repo=$CAP_TREE
 	base=$CAP_BASE
 	project=$CAP_PROJECT

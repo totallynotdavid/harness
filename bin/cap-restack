@@ -25,6 +25,7 @@ while [ $# -gt 0 ]; do
 done
 
 task_load "$slug"
+task_lock "$slug"
 
 # Find the worktree that checks out a branch.
 tree_of() {

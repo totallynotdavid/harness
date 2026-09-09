@@ -224,12 +224,18 @@ owns_taken() {
 task_lock() {
   local slug=$1
   local dir=$TASKS/$slug
+  # Re-entrant across a process tree, so cap land can release the pane through
+  # cap drop without deadlocking against its own hold. The marker is exported,
+  # so only a child of the holder inherits it.
+  case " ${CAP_LOCKS:-} " in *" $slug "*) return 0 ;; esac
   mkdir -p "$dir"
   exec {CAP_LOCK_FD}>>"$dir/.lock"
   if ! flock -n "$CAP_LOCK_FD"; then
     die "$slug is already held by $(cat "$dir/.lock" 2>/dev/null || echo 'another cap command')"
   fi
   printf 'pid %s (%s) since %s\n' "$$" "$(basename "$0")" "$(date -u +%H:%M:%SZ)" >"$dir/.lock"
+  CAP_LOCKS="${CAP_LOCKS:-} $slug"
+  export CAP_LOCKS
 }
 
 # Read a task field without sourcing its record.

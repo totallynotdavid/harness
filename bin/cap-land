@@ -6,9 +6,11 @@ slug=${1:?usage: cap land <slug> [--merge]}
 shift || true
 
 do_merge=0
+landed=0
 [ "${1:-}" = --merge ] && do_merge=1
 
 task_load "$slug"
+task_lock "$slug"
 
 dirty=$(git_dirty "$CAP_TREE")
 [ "$dirty" = 0 ] || die "$slug has $dirty uncommitted change(s); commit them first"
@@ -45,6 +47,17 @@ long_summaries=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='%h %s' |
 	die "reword them, then land again"
 }
 
+# A branch that shares no ancestor with its base is not a change to the base,
+# it is a replacement of it. aula-integrate-fix rebuilt all twenty-two commits
+# from scratch to deliver seven lines, and landing it would have meant force
+# pushing over a master that was already published.
+if [ -n "$CAP_BRANCH" ] &&
+	git -C "$CAP_REPO" rev-parse --verify -q "$CAP_BASE" >/dev/null 2>&1; then
+	mb=$(git -C "$CAP_REPO" merge-base "$CAP_BASE" "$CAP_BRANCH" 2>/dev/null || true)
+	[ -n "$mb" ] ||
+		die "$CAP_BRANCH shares no commit with $CAP_BASE; it would replace the history rather than add to it"
+fi
+
 case $CAP_MODE in
 local)
 	git -C "$CAP_REPO" rev-parse --verify "$CAP_BASE" >/dev/null 2>&1 ||
@@ -72,6 +85,7 @@ local)
 	git -C "$CAP_REPO" merge --no-ff -m "merge $CAP_BRANCH ($slug)" "$CAP_BRANCH"
 
 	printf 'merged %s into %s (%s commits)\n' "$CAP_BRANCH" "$CAP_BASE" "$commits"
+	landed=1
 	;;
 
 pr)
@@ -121,6 +135,7 @@ pr)
 			gh pr merge "$url" --squash --delete-branch
 		fi
 		printf 'merged %s\n' "$url"
+		landed=1
 
 		# Keep the local base ref in step with the remote squash merge, or every
 		# later "commits ahead of CAP_BASE" check (crew, drop) reads it as stale.
@@ -160,3 +175,13 @@ pr)
 	die "unknown mode '$CAP_MODE'"
 	;;
 esac
+
+# A landed task has nothing left to hold. Panes outlived their tasks all day:
+# two hung builds and a dev server still answering HTTP 200 nearly three hours
+# after the work was finished, holding 1.5 GB between them while the box
+# thrashed and every other build slowed to a crawl.
+if [ "$landed" = 1 ] && pane_live "$slug"; then
+	printf 'releasing %s\n' "$slug"
+	"$CAP_HOME/bin/cap-drop" "$slug" --force ||
+		warn "could not release $slug; run cap drop $slug"
+fi

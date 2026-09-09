@@ -9,6 +9,7 @@ force=0
 [ "${1:-}" = --force ] && force=1
 
 task_load "$slug"
+task_lock "$slug"
 
 if [ "$force" = 0 ]; then
 	dirty=$(git_dirty "$CAP_TREE")
