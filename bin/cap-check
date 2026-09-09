@@ -66,6 +66,43 @@ diff_text=$(git -C "$repo" diff -U0 "$base")
 printf '## changed (worktree vs %s)\n' "$base"
 printf '%s\n' "$changed" | sed 's/^/  /'
 
+# Check whether another live task in this project is changing the same files.
+# Parallel tasks collide on files no brief assigned, and a per-task check that
+# only compares one worktree against the base cannot see it. A landed task
+# clears itself: once its branch is merged, its diff against the base is empty.
+printf '\n## collisions\n'
+collide=0
+if [ -n "$project" ]; then
+	for other in $(task_slugs); do
+		[ "$other" != "${CAP_SLUG:-}" ] || continue
+		[ "$(task_field "$other" CAP_PROJECT)" = "$project" ] || continue
+
+		otree=$(task_field "$other" CAP_TREE)
+		[ -n "$otree" ] && [ -e "$otree/.git" ] || continue
+		obase=$(task_field "$other" CAP_BASE)
+		git -C "$otree" rev-parse --verify -q "$obase" >/dev/null 2>&1 || continue
+
+		# Diff from the merge base, not the base tip. When the base has moved
+		# on since the task started, everything landed in the meantime looks
+		# like this task changed it.
+		omb=$(git -C "$otree" merge-base "$obase" HEAD 2>/dev/null) || continue
+		ochanged=$({
+			git -C "$otree" diff --name-only "$omb" 2>/dev/null || true
+			git -C "$otree" ls-files --others --exclude-standard 2>/dev/null || true
+		} | sort -u)
+		[ -n "$ochanged" ] || continue
+
+		shared=$(printf '%s\n' "$changed" |
+			grep -xF -f <(printf '%s\n' "$ochanged") 2>/dev/null || true)
+		[ -n "$shared" ] && {
+			note "$other is changing the same files:"
+			printf '%s\n' "$shared" | sed 's/^/      /'
+			collide=1
+		}
+	done
+fi
+[ "$collide" = 0 ] && echo "  ok"
+
 # Check related files that should change together.
 printf '\n## surfaces\n'
 if [ -f "$conv" ] && grep -q '^```surfaces' "$conv"; then
