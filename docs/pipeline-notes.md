@@ -172,10 +172,22 @@ Every dispatch now names a role. A role belongs to a capability tier and never l
 | --- | --- | --- |
 | `heavy` | judgment that has to be right the first time | `opus`, `terra` |
 | `standard` | follows a brief, writes code, reviews code | `sonnet`, `terra` |
-| `cheap` | narrow, well-specified work: commits, comment cleanup, lookups | `haiku`, `luna` |
+| `cheap` | breadth, and narrow well-specified work: commits, comment cleanup, lookups | `haiku`, `luna` |
 
 `crew`, `scout` and `gate-b` are `standard`. `gate-a` is `heavy`. `chore`, which is
 `cap cleanup` and `cap commit`, is `cheap`.
+
+`scout` is `standard` and not `cheap`, even though scouting is exploration, because what a
+Captain scout returns is a judgment the captain plans from. `notes/classroom/rebuild-scope.md`
+sized a rebuild, moved where the risk sits, and found a delete guarded by a read capability.
+Breadth that returns findings rather than judgments is what `cheap` is for, and
+`cap spawn --light` asks for it by name.
+
+Cheap is also not the obvious choice for work that is merely long. Measured from this
+repository's own gate reports, Haiku 4.5 ran a review at 19% of its window on 37,090 input
+tokens and Sonnet 5 ran one at 10% on 95,086, which puts the windows at roughly 195k and
+951k. The cheap tier is about five times smaller. For a genuinely context-exhaustive pass
+the binding constraint is the window, not the price.
 
 The peers inside a tier are interchangeable in capability and deliberately live on
 different accounts. That is where quota acts: when the claude window fills, `standard` work
@@ -192,9 +204,26 @@ no peer is admissible, `cap spawn` and `cap gate` refuse and name the earliest t
 capacity returns. Refusing is the correct answer. The gap below 100 is also the headroom
 the captain's own session runs on.
 
-`--heavy` raises the tier rather than bypassing the sizing, because starting a heavy agent
-on an exhausted account is the failure this exists to prevent. `-m <model>` is the escape
-hatch for a captain who means to spend it anyway.
+`--heavy` raises the tier and `--light` lowers it. Both move the tier rather than bypassing
+the sizing, because starting a heavy agent on an exhausted account is the failure this
+exists to prevent, and a breadth pass should still queue behind a full account rather than
+crash into it. `-m <model>` is the escape hatch that skips sizing entirely, for a captain
+who means to spend it anyway.
+
+### The ceiling
+
+Tiers stop at `opus` on claude and `terra` on codex. `cap models` shows the account reaches
+further than that: `fable`, `astra` and `sol` are registered as profiles and belong to no
+tier. A model stronger than the work needs is not free. It is slower, it spends a window
+every other role shares, and Captain would be spending it on the captain's behalf without
+being asked. Above the ceiling is a decision made at the call site: `cap ask astra`,
+`cap spawn -m fable`.
+
+That ceiling has a price, and it is visible under load. With the claude account full,
+`gate-a` (heavy) and `gate-b` (standard) both fall through to `terra`, and `cap gate` says
+so rather than reporting two reviews when one model produced both. Adding `astra` to the
+heavy tier would separate them again, at the cost of the ceiling. Waiting for the window is
+usually cheaper.
 
 ### Where the numbers come from
 

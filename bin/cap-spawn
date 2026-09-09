@@ -3,11 +3,11 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 slug=${1:-}; project=${2:-}; shift 2 2>/dev/null || true
-[ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [--scout] [-f BRIEF]"
+[ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [--scout] [--heavy|--light] [-f BRIEF]"
 case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]";; esac
 
 model=""
-heavy=0
+tier_override=""
 effort=""
 harness=$CAP_AGENT_HARNESS
 harness_set=0
@@ -24,7 +24,12 @@ while [ $# -gt 0 ]; do
     --stack)      parent=${2:?}; shift 2 ;;
     -f|--brief)   brief_src=${2:?}; shift 2 ;;
     --scout)      kind=scout; shift ;;
-    --heavy)      heavy=1; shift ;;
+    # The captain choosing capability, which is always allowed. Quota still
+    # applies: an override picks the tier, admission still picks the account.
+    --heavy)      [ -z "$tier_override" ] || die "use --heavy or --light, not both"
+                  tier_override=heavy; shift ;;
+    --light)      [ -z "$tier_override" ] || die "use --heavy or --light, not both"
+                  tier_override=cheap; shift ;;
     *) die "unknown flag $1" ;;
   esac
 done
@@ -55,19 +60,15 @@ role=crew
 if [ "$kind" = scout ]; then
   role=scout
 fi
-if [ -z "$model" ] && [ "$heavy" = 0 ]; then
+if [ -z "$model" ] && [ -z "$tier_override" ]; then
   model=$(proj_model "$project" || true)
   [ -n "$model" ] && [ "$model" != '-' ] || model=""
 fi
 if [ -z "$model" ]; then
-  # --heavy raises the tier, it does not bypass the sizing. Starting a heavy
-  # agent on an exhausted account is the failure this exists to prevent, and
-  # -m is still there for a captain who means to spend it anyway.
-  if [ "$heavy" = 1 ]; then
-    model=$(role_profile_or_die "$role" heavy)
-  else
-    model=$(role_profile_or_die "$role")
-  fi
+  # An override moves the tier, it does not bypass the sizing. Starting a heavy
+  # agent on an exhausted account is the failure this exists to prevent, and -m
+  # is still there for a captain who means to spend it anyway.
+  model=$(role_profile_or_die "$role" "$tier_override")
 fi
 
 # Resolve model names that refer to cap-ask profiles.

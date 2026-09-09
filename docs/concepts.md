@@ -47,7 +47,8 @@ A profile is a harness, a model and a default effort, named in `config/captain.c
 `cap ask <profile>` runs a one-shot agent under one.
 
 A tier is a capability class: `heavy`, `standard`, `cheap`. Its members are interchangeable
-for the kind of thinking it names and live on different accounts on purpose.
+for the kind of thinking it names and live on different accounts on purpose. Tiers stop at
+`opus` and `terra`; the profiles above them belong to no tier and are asked for by name.
 
 A role is what a dispatch is for: `crew`, `scout`, `gate-a`, `gate-b`, `chore`. Each role
 belongs to a tier and does not leave it.
