@@ -74,7 +74,7 @@ if [ "$kind" = ship ]; then
     [ -n "$owns" ] ||
       die "$project already has$peers in flight; a second task needs --owns (or use cap wave)"
     for other in $peers; do
-      [ -n "$(task_field "$other" CAP_OWNS 2>/dev/null || true)" ] ||
+      [ -n "$(owns_read "$other")" ] ||
         die "$other claims no paths, so it owns everything; drop it or respawn it with --owns"
     done
     # Foundation first, enforced rather than described. One task on a broken
@@ -196,7 +196,6 @@ CAP_KIND=$kind
 CAP_MODEL=$model
 CAP_EFFORT=$effort
 CAP_HARNESS=$harness
-CAP_OWNS=$owns
 CAP_STARTED=$(now)
 EOF
 
@@ -205,6 +204,9 @@ EOF
 # file is per-worktree and never tracked, so it is excluded locally rather than
 # added to the project's .gitignore, which belongs to the project.
 if [ -n "$owns" ]; then
+  read -r -a owns_list <<<"$owns"
+  owns_write "$slug" "${owns_list[@]}"
+
   mkdir -p "$tree/.claude"
   jq -n --arg cmd "$CAP_HOME/bin/hooks/guard-task-paths.sh" --arg slug "$slug" '{
     hooks: {

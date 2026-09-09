@@ -25,7 +25,7 @@ Edit | Write | NotebookEdit | MultiEdit) ;;
 *) exit 0 ;;
 esac
 
-owns=$(task_field "$slug" CAP_OWNS 2>/dev/null || true)
+owns=$(owns_read "$slug" 2>/dev/null || true)
 [ -n "$owns" ] || exit 0
 tree=$(task_field "$slug" CAP_TREE 2>/dev/null || true)
 [ -n "$tree" ] || exit 0

@@ -196,7 +196,24 @@ wave_project() {
 # it owns and the harness refuses a second claim on the same ground.
 #
 # Globs use git's :(glob) pathspec, so ** crosses directories and * does not.
-# A glob may not contain a space.
+#
+# They live in state/tasks/<slug>/owns, one per line, and never in task.env.
+# task.env is sourced, so a multi-glob value there is parsed as an assignment
+# followed by a command: a task owning `package.json pnpm-lock.yaml` made
+# every cap command print `pnpm-lock.yaml: command not found`.
+
+owns_read() {
+  local f=$TASKS/$1/owns
+  [ -f "$f" ] || return 0
+  tr '\n' ' ' <"$f" | sed 's/  */ /g; s/^ //; s/ $//'
+}
+
+owns_write() {
+  local slug=$1
+  shift
+  mkdir -p "$TASKS/$slug"
+  printf '%s\n' "$@" >"$TASKS/$slug/owns"
+}
 
 # The literal prefix of a glob, up to the first wildcard. Two globs whose
 # prefixes contain one another can collide on a file that does not exist yet,
@@ -282,7 +299,7 @@ owns_taken() {
     [ "$(task_field "$other" CAP_PROJECT 2>/dev/null || true)" = "$project" ] || continue
     otree=$(task_field "$other" CAP_TREE 2>/dev/null || true)
     [ -n "$otree" ] && [ -e "$otree/.git" ] || continue
-    hit=$(owns_overlap "$tree" "$globs" "$(task_field "$other" CAP_OWNS 2>/dev/null || true)") || continue
+    hit=$(owns_overlap "$tree" "$globs" "$(owns_read "$other")") || continue
     printf '%s claims:\n' "$other"
     printf '%s\n' "$hit" | sed 's/^/    /'
     found=0
