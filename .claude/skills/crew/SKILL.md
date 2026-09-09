@@ -26,6 +26,28 @@ Evidence: a regression test fails before the change, passes after it, and the ex
 EOF
 ```
 
+## Dispatch in parallel
+
+`cap check` reports a `collisions` section naming any other live task in the project
+changing the same files, and `cap land` trial-merges before touching the base and refuses
+a branch that would conflict. Both are deterministic. What they cannot do is prevent the
+collision, only catch it, so plan against these:
+
+- **Assign every path, not just the interesting ones.** Name the files no task may touch
+  and say what to do instead: report the needed change rather than making it. The root of
+  a repository belongs to nobody by default, which is where parallel tasks collide.
+- **Install every dependency in the base commit.** `pnpm add` and its equivalents rewrite
+  the manifest and the lockfile, which are global. If a task needs a new one, it reports
+  and waits.
+- **Name shared primitives and give them one owner.** A rule two layers need is a planning
+  decision. Deferring it into the briefs produces two implementations of it.
+- **Plan the integration step.** N parallel tasks need an N+1th that merges them, with a
+  definition of done that builds, typechecks, runs the whole suite, and boots the app.
+
+When the base is thin, prefer one task that builds a single slice end to end, then fan out
+against the pattern it establishes. Agents dispatched against a one-commit repository have
+nothing to copy and no settled root to share.
+
 Choose `--scout` for investigation. Scout tasks write a report and leave project code
 unchanged. Ship tasks produce a branch that can be reviewed and delivered.
 
