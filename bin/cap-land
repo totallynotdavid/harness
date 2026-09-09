@@ -25,6 +25,26 @@ fi
 commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD")
 [ "$commits" -gt 0 ] || die "$slug has no commits to land"
 
+# rules/commits.md, enforced rather than described. An agent told to read a rule
+# still writes the trailer; five had to be stripped with filter-branch before
+# this existed.
+bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" \
+	--format='%h %s%n%b' |
+	grep -inE '^(co-authored-by|claude-session):|generated with \[claude code\]' || true)
+[ -z "$bad_trailers" ] || {
+	printf 'cap: %s carries AI attribution, which rules/commits.md forbids:\n' "$slug" >&2
+	printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
+	die "strip them, then land again"
+}
+
+long_summaries=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='%h %s' |
+	awk '{ s = substr($0, index($0, " ") + 1); if (length(s) > 50) printf "%s (%d chars)\n", $0, length(s) }')
+[ -z "$long_summaries" ] || {
+	printf 'cap: %s has summaries over the 50-character limit:\n' "$slug" >&2
+	printf '%s\n' "$long_summaries" | sed 's/^/  /' >&2
+	die "reword them, then land again"
+}
+
 case $CAP_MODE in
 local)
 	git -C "$CAP_REPO" rev-parse --verify "$CAP_BASE" >/dev/null 2>&1 ||
