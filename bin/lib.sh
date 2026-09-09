@@ -44,6 +44,26 @@ task_load() {
 }
 task_slugs() { [ -d "$TASKS" ] && ls -1 "$TASKS" 2>/dev/null || true; }
 
+# One cap command per task at a time.
+#
+# state/tasks/<slug>/ is read-modify-written by gate, check, commit and land,
+# and nothing coordinated them. On 2026-09-09 two `cap gate local-env --full`
+# runs were live at once, each with its own Gate A session, both writing the
+# same report and both about to write gate.json, so whichever finished second
+# silently discarded the other's verdict and the account paid twice for one
+# review. The kernel drops the lock when the holding process exits, so a
+# crashed command never leaves a task wedged.
+task_lock() {
+  local slug=$1
+  local dir=$TASKS/$slug
+  mkdir -p "$dir"
+  exec {CAP_LOCK_FD}>>"$dir/.lock"
+  if ! flock -n "$CAP_LOCK_FD"; then
+    die "$slug is already held by $(cat "$dir/.lock" 2>/dev/null || echo 'another cap command')"
+  fi
+  printf 'pid %s (%s) since %s\n' "$$" "$(basename "$0")" "$(date -u +%H:%M:%SZ)" >"$dir/.lock"
+}
+
 # Read a task field without sourcing its record.
 task_field() {
   local f=$TASKS/$1/task.env

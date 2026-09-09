@@ -12,6 +12,7 @@ for a in "$@"; do
 done
 [ -n "$slug" ] || die "usage: cap gate <slug> [--full]"
 task_load "$slug"
+task_lock "$slug"
 
 sync_base "$CAP_TREE" "$CAP_BASE" ||
   die "$slug: worktree is mid-conflict after syncing onto $CAP_BASE; resolve before gating (see docs/pipeline-notes.md)"
@@ -74,8 +75,13 @@ for pair in "${profiles[@]}"; do
   # cap-gate right here, before the verdict check below ever runs, and cap-ask
   # exits nonzero on precisely the case that check exists for: a session-limit
   # rejection that leaves an empty report behind.
-  if ! "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$out"; then
-    warn "gate $label ($profile) did not run to completion; see $out"
+  # Write to a temp and promote it only once a verdict is in hand. `tee "$out"`
+  # truncated the report before the review had produced a byte, so a session
+  # that died on a quota rejection destroyed the last good one: local-env's
+  # gate-A.md was found at zero bytes with the previous round's findings gone.
+  tmp=$(mktemp)
+  if ! "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$tmp"; then
+    warn "gate $label ($profile) did not run to completion"
   fi
   printf '\n'
 
@@ -85,12 +91,14 @@ for pair in "${profiles[@]}"; do
   # ever written, yet cap-gate printed its reports line and said nothing else.
   # Recording UNKNOWN would be worse still, since gate.json would then claim a
   # result nobody reached.
-  verdict=$(gate_verdict "$out")
+  verdict=$(gate_verdict "$tmp")
   if [ "$verdict" = UNKNOWN ]; then
-    warn "gate $label ($profile) reached no verdict for $slug ($(wc -c <"$out") bytes in $out); not recording a result"
+    warn "gate $label ($profile) reached no verdict for $slug ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
+    rm -f "$tmp"
     incomplete=1
     continue
   fi
+  mv "$tmp" "$out"
   gate_record "$slug" "$label" "$verdict" "$fp"
 done
 
