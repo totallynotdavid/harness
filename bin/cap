@@ -20,6 +20,7 @@ AGENTS
 REVIEW AND DELIVERY
   cap check <slug>                            run checks for an agent
   cap check --repo <project> [--base REF]     run checks for a project
+  cap verify <slug>                           run the project's own tests/lint/typecheck
   cap cleanup <slug> [profile]                clean up comments and readability
   cap gate <slug> [--full]                    review changes (B only, or A+B with --full)
   cap commit <slug> [profile]                 stage and commit changes
@@ -49,7 +50,7 @@ EOF
 
 cmd=${1:-help}; shift || true
 case $cmd in
-  spawn|crew|peek|send|watch|land|restack|drop|ask|cleanup|commit|gate|map|reconcile|papercut|project|skills|check|conventions|explore|history)
+  spawn|crew|peek|send|watch|land|restack|drop|ask|cleanup|commit|gate|map|reconcile|papercut|project|skills|check|verify|conventions|explore|history)
     exec "$CAP_HOME/bin/cap-$cmd" "$@" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 1 ;;

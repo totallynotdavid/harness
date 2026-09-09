@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# cap-verify - run a task's own test/lint/typecheck commands directly, no
+# model session. Answers "is this actually fixed" deterministically for
+# anything the project's own tooling can check, instead of spending a gate
+# round to re-derive the same answer (see docs/pipeline-notes.md).
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+slug=${1:?usage: cap verify <slug>}
+task_load "$slug"
+
+cd "$CAP_TREE" || die "$slug: no worktree at $CAP_TREE"
+
+status=0
+
+run() {
+  printf '=== %s ===\n' "$*"
+  "$@" || status=1
+}
+
+if [ -f mise.toml ] && have mise; then
+  tasks=$(
+    {
+      grep -oE '^\[tasks\."?[A-Za-z0-9_:.-]+"?\]' mise.toml |
+        sed -E 's/^\[tasks\."?([^"]+)"?\]/\1/'
+      awk '/^\[tasks\]$/{f=1;next} /^\[/{f=0} f && /^[A-Za-z0-9_-]+[[:space:]]*=/{sub(/[[:space:]]*=.*/,""); print}' mise.toml
+    } | sort -u
+  )
+  matched=$(printf '%s\n' "$tasks" | grep -E '^(test|lint|typecheck|check|format-check)([:.-].*)?$' || true)
+  [ -n "$matched" ] || die "$slug: no test/lint/typecheck mise tasks found in $CAP_TREE/mise.toml"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    run mise run "$t"
+  done <<<"$matched"
+  exit $status
+fi
+
+if [ -f package.json ]; then
+  pm=npm
+  [ -f pnpm-lock.yaml ] && pm=pnpm
+  [ -f yarn.lock ] && pm=yarn
+  have jq || die "$slug: jq is required to read package.json scripts"
+  scripts=$(jq -r '.scripts // {} | keys[]' package.json 2>/dev/null || true)
+  matched=$(printf '%s\n' "$scripts" | grep -E '^(test|lint|typecheck|check)$' || true)
+  [ -n "$matched" ] || die "$slug: no test/lint/typecheck scripts found in $CAP_TREE/package.json"
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    run "$pm" run "$s"
+  done <<<"$matched"
+  exit $status
+fi
+
+die "$slug: don't know how to verify $CAP_TREE (no mise.toml or package.json); run its checks by hand"

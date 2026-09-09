@@ -120,6 +120,17 @@ had already found nothing wrong with. Gate A still catches real things B misses 
 why `--full` exists and matters before landing), but paying that cost on every intermediate
 round bought nothing most of the time.
 
+## Verify directly before spending a gate round
+
+`cap verify <slug>` runs the task's own test/lint/typecheck commands (read from its
+`mise.toml` or `package.json`, not hardcoded) directly against the worktree, no model
+session involved. Use it to answer "is this specific fix actually there" before either
+sending another `cap send` round or spending a `cap gate` call on the same question - a
+fresh review session re-deriving "does this test pass" from scratch costs a full session
+for an answer a deterministic command already gives for free. It complements gate, it does
+not replace it: passing tests do not by themselves rule out the logic/security classes of
+defect gate exists to catch.
+
 ## Ready-to-land is now tracked, not inferred
 
 `cap gate` records each profile's verdict in `state/tasks/<slug>/gate.json`, tagged with a
