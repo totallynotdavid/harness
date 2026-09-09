@@ -34,29 +34,65 @@ mkdir -p "$TASKS/$slug"
 # every intermediate round paid for a full cold sonnet session per round
 # even when B was the only profile still finding anything (see
 # docs/pipeline-notes.md, "Gate A frequency").
-pairs="B $CAP_GATE_B"
-[ "$full" = 1 ] && pairs="A $CAP_GATE_A
-$pairs"
+profiles=()
+if [ "$full" = 1 ]; then
+  profiles+=("A $CAP_GATE_A")
+fi
+profiles+=("B $CAP_GATE_B")
 
 fp=$(gate_fingerprint "$CAP_TREE" "$CAP_BASE")
 
-printf '%s\n' "$pairs" | while IFS=' ' read -r label profile; do
-  [ -n "$label" ] || continue
+# Iterate an array, never a pipe or a here-string. cap-ask launches a harness
+# that inherits the loop's stdin and eats the remaining profiles, so every
+# gate after the first silently never runs while the command still exits 0.
+# cap-verify had the same defect against its task list.
+incomplete=0
+for pair in "${profiles[@]}"; do
+  read -r label profile <<<"$pair"
   out=$out_dir/$slug.gate-$label.md
 
   printf '## gate %s (%s)\n\n' "$label" "$profile"
-  "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" | tee "$out"
+  # A failing cap-ask must not abort the run. set -e plus pipefail would kill
+  # cap-gate right here, before the verdict check below ever runs, and cap-ask
+  # exits nonzero on precisely the case that check exists for: a session-limit
+  # rejection that leaves an empty report behind.
+  if ! "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$out"; then
+    warn "gate $label ($profile) did not run to completion; see $out"
+  fi
   printf '\n'
 
+  # A gate that reached no verdict is a failed gate, not a silent pass. The
+  # review session can die mid-read (session limit, crashed pane) and leave a
+  # zero-byte report: local-env's gate-A.md was 0 bytes and no gate.json was
+  # ever written, yet cap-gate printed its reports line and said nothing else.
+  # Recording UNKNOWN would be worse still, since gate.json would then claim a
+  # result nobody reached.
   verdict=$(gate_verdict "$out")
+  if [ "$verdict" = UNKNOWN ]; then
+    warn "gate $label ($profile) reached no verdict for $slug ($(wc -c <"$out") bytes in $out); not recording a result"
+    incomplete=1
+    continue
+  fi
   gate_record "$slug" "$label" "$verdict" "$fp"
 done
 
 printf 'reports: %s/%s.gate-A.md %s/%s.gate-B.md\n' "$out_dir" "$slug" "$out_dir" "$slug"
 
+# Exit status is the machine-readable verdict, so a caller can chain on it:
+#   0  ready to land
+#   1  gates ran, the work is not ready
+#   2  a gate did not complete, so nothing was learned either way
 if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
   printf 'READY TO LAND: %s (gate A and B both passed this exact code) - cap commit %s && cap land %s\n' \
     "$slug" "$slug" "$slug"
-elif [ "$full" = 1 ]; then
-  printf 'NOT ready to land: %s (see reports above)\n' "$slug"
+  exit 0
 fi
+
+# Say this on every path. It used to print only under --full, so a plain
+# B-only round that produced nothing looked exactly like a clean one.
+printf 'NOT ready to land: %s (see reports above)\n' "$slug"
+if [ "$incomplete" != 0 ]; then
+  warn "$slug: a gate did not complete; re-run cap gate $slug"
+  exit 2
+fi
+exit 1

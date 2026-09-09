@@ -260,7 +260,24 @@ sync_base() {
 # base plus any uncommitted change. Two gate calls with the same fingerprint
 # reviewed the identical code, regardless of how many commits or stash
 # round-trips happened in between.
-gate_fingerprint() { git -C "$1" diff "$2" 2>/dev/null | sha256sum | cut -d' ' -f1; }
+#
+# Untracked files are part of that, and used to be missing. A task whose
+# deliverable is new files carries almost no tracked diff: local-env added a
+# 17-file .devstack/ directory against 983 bytes of `git diff`. A diff-only
+# fingerprint stayed constant while the actual work changed underneath it, so
+# gate_ready kept reporting a stale PASS as fresh and cap-crew showed `ready`
+# for a review that never saw the deliverable.
+gate_fingerprint() {
+  local tree=$1 base=$2 f
+  {
+    git -C "$tree" diff "$base" 2>/dev/null || true
+    # Hash each path as well as its bytes, so a rename is a new fingerprint.
+    while IFS= read -r -d '' f; do
+      printf '=== %s\n' "$f"
+      cat -- "$tree/$f" 2>/dev/null || true
+    done < <(git -C "$tree" ls-files --others --exclude-standard -z 2>/dev/null | sort -z)
+  } | sha256sum | cut -d' ' -f1
+}
 
 # The exact-line GATE: PASS / GATE: FAIL verdict from a gate report, ignoring
 # any earlier match against the echoed prompt text itself (the prompt
