@@ -251,8 +251,14 @@ gate_fingerprint() { git -C "$1" diff "$2" 2>/dev/null | sha256sum | cut -d' ' -
 # instruction sentence, which is not a verdict).
 gate_verdict() {
   [ -f "$1" ] || { printf 'UNKNOWN'; return; }
-  tail -5 "$1" | grep -x 'GATE: PASS\|GATE: FAIL' | tail -1 | cut -d' ' -f2 ||
-    printf 'UNKNOWN'
+  # Strip each line's leading non-letter clutter first: codex pads with plain
+  # spaces, claude prefixes a "* " bullet marker. Only then does the line
+  # have to be exactly "GATE: PASS"/"GATE: FAIL" (plus trailing whitespace)
+  # to count - never a substring match, which is what the echoed prompt
+  # sentence ("...exactly: GATE: PASS or GATE: FAIL.") would give.
+  tail -15 "$1" | sed -E 's/^[^A-Za-z]*//' |
+    grep -E '^GATE: (PASS|FAIL)[[:space:]]*$' | tail -1 |
+    grep -oE 'PASS|FAIL' || printf 'UNKNOWN'
 }
 
 # Record one profile's verdict for a task at the fingerprint it reviewed.
