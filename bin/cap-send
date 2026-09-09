@@ -9,15 +9,47 @@ text=$*
 [ -n "$text" ] || die "nothing to send"
 pane_live "$slug" || die "pane '$slug' is not live"
 
-pane_send "$slug" "$text"
+ctx=$(pane_context_pct "$slug")
 
-for _ in 1 2 3; do
-	sleep 0.4
-	pane_enter "$slug"
-	sleep 0.6
+deliver() {
+	pane_send "$slug" "$text"
+	for _ in 1 2 3; do
+		sleep 0.4
+		pane_enter "$slug"
+		sleep 0.6
+		# Stop retrying once the message has left the input box.
+		pane_tail "$slug" 6 | grep -qF "${text:0:40}" || break
+	done
+}
 
-	# Stop retrying once the message is sent.
-	pane_tail "$slug" 6 | grep -qF "${text:0:40}" || break
-done
+wait_working() {
+	local i
+	for i in 1 2 3 4 5 6; do
+		sleep 1
+		[ "$(pane_agent_status "$slug")" = working ] && return 0
+	done
+	return 1
+}
 
-printf 'sent to %s\n' "$slug"
+deliver
+started=0
+wait_working && started=1
+
+# A message leaving the input box only proves it was submitted, not that a
+# turn began - this has happened for real: the text sat in the pane with no
+# response and the agent read idle minutes later (see docs/pipeline-notes.md,
+# "Gate A frequency" era investigation). Retry the whole delivery once before
+# giving up, rather than reporting success on a guess.
+if [ "$started" = 0 ]; then
+	warn "$slug: no turn started after the first send; retrying once"
+	deliver
+	wait_working && started=1
+fi
+
+[ "$started" = 1 ] || die "$slug: sent twice but the agent never started a turn - check by hand: cap peek $slug"
+
+if [ -n "$ctx" ] && [ "$ctx" -ge 50 ] 2>/dev/null; then
+	printf 'sent to %s (working, ctx %s%% used - getting large, consider whether this round should be the last)\n' "$slug" "$ctx"
+else
+	printf 'sent to %s (working, ctx %s%% used)\n' "$slug" "${ctx:-?}"
+fi

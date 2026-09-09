@@ -130,6 +130,23 @@ pane_enter() {
   [ -n "$p" ] && herdr pane send-keys "$p" enter >/dev/null 2>&1
 }
 
+# herdr's own reported status ("working"/"idle"/"unknown"), not a guess from
+# output staleness. The authoritative answer to "did a turn actually start."
+pane_agent_status() {
+  local p
+  p=$(task_pane "$1")
+  [ -n "$p" ] || { printf 'unknown'; return; }
+  herdr agent get "$p" 2>/dev/null | jq -r '.result.agent.agent_status // "unknown"' 2>/dev/null ||
+    printf 'unknown'
+}
+
+# The context-used percentage from the pane's own status line, whichever
+# harness's format it is in ("Context 46% used" from codex, "ctx 37% used"
+# from claude). Empty if none is visible yet.
+pane_context_pct() {
+  pane_tail "$1" 8 | grep -oiE '(context|ctx) [0-9]+% used' | tail -1 | grep -oE '[0-9]+'
+}
+
 # A task is idle when its recent output stops changing.
 task_idle_age() {
   local w=$TASKS/$1/watch h
