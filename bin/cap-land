@@ -33,6 +33,21 @@ local)
 	[ "$(git_dirty "$CAP_REPO")" = 0 ] ||
 		die "$CAP_REPO has uncommitted changes"
 
+	# Trial-merge before touching the base. A real merge that conflicts leaves
+	# the repository mid-merge for the captain to clean up, and tests passing
+	# in a worktree are no evidence that two branches compose.
+	# merge-tree exits 1 when it finds conflicts, which `set -e` would turn
+	# into a silent death, so the status is swallowed deliberately. Its first
+	# output line is the tree oid; the conflicted paths follow, then a blank
+	# line before the human-readable summary.
+	conflicts=$({ git -C "$CAP_REPO" merge-tree --write-tree --name-only \
+		"$CAP_BASE" "$CAP_BRANCH" 2>/dev/null || true; } | sed -n '2,/^$/p')
+	[ -z "$conflicts" ] || {
+		printf 'cap: %s would conflict with %s in:\n' "$CAP_BRANCH" "$CAP_BASE" >&2
+		printf '%s\n' "$conflicts" | sed 's/^/  /' >&2
+		die "rebase $CAP_BRANCH onto $CAP_BASE and resolve these first"
+	}
+
 	git -C "$CAP_REPO" checkout "$CAP_BASE" >/dev/null 2>&1
 	git -C "$CAP_REPO" merge --no-ff -m "merge $CAP_BRANCH ($slug)" "$CAP_BRANCH"
 
