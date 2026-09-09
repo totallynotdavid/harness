@@ -106,7 +106,31 @@ stays open across a limit hit, so sending a message after the reset time continu
 same still-running process with zero context loss, which is already the right behavior
 and needs no special handling.
 
-## `cap send` is cheap; `cap spawn` is not
+## Gate A frequency: cheap by default, expensive only when it matters
+
+`cap gate <slug>` now runs Gate B (`$CAP_GATE_B`, cheap) only, by default. Gate A
+(`$CAP_GATE_A`, sonnet, a cold fresh session every call) runs only with `cap gate <slug>
+--full`. Use `--full` for the first review of a task and for the pass right before
+landing. Use the plain, B-only form for every intermediate fix-verify round.
+
+This came from watching one task (`rqueue-role-model`) go through 6 recorded fix-verify
+rounds, all attributed to Gate B findings in `status.log`, while Gate A ran in lockstep
+every round anyway, each time paying for a full cold sonnet session to re-review a diff it
+had already found nothing wrong with. Gate A still catches real things B misses (that is
+why `--full` exists and matters before landing), but paying that cost on every intermediate
+round bought nothing most of the time.
+
+## Ready-to-land is now tracked, not inferred
+
+`cap gate` records each profile's verdict in `state/tasks/<slug>/gate.json`, tagged with a
+fingerprint of exactly what was reviewed (`git diff <base>` plus any uncommitted change).
+`cap crew` reads that file: a task whose agent reports `done` shows as `ready` instead only
+when **both** A and B last passed **at the fingerprint the tree has right now** - a stale
+pass (code changed since), a FAIL, or a profile that never ran at all all fall back to
+plain `done`. This exists because `done` alone was indistinguishable from "still needs
+another round": one task went through 6+ fix-verify rounds, each one reported `done`, and
+none of them ever got `cap commit`/`cap land` run against it. `ready` in `cap crew` is the
+signal that was missing - see it, land it, don't start another round on it.
 
 `cap send <slug> "<text>"` injects text into an *already-running* agent pane. The agent
 keeps its accumulated session context, so sending another round of findings costs only

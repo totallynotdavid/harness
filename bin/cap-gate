@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# cap-gate - two independent reviews of a task's changes, before it lands.
+# cap-gate - independent review of a task's changes, before it lands.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap gate <slug>}
+full=0
+slug=""
+for a in "$@"; do
+  case $a in
+    --full) full=1 ;;
+    *) slug=$a ;;
+  esac
+done
+[ -n "$slug" ] || die "usage: cap gate <slug> [--full]"
 task_load "$slug"
 
 sync_base "$CAP_TREE" "$CAP_BASE" ||
@@ -19,16 +27,36 @@ not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL."
 
 out_dir=$CAP_HOME/notes/$CAP_PROJECT
 mkdir -p "$out_dir"
+mkdir -p "$TASKS/$slug"
 
-for pair in "A $CAP_GATE_A" "B $CAP_GATE_B"; do
-  set -- $pair
-  label=$1
-  profile=$2
+# Gate B (cheap) runs every round. Gate A (sonnet, expensive) only runs on
+# --full: the first review and the pass right before landing. Running it
+# every intermediate round paid for a full cold sonnet session per round
+# even when B was the only profile still finding anything (see
+# docs/pipeline-notes.md, "Gate A frequency").
+pairs="B $CAP_GATE_B"
+[ "$full" = 1 ] && pairs="A $CAP_GATE_A
+$pairs"
+
+fp=$(gate_fingerprint "$CAP_TREE" "$CAP_BASE")
+
+printf '%s\n' "$pairs" | while IFS=' ' read -r label profile; do
+  [ -n "$label" ] || continue
   out=$out_dir/$slug.gate-$label.md
 
   printf '## gate %s (%s)\n\n' "$label" "$profile"
   "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" | tee "$out"
   printf '\n'
+
+  verdict=$(gate_verdict "$out")
+  gate_record "$slug" "$label" "$verdict" "$fp"
 done
 
 printf 'reports: %s/%s.gate-A.md %s/%s.gate-B.md\n' "$out_dir" "$slug" "$out_dir" "$slug"
+
+if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
+  printf 'READY TO LAND: %s (gate A and B both passed this exact code) - cap commit %s && cap land %s\n' \
+    "$slug" "$slug" "$slug"
+elif [ "$full" = 1 ]; then
+  printf 'NOT ready to land: %s (see reports above)\n' "$slug"
+fi

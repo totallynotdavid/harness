@@ -238,6 +238,59 @@ sync_base() {
   printf 'cap: synced %s onto current %s before gating\n' "$tree" "$base" >&2
   return 0
 }
+
+# A fingerprint of exactly what a gate call reviews: the full diff against
+# base plus any uncommitted change. Two gate calls with the same fingerprint
+# reviewed the identical code, regardless of how many commits or stash
+# round-trips happened in between.
+gate_fingerprint() { git -C "$1" diff "$2" 2>/dev/null | sha256sum | cut -d' ' -f1; }
+
+# The exact-line GATE: PASS / GATE: FAIL verdict from a gate report, ignoring
+# any earlier match against the echoed prompt text itself (the prompt
+# contains the literal substrings "GATE: PASS" and "GATE: FAIL" inside the
+# instruction sentence, which is not a verdict).
+gate_verdict() {
+  [ -f "$1" ] || { printf 'UNKNOWN'; return; }
+  tail -5 "$1" | grep -x 'GATE: PASS\|GATE: FAIL' | tail -1 | cut -d' ' -f2 ||
+    printf 'UNKNOWN'
+}
+
+# Record one profile's verdict for a task at the fingerprint it reviewed.
+# state/tasks/<slug>/gate.json holds the latest verdict per profile label
+# (A, B), each tagged with the fingerprint it was reviewed at, so a reader
+# can tell whether a PASS still describes the code currently in the tree.
+gate_record() {
+  local slug=$1 label=$2 verdict=$3 fp=$4
+  local f=$TASKS/$slug/gate.json tmp prev
+  prev=$([ -f "$f" ] && cat "$f" || echo '{}')
+  tmp=$(mktemp)
+  if jq -n --argjson prev "$prev" \
+    --arg label "$label" --arg verdict "$verdict" --arg fp "$fp" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '$prev + {($label): {verdict: $verdict, fingerprint: $fp, at: $at}}' >"$tmp" 2>/dev/null; then
+    mv "$tmp" "$f"
+  else
+    rm -f "$tmp"
+    warn "could not record gate verdict for $slug/$label"
+  fi
+}
+
+# Whether a task is ready to land: both A and B last passed, and both did so
+# reviewing the exact code currently in the tree (same fingerprint on both,
+# matching the tree's fingerprint right now). Anything else - one profile
+# never run, a FAIL, or a fingerprint mismatch from code changing since -
+# means "not established as ready" and is reported as such, not guessed at.
+gate_ready() {
+  local slug=$1 tree=$2 base=$3
+  local f=$TASKS/$slug/gate.json cur a_v a_fp b_v b_fp
+  [ -f "$f" ] || return 1
+  cur=$(gate_fingerprint "$tree" "$base")
+  a_v=$(jq -r '.A.verdict // empty' "$f" 2>/dev/null || true)
+  a_fp=$(jq -r '.A.fingerprint // empty' "$f" 2>/dev/null || true)
+  b_v=$(jq -r '.B.verdict // empty' "$f" 2>/dev/null || true)
+  b_fp=$(jq -r '.B.fingerprint // empty' "$f" 2>/dev/null || true)
+  [ "$a_v" = PASS ] && [ "$b_v" = PASS ] && [ "$a_fp" = "$cur" ] && [ "$b_fp" = "$cur" ]
+}
+
 git_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null || echo '-'; }
 git_base() {
   local b

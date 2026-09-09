@@ -9,7 +9,15 @@ status_of() {
 	local status age
 	status=$(task_status_latest "$1")
 	case $status in
-		done|blocked|needs-input|failed)
+		done)
+			if gate_ready "$1" "$CAP_TREE" "$CAP_BASE"; then
+				printf 'ready'
+			else
+				printf 'done'
+			fi
+			return
+			;;
+		blocked|needs-input|failed)
 			printf '%s' "$status"
 			return
 			;;

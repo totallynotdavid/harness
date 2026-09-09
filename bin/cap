@@ -21,7 +21,7 @@ REVIEW AND DELIVERY
   cap check <slug>                            run checks for an agent
   cap check --repo <project> [--base REF]     run checks for a project
   cap cleanup <slug> [profile]                clean up comments and readability
-  cap gate <slug>                             run two independent reviews
+  cap gate <slug> [--full]                    review changes (B only, or A+B with --full)
   cap commit <slug> [profile]                 stage and commit changes
   cap land <slug> [--merge]                   push, open a PR, merge, or file a scout report
   cap restack <slug> [--undo [SNAPSHOT]]      move stacked tasks onto this task's tip
