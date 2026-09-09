@@ -17,8 +17,16 @@ deliver() {
 		sleep 0.4
 		pane_enter "$slug"
 		sleep 0.6
-		# Stop retrying once the message has left the input box.
-		pane_tail "$slug" 6 | grep -qF "${text:0:40}" || break
+		# Stop retrying once the message has left the input box. Check the
+		# END of the text, not the start: pane_tail returns the last N
+		# lines of the pane, which for an unsubmitted multi-line message is
+		# its tail, not its head. Anchoring on the first 40 chars made this
+		# check pass (falsely, "it's gone") for any message longer than the
+		# tail window, because the start had simply scrolled out of view
+		# while the message sat there unsubmitted - found by hand against
+		# relq-executor-ergonomics after wait_working correctly caught the
+		# resulting no-turn-started failure twice in a row.
+		pane_tail "$slug" 6 | grep -qF "${text: -40}" || break
 	done
 }
 
