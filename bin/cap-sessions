@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# cap-sessions - every agent session live on this machine, cap-owned or not.
+#
+# cap crew only knows the tasks this hub spawned. It cannot see a second captain
+# session sharing state/tasks/, a hand-started claude sitting in a project
+# worktree, or a crew pane whose task record was already dropped. All three
+# happened on 2026-09-09, and two of them cost work: two cap-gate runs raced on
+# local-env, and cap/aula-integrate landed while a fix branched from it was
+# still open.
+#
+# The kernel already knows all of this, so nothing here is recorded or tracked.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+rows=""
+for harness in claude codex; do
+	for pid in $(pgrep -x "$harness" 2>/dev/null || true); do
+		cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+		[ -n "$cwd" ] || continue
+
+		last=$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | tail -1 || true)
+		kind=interactive
+		case $last in
+		-*) ;;
+		*) if [ "${#last}" -ge 40 ]; then kind=dispatched; fi ;;
+		esac
+
+		# A worktree directory names its task. Say whether this hub still has a
+		# record for it, because a pane outliving its record is the shape that
+		# leaves a build running for hours after the work is finished.
+		where=$cwd
+		slug=""
+		case $cwd in
+		"$CAP_HOME") where="captain hub" ;;
+		"$CAP_WORK_ROOT"/*)
+			slug=${cwd#"$CAP_WORK_ROOT"/}
+			slug=${slug%%/*}
+			if [ -d "$TASKS/$slug" ]; then
+				where="task $slug"
+			else
+				where="task $slug (no record)"
+			fi
+			;;
+		*)
+			while IFS=$'\t' read -r n p _m _mo; do
+				case $cwd in "$p" | "$p"/*) where="project $n" ;; esac
+			done <"$PROJECTS"
+			;;
+		esac
+
+		rss=$(awk '/^VmRSS:/{print int($2/1024)}' "/proc/$pid/status" 2>/dev/null || echo 0)
+		age=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ' || echo '?')
+		rows="$rows$pid\t$harness\t$kind\t${rss}M\t$age\t$where\n"
+	done
+done
+
+if [ -z "$rows" ]; then
+	echo "no agent sessions running"
+	exit 0
+fi
+
+{
+	printf 'PID\tHARNESS\tKIND\tRSS\tAGE\tWHERE\n'
+	printf "$rows"
+} | column -t -s"$(printf '\t')"
+
+# Two sessions in one repo is the condition worth naming, not the count.
+printf '\n'
+printf "$rows" | awk -F'\t' '{ n[$6]++ } END {
+	for (w in n) if (n[w] > 1) printf "  %d sessions share %s; nothing coordinates them\n", n[w], w
+}'
