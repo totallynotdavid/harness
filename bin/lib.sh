@@ -118,11 +118,31 @@ pane_kill() {
   [ -n "$p" ] && herdr pane close "$p" >/dev/null 2>&1
 }
 
-# Send text without pressing Enter.
+# Send text without pressing Enter. Chunked: herdr pane send-text types
+# straight into the pane with no backpressure, and a target TUI's own input
+# handling can't always keep up. Confirmed by hand against a live codex
+# instance: a single send-text call of a normal multi-paragraph message
+# (well under any documented size limit - 1785 chars) silently dropped
+# everything after roughly the first 1000, mid-word, with no error from
+# herdr or codex. Sending in small pieces with a short pause between each
+# reproduced the identical message intact every time; a single un-chunked
+# call reproduced the drop every time. Chunk size and pause are empirical
+# margin below where drops were observed, not a documented limit from herdr.
 pane_send() {
-  local p
+  local p text chunk_size i n
   p=$(task_pane "$1")
-  [ -n "$p" ] && herdr pane send-text "$p" "$2" >/dev/null 2>&1
+  [ -n "$p" ] || return 0
+  text=$2
+  chunk_size=400
+  n=${#text}
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    herdr pane send-text "$p" "${text:$i:$chunk_size}" >/dev/null 2>&1
+    i=$((i + chunk_size))
+    if [ "$i" -lt "$n" ]; then
+      sleep 0.15
+    fi
+  done
 }
 pane_enter() {
   local p
