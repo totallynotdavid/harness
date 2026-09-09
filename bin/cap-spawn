@@ -85,6 +85,21 @@ if [ "$harness_set" = 0 ] &&
   [ -n "$effort" ] || [ "$profile_effort" = '-' ] || effort=$profile_effort
 fi
 
+# A spawn on an exhausted machine does not fail, it thrashes. Under swap
+# pressure a 17-second build runs for hours holding its whole working set,
+# which makes the pressure worse. Refuse instead, and name what to reclaim.
+avail=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 99999)
+if [ "$avail" -lt "${CAP_MIN_FREE_MB:-1200}" ]; then
+	printf 'cap: %s MB available, need %s\n' "$avail" "${CAP_MIN_FREE_MB:-1200}" >&2
+	reclaimable=""
+	for t in $(task_slugs); do
+		[ "$(task_status_latest "$t" 2>/dev/null)" = done ] || continue
+		reclaimable="$reclaimable $t"
+	done
+	[ -z "$reclaimable" ] || printf 'cap: finished tasks still holding their panes:%s\n' "$reclaimable" >&2
+	die "run cap drop on finished tasks, or raise CAP_MIN_FREE_MB"
+fi
+
 dir=$(task_dir "$slug")
 [ -e "$dir" ] && die "task '$slug' already exists (cap drop $slug first)"
 pane_live "$slug" && die "a pane named '$slug' is already live"
