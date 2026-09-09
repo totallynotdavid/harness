@@ -9,9 +9,15 @@ task_load "$slug"
 
 [ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to clean up"
 
+# Say "tracked and untracked" rather than "changed". A cleanup pass on
+# local-env read only the tracked diff and skipped .devstack/ entirely, which
+# was seventeen new files and the bulk of the change, then reported itself
+# done. A task whose deliverable is a new directory is the normal case, not
+# the exception.
 prompt="Read $CAP_HOME/rules/comments.md and the Readability section of
-$CAP_HOME/rules/code.md, then apply them to every changed file in this
-worktree.
+$CAP_HOME/rules/code.md, then apply them to every file this worktree changes
+against $CAP_BASE. That means both the tracked diff and every untracked file
+git status reports. New files are usually where most of the change is.
 
 Only clean up comments and readability. Remove comments that repeat the code.
 Shorten comments that stay. Rename only misleading names. Remove obvious dead
