@@ -137,4 +137,14 @@ if [ "$harness" = claude ] && printf '%s' "$out" | grep -qF "hit your session li
 fi
 
 # A retry that succeeded past a recorded rejection has nothing left to resume.
-[ -n "$resume_file" ] && rm -f "$resume_file"
+# `[ -n "$resume_file" ] && rm -f ...` as the script's last statement would
+# make cap-ask exit 1 whenever resume_file is unset - i.e. every non-claude
+# harness call, including every Gate B round - because the test's own false
+# result becomes the whole script's exit code with nothing after it to mask
+# it. Under a caller's `set -e`/pipefail (cap-gate) that silently discarded
+# a correct result: Gate B's PASS/FAIL was printed but never reached
+# gate_record, and cap-gate died before its own final summary line. `if`
+# always exits 0 when its condition is false, unlike `&&`.
+if [ -n "$resume_file" ]; then
+  rm -f "$resume_file"
+fi
