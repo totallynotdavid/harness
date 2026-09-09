@@ -7,7 +7,10 @@ Run `cap help` for all flags.
 | Command | What it does |
 | --- | --- |
 | `cap spawn <slug> <project>` | Start an agent for a project. |
+| `cap wave check <name>` | Verify a wave is a real partition of the tree. |
+| `cap wave spawn <name>` | Start a wave's tasks, as many as memory allows. |
 | `cap crew` | Show all agents and their status. |
+| `cap sessions` | Show every agent session on this machine. |
 | `cap peek <slug> [lines]` | Show recent agent output. |
 | `cap send <slug> "<text>"` | Send a message to an agent. |
 | `cap watch` | Wait until an agent needs input. |

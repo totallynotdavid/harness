@@ -3,7 +3,7 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 slug=${1:-}; project=${2:-}; shift 2 2>/dev/null || true
-[ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [--scout] [--heavy|--light] [-f BRIEF]"
+[ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [--owns GLOB] [--scout] [--heavy|--light] [-f BRIEF]"
 case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]";; esac
 
 model=""
@@ -15,6 +15,7 @@ kind=ship
 base=""
 brief_src=""
 parent=""
+owns=""
 while [ $# -gt 0 ]; do
   case $1 in
     -m|--model)   model=${2:?}; shift 2 ;;
@@ -22,6 +23,7 @@ while [ $# -gt 0 ]; do
     -H|--harness) harness=${2:?}; harness_set=1; shift 2 ;;
     --base)       base=${2:?}; shift 2 ;;
     --stack)      parent=${2:?}; shift 2 ;;
+    --owns)       owns="$owns ${2:?}"; shift 2 ;;
     -f|--brief)   brief_src=${2:?}; shift 2 ;;
     --scout)      kind=scout; shift ;;
     # The captain choosing capability, which is always allowed. Quota still
@@ -51,6 +53,36 @@ if [ -n "$parent" ]; then
   base=cap/$parent
   parent_tip=$(git -C "$repo" rev-parse "$base" 2>/dev/null) ||
     die "$parent has no branch $base in $repo"
+fi
+
+owns=${owns# }
+case $owns in *"'"*|*'"'*) die "--owns globs may not be quoted here; pass one glob per flag" ;; esac
+
+# A second ship task on a project is a fan-out, and a fan-out with no declared
+# partition is the shape that produced four agents writing the same four root
+# files. Refuse it here rather than reporting the collision afterwards.
+if [ "$kind" = ship ]; then
+  peers=""
+  for other in $(task_slugs); do
+    [ "$other" != "$slug" ] || continue
+    [ "$(task_field "$other" CAP_PROJECT 2>/dev/null || true)" = "$project" ] || continue
+    [ "$(task_field "$other" CAP_KIND 2>/dev/null || true)" = ship ] || continue
+    peers="$peers $other"
+  done
+
+  if [ -n "$peers" ]; then
+    [ -n "$owns" ] ||
+      die "$project already has$peers in flight; a second task needs --owns (or use cap wave)"
+    for other in $peers; do
+      [ -n "$(task_field "$other" CAP_OWNS 2>/dev/null || true)" ] ||
+        die "$other claims no paths, so it owns everything; drop it or respawn it with --owns"
+    done
+    if taken=$(owns_taken "$project" "$repo" "$owns" "$slug"); then
+      printf 'cap: %s cannot claim ground another task holds:\n' "$slug" >&2
+      printf '%s\n' "$taken" >&2
+      die "narrow --owns, or land the task that holds it first"
+    fi
+  fi
 fi
 
 # Nothing here names a model unless the captain did. An unpinned task asks for
@@ -89,15 +121,16 @@ fi
 # pressure a 17-second build runs for hours holding its whole working set,
 # which makes the pressure worse. Refuse instead, and name what to reclaim.
 avail=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 99999)
-if [ "$avail" -lt "${CAP_MIN_FREE_MB:-1200}" ]; then
-	printf 'cap: %s MB available, need %s\n' "$avail" "${CAP_MIN_FREE_MB:-1200}" >&2
+need=$(project_peak_mb "$project")
+if [ "$avail" -lt "$need" ]; then
+	printf 'cap: %s MB available, %s peaked at %s MB\n' "$avail" "$project" "$need" >&2
 	reclaimable=""
 	for t in $(task_slugs); do
 		[ "$(task_status_latest "$t" 2>/dev/null)" = done ] || continue
 		reclaimable="$reclaimable $t"
 	done
 	[ -z "$reclaimable" ] || printf 'cap: finished tasks still holding their panes:%s\n' "$reclaimable" >&2
-	die "run cap drop on finished tasks, or raise CAP_MIN_FREE_MB"
+	die "run cap drop on finished tasks, or clear state/peaks/$project to re-measure"
 fi
 
 dir=$(task_dir "$slug")
@@ -156,8 +189,30 @@ CAP_KIND=$kind
 CAP_MODEL=$model
 CAP_EFFORT=$effort
 CAP_HARNESS=$harness
+CAP_OWNS=$owns
 CAP_STARTED=$(now)
 EOF
+
+# Install the ownership guard into the worktree itself. A rule the agent is
+# told costs context and can be ignored; a PreToolUse hook cannot. The settings
+# file is per-worktree and never tracked, so it is excluded locally rather than
+# added to the project's .gitignore, which belongs to the project.
+if [ -n "$owns" ]; then
+  mkdir -p "$tree/.claude"
+  jq -n --arg cmd "$CAP_HOME/bin/hooks/guard-task-paths.sh" --arg slug "$slug" '{
+    hooks: {
+      PreToolUse: [{
+        matcher: "Edit|Write|NotebookEdit|MultiEdit",
+        hooks: [{ type: "command", command: ($cmd + " " + $slug) }]
+      }]
+    }
+  }' >"$tree/.claude/settings.local.json"
+
+  excl=$(git -C "$repo" rev-parse --git-common-dir)/info/exclude
+  mkdir -p "$(dirname "$excl")"
+  grep -qxF '.claude/settings.local.json' "$excl" 2>/dev/null ||
+    printf '.claude/settings.local.json\n' >>"$excl"
+fi
 
 report=$CAP_HOME/notes/$project/$slug.md
 if [ "$kind" = scout ]; then

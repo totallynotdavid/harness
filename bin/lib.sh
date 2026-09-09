@@ -44,6 +44,155 @@ task_load() {
 }
 task_slugs() { [ -d "$TASKS" ] && ls -1 "$TASKS" 2>/dev/null || true; }
 
+# What one task of a project actually costs in memory.
+#
+# CAP_MIN_FREE_MB was a guess. The harness runs these builds, so it can measure
+# instead: a nuxt build that takes seventeen seconds with memory free ran for
+# three hours and eighteen minutes under swap exhaustion, holding 772 MB the
+# whole time and deepening the pressure that caused it. Parallelism is faster
+# only while the working set fits.
+PEAKS=$CAP_HOME/state/peaks
+
+project_peak_mb() {
+  local f=$PEAKS/$1 v=""
+  [ -f "$f" ] && v=$(cat "$f" 2>/dev/null || true)
+  case $v in
+  '' | *[!0-9]*) printf '%s' "${CAP_MIN_FREE_MB:-1200}" ;;
+  *) printf '%s' "$v" ;;
+  esac
+}
+
+# Keep the high-water mark, never the latest reading. A run that happened to be
+# cheap must not license a fan-out the expensive run cannot survive.
+project_peak_record() {
+  local project=$1 mb=$2 cur=0
+  case $mb in '' | *[!0-9]*) return 0 ;; esac
+  mkdir -p "$PEAKS"
+  # Compare against what was recorded, never against the fallback. Comparing
+  # with project_peak_mb means a first real reading below the default is
+  # discarded and the guess survives forever.
+  cur=$(cat "$PEAKS/$project" 2>/dev/null || echo 0)
+  case $cur in '' | *[!0-9]*) cur=0 ;; esac
+  if [ "$mb" -gt "$cur" ]; then printf '%s\n' "$mb" >"$PEAKS/$project"; fi
+}
+
+# How many more tasks this box can hold for a project, right now.
+project_slots() {
+  local project=$1 avail peak
+  avail=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+  peak=$(project_peak_mb "$project")
+  [ "$peak" -gt 0 ] || peak=1200
+  printf '%s' "$((avail / peak))"
+}
+
+# The project a wave file names in its header.
+wave_project() {
+  sed -n 's/^#[[:space:]]*project:[[:space:]]*//p' "$1" 2>/dev/null | head -1
+}
+
+# Path ownership.
+#
+# A collision is a property of a set of tasks, not of any one of them, so
+# nothing that looks at a single task can see one coming. Four agents each
+# wrote their own package.json, vitest.config.ts, .env.example and lockfile
+# because the repository root belonged to nobody. A task now declares the paths
+# it owns and the harness refuses a second claim on the same ground.
+#
+# Globs use git's :(glob) pathspec, so ** crosses directories and * does not.
+# A glob may not contain a space.
+
+# The literal prefix of a glob, up to the first wildcard. Two globs whose
+# prefixes contain one another can collide on a file that does not exist yet,
+# which is what .env.example did.
+owns_prefix() {
+  local g=${1%%[*?[]*}
+  printf '%s' "${g%/}"
+}
+
+# Every file in a worktree that a glob set claims, tracked and untracked alike.
+owns_files() {
+  local tree=$1 g
+  shift
+  for g in "$@"; do
+    git -C "$tree" ls-files -co --exclude-standard -- ":(glob)$g" 2>/dev/null || true
+  done | sort -u
+}
+
+# Print what two glob sets share and return 0, or return 1 when they are
+# disjoint. Concrete files first, then prefixes for ground neither has touched.
+owns_overlap() {
+  local tree=$1 shared pa pb
+  local -a a b
+  read -r -a a <<<"$2"
+  read -r -a b <<<"$3"
+  [ "${#a[@]}" -gt 0 ] && [ "${#b[@]}" -gt 0 ] || return 1
+
+  shared=$(comm -12 \
+    <(owns_files "$tree" "${a[@]}") \
+    <(owns_files "$tree" "${b[@]}") 2>/dev/null || true)
+  if [ -n "$shared" ]; then
+    printf '%s\n' "$shared"
+    return 0
+  fi
+
+  for pa in "${a[@]}"; do
+    pa=$(owns_prefix "$pa")/
+    for pb in "${b[@]}"; do
+      pb=$(owns_prefix "$pb")/
+      case $pa in "$pb"*) printf '%s overlaps %s\n' "${pa%/}" "${pb%/}"; return 0 ;; esac
+      case $pb in "$pa"*) printf '%s overlaps %s\n' "${pa%/}" "${pb%/}"; return 0 ;; esac
+    done
+  done
+  return 1
+}
+
+# A glob as an anchored regex, following git's :(glob) pathspec rules: **
+# crosses directory separators, * does not.
+owns_regex() {
+  printf '%s' "$1" | awk '{
+    out = ""
+    for (i = 1; i <= length($0); i++) {
+      c = substr($0, i, 1)
+      if (c == "*") {
+        if (substr($0, i + 1, 1) == "*") { out = out ".*"; i++ }
+        else { out = out "[^/]*" }
+      } else if (c == "?") { out = out "[^/]" }
+      else if (index(".^$+(){}[]|\\", c) > 0) { out = out "\\" c }
+      else { out = out c }
+    }
+    print "^" out "$"
+  }'
+}
+
+# Whether a repository-relative path falls inside a glob set.
+owns_claims() {
+  local path=$1 g
+  shift
+  for g in "$@"; do
+    if printf '%s\n' "$path" | grep -qE "$(owns_regex "$g")"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Whether any live task in the same project already claims this ground. Prints
+# the claimants and returns 0 when it finds one.
+owns_taken() {
+  local project=$1 tree=$2 globs=$3 self=${4:-} other otree hit found=1
+  for other in $(task_slugs); do
+    [ "$other" != "$self" ] || continue
+    [ "$(task_field "$other" CAP_PROJECT 2>/dev/null || true)" = "$project" ] || continue
+    otree=$(task_field "$other" CAP_TREE 2>/dev/null || true)
+    [ -n "$otree" ] && [ -e "$otree/.git" ] || continue
+    hit=$(owns_overlap "$tree" "$globs" "$(task_field "$other" CAP_OWNS 2>/dev/null || true)") || continue
+    printf '%s claims:\n' "$other"
+    printf '%s\n' "$hit" | sed 's/^/    /'
+    found=0
+  done
+  return $found
+}
+
 # One cap command per task at a time.
 #
 # state/tasks/<slug>/ is read-modify-written by gate, check, commit and land,

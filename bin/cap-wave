@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# cap-wave - dispatch a set of tasks whose paths cannot collide.
+#
+# cap spawn takes one slug. A collision is a property of a set of tasks and not
+# of any member, so a single-task command structurally cannot see one coming.
+# That is why four agents each wrote their own package.json, vitest.config.ts,
+# .env.example and lockfile, and why the merge afterwards had to be done by
+# hand and still reported done while the suite was broken.
+#
+# The wave is the unit that can. Partitioning the tree is the plan, so the
+# command that refuses an overlapping partition is the command that forces the
+# planning to happen.
+#
+#   state/waves/<name>.tsv
+#     # project: aula
+#     slug <TAB> globs <TAB> brief path <TAB> base (optional)
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+WAVES=$CAP_HOME/state/waves
+
+cmd=${1:-list}
+[ "$cmd" = list ] || shift
+
+case $cmd in
+list)
+	[ -d "$WAVES" ] || { echo "no waves"; exit 0; }
+	found=0
+	for f in "$WAVES"/*.tsv; do
+		[ -e "$f" ] || continue
+		found=1
+		n=$(basename "$f" .tsv)
+		rows=$(grep -cvE '^\s*(#|$)' "$f" || true)
+		printf '%-24s %s rows  (project %s)\n' "$n" "$rows" "$(wave_project "$f")"
+	done
+	[ "$found" = 1 ] || echo "no waves"
+	exit 0
+	;;
+check | spawn) ;;
+*) die "usage: cap wave [list|check <name>|spawn <name>]" ;;
+esac
+
+name=${1:?usage: cap wave $cmd <name>}
+file=$WAVES/$name.tsv
+[ -f "$file" ] || die "no wave '$name' at $file"
+
+project=$(wave_project "$file")
+[ -n "$project" ] || die "$name has no '# project: <name>' line"
+repo=$(proj_path "$project")
+[ -d "$repo/.git" ] || die "$repo is not a git repo"
+
+slugs=()
+globs=()
+briefs=()
+bases=()
+while IFS=$'\t' read -r s g b base || [ -n "${s:-}" ]; do
+	case ${s:-} in '' | \#*) continue ;; esac
+	slugs+=("$s")
+	globs+=("$g")
+	briefs+=("$b")
+	bases+=("${base:-}")
+done <"$file"
+
+n=${#slugs[@]}
+[ "$n" -gt 0 ] || die "$name has no rows"
+
+fail=0
+note() { printf '  %s\n' "$*"; }
+
+printf '## rows\n'
+for i in $(seq 0 $((n - 1))); do
+	printf '  %-22s %s\n' "${slugs[$i]}" "${globs[$i]}"
+done
+
+printf '\n## names\n'
+for i in $(seq 0 $((n - 1))); do
+	s=${slugs[$i]}
+	case $s in *[!a-zA-Z0-9._-]*) note "$s is not a usable slug"; fail=1 ;; esac
+	if [ -d "$TASKS/$s" ]; then
+		note "$s already exists as a task"
+		fail=1
+	fi
+	for j in $(seq 0 $((n - 1))); do
+		[ "$j" -gt "$i" ] || continue
+		[ "$s" != "${slugs[$j]}" ] || { note "$s appears twice"; fail=1; }
+	done
+	if [ -z "${briefs[$i]}" ] || [ ! -f "${briefs[$i]}" ]; then
+		note "$s has no brief at '${briefs[$i]}'"
+		fail=1
+	fi
+	[ -n "${globs[$i]}" ] || { note "$s claims no paths"; fail=1; }
+done
+[ "$fail" = 0 ] && note ok
+
+printf '\n## partition\n'
+part=0
+for i in $(seq 0 $((n - 1))); do
+	for j in $(seq 0 $((n - 1))); do
+		[ "$j" -gt "$i" ] || continue
+		if hit=$(owns_overlap "$repo" "${globs[$i]}" "${globs[$j]}"); then
+			note "${slugs[$i]} and ${slugs[$j]} claim the same ground:"
+			printf '%s\n' "$hit" | sed 's/^/      /'
+			part=1
+			fail=1
+		fi
+	done
+done
+[ "$part" = 0 ] && note "disjoint"
+
+printf '\n## coverage\n'
+claimed=$(mktemp)
+for i in $(seq 0 $((n - 1))); do
+	read -r -a gs <<<"${globs[$i]}"
+	owns_files "$repo" "${gs[@]}"
+done | sort -u >"$claimed"
+
+# An unclaimed path is not an error. It is a path no task in this wave can
+# write, which is exactly the intent for the repository root: dependencies get
+# settled in the foundation, before the fan-out, not by four agents at once.
+git -C "$repo" ls-files | sed 's|/.*||' | sort -u | while read -r top; do
+	total=$(git -C "$repo" ls-files -- "$top" | wc -l)
+	held=$(grep -cE "^$(printf '%s' "$top" | sed 's/[].[^$\\*]/\\&/g')(/|$)" "$claimed" || true)
+	if [ "$held" = 0 ]; then
+		printf '  %-28s unclaimed (%s files)\n' "$top" "$total"
+	elif [ "$held" != "$total" ]; then
+		printf '  %-28s %s of %s files claimed\n' "$top" "$held" "$total"
+	fi
+done
+rm -f "$claimed"
+
+printf '\n## capacity\n'
+slots=$(project_slots "$project")
+peak=$(project_peak_mb "$project")
+printf '  %s rows, %s peaked at %s MB, room for %s now\n' "$n" "$project" "$peak" "$slots"
+
+if [ "$fail" != 0 ]; then
+	printf '\n'
+	die "$name is not a partition; fix the rows above"
+fi
+
+[ "$cmd" = spawn ] || exit 0
+
+printf '\n## spawn\n'
+started=0
+for i in $(seq 0 $((n - 1))); do
+	s=${slugs[$i]}
+	[ ! -d "$TASKS/$s" ] || continue
+	if [ "$started" -ge "$slots" ]; then
+		printf '  %-22s queued, not enough memory\n' "$s"
+		continue
+	fi
+	args=()
+	read -r -a gs <<<"${globs[$i]}"
+	for g in "${gs[@]}"; do args+=(--owns "$g"); done
+	[ -z "${bases[$i]}" ] || args+=(--base "${bases[$i]}")
+	if "$CAP_HOME/bin/cap-spawn" "$s" "$project" "${args[@]}" -f "${briefs[$i]}"; then
+		started=$((started + 1))
+	else
+		printf '  %-22s spawn failed\n' "$s"
+	fi
+done
+printf '\n%s of %s started; run cap wave spawn %s again when memory frees\n' \
+	"$started" "$n" "$name"

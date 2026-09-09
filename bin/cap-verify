@@ -16,10 +16,31 @@ status=0
 # stdin consumes the rest of the task list feeding the loop below, so only the
 # first check runs and cap-verify still exits 0: `mise run check` (docker
 # compose underneath) swallowed the list and check:certificate never ran.
+# Record the high-water mark while the project's own tooling runs. This is the
+# only place the harness watches a real build, so it is the only place a
+# capacity number can come from that is not a guess.
+peak_kb=0
 run() {
   printf '=== %s ===\n' "$*"
-  "$@" </dev/null || status=1
+  local m rss
+  if [ -x /usr/bin/time ]; then
+    m=$(mktemp)
+    /usr/bin/time -f '%M' -o "$m" "$@" </dev/null || status=1
+    rss=$(tail -1 "$m" 2>/dev/null || echo 0)
+    rm -f "$m"
+    case $rss in '' | *[!0-9]*) rss=0 ;; esac
+    [ "$rss" -le "$peak_kb" ] || peak_kb=$rss
+  else
+    "$@" </dev/null || status=1
+  fi
 }
+
+record_peak() {
+  [ "$peak_kb" -gt 0 ] || return 0
+  project_peak_record "$CAP_PROJECT" "$((peak_kb / 1024))"
+  printf 'peak %s MB for %s\n' "$((peak_kb / 1024))" "$CAP_PROJECT"
+}
+trap record_peak EXIT
 
 if [ -f mise.toml ] && have mise; then
   tasks=$(
