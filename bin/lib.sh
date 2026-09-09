@@ -44,6 +44,25 @@ task_load() {
 }
 task_slugs() { [ -d "$TASKS" ] && ls -1 "$TASKS" 2>/dev/null || true; }
 
+# Which commits the project's own tooling has actually passed on.
+#
+# Verification is a fact about a commit, so it is recorded against one. A
+# fan-out from a base nobody has built is how four slices came to invent four
+# different vitest configs.
+VERIFIED=$CAP_HOME/state/verified
+
+verified_record() {
+  local project=$1 sha=$2
+  [ -n "$sha" ] || return 0
+  mkdir -p "$VERIFIED/$project"
+  : >"$VERIFIED/$project/$sha"
+}
+
+verified_is() {
+  local project=$1 sha=$2
+  [ -n "$sha" ] && [ -f "$VERIFIED/$project/$sha" ]
+}
+
 # What one task of a project actually costs in memory.
 #
 # CAP_MIN_FREE_MB was a guess. The harness runs these builds, so it can measure

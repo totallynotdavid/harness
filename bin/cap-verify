@@ -5,12 +5,28 @@
 # round to re-derive the same answer (see docs/pipeline-notes.md).
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap verify <slug>}
-task_load "$slug"
+# Two subjects, one procedure. A task is verified in its worktree; a project is
+# verified in its own checkout, which is how a base earns the right to be
+# forked more than once.
+if [ "${1:-}" = --repo ]; then
+  CAP_PROJECT=${2:?usage: cap verify --repo <project>}
+  CAP_TREE=$(proj_path "$CAP_PROJECT")
+  slug=$CAP_PROJECT
+  [ -d "$CAP_TREE/.git" ] || die "$CAP_TREE is not a git repo"
+else
+  slug=${1:?usage: cap verify <slug> | cap verify --repo <project>}
+  task_load "$slug"
+fi
 
 cd "$CAP_TREE" || die "$slug: no worktree at $CAP_TREE"
 
+sha=$(git -C "$CAP_TREE" rev-parse HEAD 2>/dev/null || true)
+dirty=$(git_dirty "$CAP_TREE")
+
 status=0
+# A die before any check leaves status at 0, so the trap needs to know whether
+# anything actually ran before it records a commit as verified.
+ran=0
 
 # Every check runs with stdin closed. A check that inherits this script's
 # stdin consumes the rest of the task list feeding the loop below, so only the
@@ -35,12 +51,19 @@ run() {
   fi
 }
 
-record_peak() {
-  [ "$peak_kb" -gt 0 ] || return 0
-  project_peak_record "$CAP_PROJECT" "$((peak_kb / 1024))"
-  printf 'peak %s MB for %s\n' "$((peak_kb / 1024))" "$CAP_PROJECT"
+on_exit() {
+  if [ "$peak_kb" -gt 0 ]; then
+    project_peak_record "$CAP_PROJECT" "$((peak_kb / 1024))"
+    printf 'peak %s MB for %s\n' "$((peak_kb / 1024))" "$CAP_PROJECT"
+  fi
+  # Only a clean tree earns the record. A pass with uncommitted changes says
+  # nothing about the commit anyone else would fork from.
+  if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$dirty" = 0 ]; then
+    verified_record "$CAP_PROJECT" "$sha"
+    printf '%s verified at %s\n' "$CAP_PROJECT" "${sha:0:12}"
+  fi
 }
-trap record_peak EXIT
+trap on_exit EXIT
 
 if [ -f mise.toml ] && have mise; then
   tasks=$(
@@ -59,6 +82,7 @@ if [ -f mise.toml ] && have mise; then
     [ -n "$t" ] || continue
     run mise run "$t"
   done
+  ran=1
   printf '\n%s task(s) run\n' "${#list[@]}"
   exit $status
 fi
@@ -76,6 +100,7 @@ if [ -f package.json ]; then
     [ -n "$s" ] || continue
     run "$pm" run "$s"
   done
+  ran=1
   printf '\n%s script(s) run\n' "${#list[@]}"
   exit $status
 fi

@@ -77,6 +77,13 @@ if [ "$kind" = ship ]; then
       [ -n "$(task_field "$other" CAP_OWNS 2>/dev/null || true)" ] ||
         die "$other claims no paths, so it owns everything; drop it or respawn it with --owns"
     done
+    # Foundation first, enforced rather than described. One task on a broken
+    # base is fine, that is the task fixing it. Two or more is a fan-out, and
+    # the only way to reach a verified base is to have built one.
+    basesha=$(git -C "$repo" rev-parse --verify -q "${base:-$(git_base "$repo")}" 2>/dev/null || true)
+    verified_is "$project" "$basesha" ||
+      die "$project has not passed cap verify at ${basesha:0:12}; build the base before forking it again"
+
     if taken=$(owns_taken "$project" "$repo" "$owns" "$slug"); then
       printf 'cap: %s cannot claim ground another task holds:\n' "$slug" >&2
       printf '%s\n' "$taken" >&2
