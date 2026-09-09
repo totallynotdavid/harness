@@ -51,14 +51,26 @@ pr)
 	git -C "$CAP_TREE" push -u origin "$CAP_BRANCH"
 	repo_url=$(git -C "$CAP_REPO" remote get-url origin)
 
-	# A push needs a moment to propagate before GitHub will accept a PR against it.
+	# A push needs a moment to propagate before GitHub will accept a PR
+	# against it. 5 attempts x 3s (15s total) was not enough in practice -
+	# hit repeatedly (see paper-cuts.md) with the retry loop giving up
+	# while a manual `gh pr create` moments later succeeded immediately.
+	# Longer backoff, and the real stderr surfaced on failure instead of
+	# discarded, so a future failure states its actual cause instead of
+	# just "could not open a PR".
 	url=""
-	for _ in 1 2 3 4 5; do
-		url=$(gh pr create --repo "$repo_url" --head "$CAP_BRANCH" --base "$CAP_BASE" --fill 2>/dev/null) && break
-		url=$(gh pr view "$CAP_BRANCH" --repo "$repo_url" --json url -q .url 2>/dev/null) && break
-		sleep 3
+	err_file=$(mktemp)
+	for i in 1 2 3 4 5 6 7 8; do
+		url=$(gh pr create --repo "$repo_url" --head "$CAP_BRANCH" --base "$CAP_BASE" --fill 2>"$err_file") && break
+		url=$(gh pr view "$CAP_BRANCH" --repo "$repo_url" --json url -q .url 2>"$err_file") && break
+		sleep "$((i * 2))"
 	done
-	[ -n "$url" ] || die "could not open a PR for $CAP_BRANCH"
+	if [ -z "$url" ]; then
+		err=$(cat "$err_file" 2>/dev/null)
+		rm -f "$err_file"
+		die "could not open a PR for $CAP_BRANCH after 8 retries: ${err:-no error output captured}"
+	fi
+	rm -f "$err_file"
 
 	task_env_set "$slug" CAP_PR "$url"
 	printf 'PR: %s\n' "$url"
