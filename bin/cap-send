@@ -38,6 +38,7 @@ $text"
   case $CAP_HARNESS in
     claude)
       if [ -n "${CAP_EFFORT:-}" ]; then margs+=(--effort "$CAP_EFFORT"); fi
+      # shellcheck disable=SC2206 # CAP_AGENT_FLAGS is a flag string, split on purpose
       cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$kick")
       ;;
     codex)
@@ -78,7 +79,8 @@ deliver() {
 }
 
 wait_working() {
-	local i
+		local i
+	# shellcheck disable=SC2034 # a counted retry, the body does not read i
 	for i in 1 2 3 4 5 6; do
 		sleep 1
 		[ "$(pane_agent_status "$slug")" = working ] && return 0

@@ -1,0 +1,21 @@
+# Captain runs its own gates on itself. Two shell defects surfaced in one day
+# that these would have caught: a bare `[ cond ] && cmd` that aborts under
+# set -e, and `local a=$1 b=$a`, which fails under set -u because local expands
+# every word before it assigns any of them. shellcheck calls the second SC2318.
+
+[tools]
+shellcheck = "0.11.0"
+shfmt = "3.14.1"
+
+[tasks.lint]
+description = "shellcheck every shell script in bin/"
+# cap-history is python. SC1091 is a sourced file shellcheck cannot follow.
+run = "shellcheck -S warning -e SC1091 $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/hooks/*.sh)"
+
+[tasks."check:syntax"]
+description = "parse every shell script without running it"
+run = "for f in $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/hooks/*.sh); do bash -n \"$f\" || exit 1; done"
+
+# No format-check task yet. shfmt would rewrite 1828 lines, because bin/ carries
+# two coexisting styles, and a gate that fails on every run teaches people to
+# ignore its output. Reformatting is its own task, on a quiet tree.

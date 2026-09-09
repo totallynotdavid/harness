@@ -133,7 +133,7 @@ if [ "$avail" -lt "$need" ]; then
 	printf 'cap: %s MB available, %s peaked at %s MB\n' "$avail" "$project" "$need" >&2
 	reclaimable=""
 	for t in $(task_slugs); do
-		[ "$(task_status_latest "$t" 2>/dev/null)" = done ] || continue
+		[ "$(task_status_latest "$t" 2>/dev/null)" = "done" ] || continue
 		reclaimable="$reclaimable $t"
 	done
 	[ -z "$reclaimable" ] || printf 'cap: finished tasks still holding their panes:%s\n' "$reclaimable" >&2
@@ -221,6 +221,30 @@ if [ -n "$owns" ]; then
     printf '.claude/settings.local.json\n' >>"$excl"
 fi
 
+# Make the worktree usable before the agent is told it is ready. Best effort:
+# a project whose setup cannot be inferred is not a project to refuse, and a
+# failed install is often the very thing the task exists to fix, so both are
+# reported rather than fatal.
+preflight_note=""
+if [ "$kind" = ship ]; then
+  preflight_tools "$project"
+  printf 'cap: preparing %s\n' "$tree" >&2
+  plog=$(mktemp)
+  if preflight_deps "$tree" >"$plog" 2>&1; then
+    preflight_note="Dependencies are installed. The worktree is ready to build."
+  elif [ -s "$plog" ]; then
+    preflight_note="Dependency install did not complete. Its output:
+
+\`\`\`
+$(tail -20 "$plog")
+\`\`\`"
+    warn "$slug: dependency install did not complete; see the contract"
+  else
+    preflight_note="Captain could not tell how to install this project's dependencies. Set it up yourself if the task needs it."
+  fi
+  rm -f "$plog"
+fi
+
 report=$CAP_HOME/notes/$project/$slug.md
 if [ "$kind" = scout ]; then
   deliverable="Write a report at $report. Read the code; leave it unchanged."
@@ -234,7 +258,11 @@ cat > "$dir/contract.md" <<EOF
 - $deliverable
 - Report failures plainly, with the output that shows them.
 - Found a second problem? Report it; it becomes its own task.
-
+- A tool you need is missing? Install it from its official instructions and carry on. Add it to \`config/tools/$project\` in Captain so the next worktree has it.
+${owns:+- You own \`$owns\` and nothing else. Writes outside it are blocked. Need a change elsewhere? Say so in your report.
+}${preflight_note:+
+$preflight_note
+}
 ## Status protocol
 
 Append exactly one line per event to $status. Use only these prefixes and nothing else:
@@ -266,6 +294,7 @@ case $harness in
     # the active model's highest supported level on its own (confirmed:
     # notes/captain/effort-levels.md) - no validation needed here.
     [ -n "$effort" ] && margs+=(--effort "$effort")
+    # shellcheck disable=SC2206 # CAP_AGENT_FLAGS is a flag string, split on purpose
     cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$kick")
     ;;
   codex)

@@ -1,4 +1,6 @@
 # bin/lib.sh - shared helpers for cap commands.
+# shellcheck shell=bash
+# shellcheck disable=SC2034 # globals here are read by the bin/cap-* scripts that source this file
 
 set -euo pipefail
 
@@ -43,6 +45,82 @@ task_load() {
   . "$f"
 }
 task_slugs() { [ -d "$TASKS" ] && ls -1 "$TASKS" 2>/dev/null || true; }
+
+# Making a worktree usable before an agent is told it is ready.
+#
+# git worktree add checks out tracked files only, and node_modules is ignored,
+# so a fresh worktree has no dependencies at all. Sixteen of sixty-nine failing
+# tool calls across a day were an agent discovering that one failed turn at a
+# time. A warm install takes ten seconds; the turns cost far more.
+#
+# The install command is detected, never assumed. Five checked-out repositories
+# gave five different answers and one of them needs three at once, so every
+# marker that matches runs, not just the first.
+
+preflight_deps() {
+  local tree=$1 ran=0
+
+  if [ -f "$tree/mise.toml" ] && have mise; then
+    mise trust --yes "$tree/mise.toml" >/dev/null 2>&1 || true
+    (cd "$tree" && mise install -y) && ran=1
+  fi
+  if [ -f "$tree/bun.lock" ] || [ -f "$tree/bun.lockb" ]; then
+    have bun && (cd "$tree" && bun install --frozen-lockfile) && ran=1
+  fi
+  if [ -f "$tree/pnpm-lock.yaml" ]; then
+    have pnpm && (cd "$tree" && pnpm install --frozen-lockfile) && ran=1
+  elif [ -f "$tree/yarn.lock" ]; then
+    have yarn && (cd "$tree" && yarn install --immutable) && ran=1
+  elif [ -f "$tree/package-lock.json" ]; then
+    have npm && (cd "$tree" && npm ci) && ran=1
+  fi
+  if [ -f "$tree/uv.lock" ]; then
+    have uv && (cd "$tree" && uv sync) && ran=1
+  elif [ -f "$tree/poetry.lock" ]; then
+    have poetry && (cd "$tree" && poetry install) && ran=1
+  fi
+  [ ! -f "$tree/Cargo.lock" ] || { have cargo && (cd "$tree" && cargo fetch) && ran=1; }
+  [ ! -f "$tree/go.sum" ] || { have go && (cd "$tree" && go mod download) && ran=1; }
+  [ ! -f "$tree/Gemfile.lock" ] || { have bundle && (cd "$tree" && bundle install) && ran=1; }
+  [ ! -f "$tree/composer.lock" ] || { have composer && (cd "$tree" && composer install) && ran=1; }
+
+  # A project whose setup cannot be inferred is not a project to refuse. Say
+  # nothing and let the agent start.
+  [ "$ran" = 1 ]
+}
+
+# Tools a project needs that nothing in the project declares.
+#
+# No lockfile states that a repository needs pdfinfo, so detection cannot
+# recover it. The list lives here rather than in the project, because Captain
+# is the thing that gets cloned to another machine and because most registered
+# projects are clones nobody should be restructuring.
+#
+#   config/tools/<project>
+#     mise podman
+#     mise php@8.4
+#     sh   sudo apt-get install -y poppler-utils
+preflight_tools() {
+  local project=$1 kind rest
+  local f=$CAP_HOME/config/tools/$project
+  [ -f "$f" ] || return 0
+
+  while read -r kind rest; do
+    case ${kind:-} in
+    '' | \#*) continue ;;
+    mise)
+      have mise || { warn "mise is not installed; cannot provide $rest"; continue; }
+      have "${rest%%@*}" && continue
+      mise use -g "$rest" || warn "could not install $rest"
+      ;;
+    sh)
+      have "$(printf '%s' "$rest" | awk '{print $NF}')" && continue
+      eval "$rest" || warn "could not run: $rest"
+      ;;
+    *) warn "$f: unknown kind '$kind'" ;;
+    esac
+  done <"$f"
+}
 
 # Which commits the project's own tooling has actually passed on.
 #

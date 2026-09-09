@@ -109,6 +109,7 @@ fi
 
 case $harness in
   claude)
+    # shellcheck disable=SC2206 # CAP_AGENT_FLAGS is a flag string, split on purpose
     cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" claude "${resume_args[@]}" "${margs[@]}" $CAP_AGENT_FLAGS "$launch_prompt")
     ;;
   codex)

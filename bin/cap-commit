@@ -32,6 +32,7 @@ commits. Do not edit files. Do not push."
 
 "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
 
+# shellcheck disable=SC1083 # HEAD^{tree} is git syntax, not a brace group
 final_tree=$(git -C "$CAP_TREE" rev-parse HEAD^{tree})
 if [ "$final_tree" = "$snap_tree" ]; then
   git -C "$CAP_TREE" branch -D "$snap_ref" >/dev/null 2>&1
