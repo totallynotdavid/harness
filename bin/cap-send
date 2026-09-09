@@ -7,9 +7,56 @@ shift
 
 text=$*
 [ -n "$text" ] || die "nothing to send"
-pane_live "$slug" || die "pane '$slug' is not live"
 
-ctx=$(pane_context_pct "$slug")
+# A dead pane used to end the command here, which left the captain holding
+# work the agent should be doing: local-env's pane died mid-round and the
+# correction meant for it had to be applied by hand. The task record still
+# holds everything cap-spawn used to open the session in the first place, so
+# bring it back rather than dropping the message.
+#
+# The revived session gets the instruction inside its opening prompt rather
+# than as a second turn. Launching it on the contract alone and then sending
+# would race a turn that has already started, and the pane would be busy
+# exactly when the message arrived.
+revive() {
+  local dir=$TASKS/$slug kick margs=() scrub cmd
+  task_load "$slug"
+  [ -f "$dir/contract.md" ] || die "$slug: pane is not live and there is no contract to restart it from"
+
+  kick="This session replaces one that died. You are still working on $slug in
+this worktree, but the previous session's conversation is gone.
+
+Read $dir/contract.md for the task, then $dir/status.log for what has already
+been done and reported. Do not redo finished work.
+
+Then carry out this instruction from the captain:
+
+$text"
+
+  if [ "$CAP_MODEL" != '-' ]; then margs=(--model "$CAP_MODEL"); fi
+  scrub=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
+  case $CAP_HARNESS in
+    claude)
+      if [ -n "${CAP_EFFORT:-}" ]; then margs+=(--effort "$CAP_EFFORT"); fi
+      cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$kick")
+      ;;
+    codex)
+      if [ -n "${CAP_EFFORT:-}" ]; then margs+=(-c "model_reasoning_effort=$CAP_EFFORT"); fi
+      cmd=("${scrub[@]}" codex "${margs[@]}"
+           --dangerously-bypass-approvals-and-sandbox "$kick")
+      ;;
+    *) die "unknown harness '$CAP_HARNESS'" ;;
+  esac
+
+  require_herdr
+  local pane tabid
+  read -r pane tabid <<<"$(herdr_open "$CAP_TREE" "$slug")"
+  pane_launch "$pane" "${cmd[@]}"
+  task_env_set "$slug" CAP_PANE "$pane"
+  task_env_set "$slug" CAP_TAB "$tabid"
+  warn "$slug: pane was not live; restarted the session on $CAP_MODEL and delivered the message in its opening prompt"
+}
+
 
 deliver() {
 	pane_send "$slug" "$text"
@@ -38,6 +85,16 @@ wait_working() {
 	done
 	return 1
 }
+
+if ! pane_live "$slug"; then
+	revive
+	wait_working ||
+		die "$slug: restarted the session but no turn began - check by hand: cap peek $slug"
+	printf 'restarted %s and sent (working, fresh session)\n' "$slug"
+	exit 0
+fi
+
+ctx=$(pane_context_pct "$slug")
 
 deliver
 started=0
