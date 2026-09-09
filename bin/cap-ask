@@ -132,11 +132,19 @@ herdr pane close "$pane" >/dev/null 2>&1
 
 printf '%s\n' "$out"
 
+# codex says so in its own record rather than in its output: the rollout's
+# rate_limits carry a rate_limit_reached_type once a window is exhausted.
+if [ "$harness" = codex ]; then
+  reached=$(codex_limit_reached)
+  if [ -n "$reached" ]; then
+    read -r _ codex_resets _ <<<"$(usage_read codex)"
+    profile_block "$profile" "$codex_resets"
+    die "codex harness reported a rate limit ($reached); the output above is not a complete result. $profile is out of every ladder until $(date -d "@$codex_resets" '+%H:%M')."
+  fi
+fi
+
 # The claude harness can silently truncate its response when the account is
 # out of quota, producing output that looks like a terse-but-normal answer.
-# There is no codex equivalent here: nothing in this branch runs for a codex
-# profile, so a codex rung is never taken out of a ladder. Captain measures no
-# codex quota at all (see paper-cuts.md).
 # Fail loudly and distinctly instead of letting a caller mistake this for a
 # real result (e.g. an empty gate verdict) - and record enough to resume
 # this exact call next time instead of paying to re-derive it from scratch.

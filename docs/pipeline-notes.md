@@ -190,11 +190,26 @@ reason to stop working. The harness also caches a reading in `~/.claude.json`, w
 and reporting 3% while the live windows were at 70%, so it is a fallback and nothing more.
 
 Readings are per harness. An Anthropic window says nothing about an OpenAI one, so a codex
-rung is never sized against the claude meter. The consequence is that Captain measures no
-codex quota at all: there is no codex status line hook, and `cap ask` only recognises
-claude session-limit rejections, so a codex profile is never taken out of a ladder either.
-`cap budget` prints such a harness as `unmeasured` instead of hiding it. No ladder ships
-with a codex rung, so this costs nothing today; see `paper-cuts.md`.
+rung is never sized against the claude meter.
+
+Codex is read differently because it has no status line hook. It writes the same
+information to disk anyway: every turn appends a `token_count` event to its rollout under
+`~/.codex/sessions/`, carrying `rate_limits.primary` (the 300-minute window) and
+`.secondary` (the 10080-minute one), each with `used_percent` and `resets_at`. Captain
+reads the newest rollout. A window whose `resets_at` has passed counts as empty, not full,
+which matters here and not for claude: a status line rewrites its reading every few
+seconds, a rollout reading can easily outlive its own window.
+
+That record also carries `plan_type`. Captain does not read it, and should not. Reading
+the percentage is measuring the account. Reading the plan is describing it, and the
+description is the part that goes stale.
+
+Codex reports an exhausted window as a field rather than a sentence:
+`rate_limits.rate_limit_reached_type` becomes non-null, and `cap ask` blocks the profile on
+it, the same way the claude "hit your session limit" banner does.
+
+A harness Captain cannot read at all is printed by `cap budget` as `unmeasured` rather than
+omitted, so the gap is visible instead of silent.
 
 `CAP_CEILING=auto` additionally keeps a dispatch at or below the model the captain's own
 session is running, and only for rungs on the captain's own harness, because ranking

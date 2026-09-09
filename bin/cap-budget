@@ -22,17 +22,7 @@ for h in $harnesses; do
     printf '%-8s unmeasured  (no reading in the last %ss; nothing is held back)\n' "$h" "${CAP_USAGE_TTL:-900}"
     continue
   fi
-  detail=""
-  if [ "$src" = cache ]; then
-    detail="from the harness cache in ~/.claude.json"
-  elif usage_files; then
-    detail=$(jq -rs --arg h "$h" '
-      map(select((.harness // "claude") == $h)) | if length == 0 then "" else
-        (max_by(.at)
-         | "5h \(.five_hour.pct // 0 | floor)%, 7d \(.seven_day.pct // 0 | floor)%, read \(now - .at | floor)s ago")
-      end' "$CAP_USAGE_DIR"/*.json 2>/dev/null) || detail=""
-  fi
-  printf '%-8s %s%%  (%s)\n' "$h" "$pct" "$detail"
+  printf '%-8s %s%%  (%s)\n' "$h" "$pct" "$(usage_detail "$h" "$src")"
   if [ "$resets" -gt "$(now)" ] 2>/dev/null; then
     printf '%-8s window resets at %s\n' "" "$(date -d "@$resets" '+%H:%M')"
   fi

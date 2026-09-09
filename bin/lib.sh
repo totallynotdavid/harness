@@ -533,6 +533,36 @@ CAP_BLOCK_DIR=$CAP_HOME/state/usage/blocked
 
 usage_files() { compgen -G "$CAP_USAGE_DIR/*.json" >/dev/null 2>&1; }
 
+# The codex harness has no status line hook, so nothing records a reading for
+# it as it runs. It does write one to disk anyway: every turn appends a
+# token_count event to the session's rollout, and that event carries the same
+# two windows the claude harness reports, under different names. primary is the
+# five-hour window, secondary the weekly one.
+#
+# The same record also carries plan_type ("plus", "pro"). Captain does not read
+# it. Knowing the percentage is measuring the account; knowing the plan is
+# describing it, and a description is the thing that goes stale.
+codex_rollout() {
+  find "$HOME/.codex/sessions" -type f -name 'rollout-*.jsonl' -newermt '-24 hours' \
+    -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
+}
+
+# Non-empty when codex last reported that a window is exhausted. This is the
+# codex equivalent of the claude "hit your session limit" banner, and unlike
+# that banner it is a field rather than a sentence, so it needs no matching.
+codex_limit_reached() {
+  codex_rate_limits | jq -r '.rate_limit_reached_type // empty' 2>/dev/null || true
+}
+
+codex_rate_limits() {
+  local f
+  f=$(codex_rollout)
+  [ -n "$f" ] || return 1
+  grep -h '"rate_limits"' "$f" 2>/dev/null | tail -1 |
+    jq -e '.payload.rate_limits // empty' 2>/dev/null
+}
+
+
 # Measured utilization for one harness, as "<percent> <resets_at> <source>". The
 # percent is the fullest window that harness reports, because the tightest
 # window is the one that will stop the next dispatch.
@@ -554,10 +584,29 @@ usage_read() {
       map(select((.at // 0) >= $cutoff and (.harness // "claude") == $h))
       | if length == 0 then empty else
           (max_by(.at)
-           | [(.five_hour.pct // 0), (.seven_day.pct // 0), (.spend_limit.pct // 0)] as $p
+           | (now) as $n
+           | [(if (.five_hour.resets_at // 0) > $n then (.five_hour.pct // 0) else 0 end),
+              (if (.seven_day.resets_at // 0) > $n then (.seven_day.pct // 0) else 0 end),
+              (.spend_limit.pct // 0)] as $p
            | "\($p | max | floor) \(.five_hour.resets_at // 0) snapshot")
         end
     ' "$CAP_USAGE_DIR"/*.json 2>/dev/null) || out=""
+    if [ -n "$out" ]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  fi
+
+  if [ "$harness" = codex ]; then
+    # A window whose reset time has passed is not still full, it is empty. This
+    # matters here and not for claude, where a status line rewrites the reading
+    # every few seconds; a rollout reading can easily outlive its own window.
+    out=$(codex_rate_limits | jq -r '
+      (now) as $n
+      | (if (.primary.resets_at // 0) > $n then (.primary.used_percent // 0) else 0 end) as $p
+      | (if (.secondary.resets_at // 0) > $n then (.secondary.used_percent // 0) else 0 end) as $s
+      | "\([$p, $s] | max | floor) \(.primary.resets_at // 0) rollout"
+    ' 2>/dev/null) || out=""
     if [ -n "$out" ]; then
       printf '%s\n' "$out"
       return 0
@@ -580,6 +629,29 @@ usage_read() {
   fi
 
   printf -- '- - none\n'
+}
+
+# A human breakdown of one harness's reading, for cap budget. Decisions use
+# usage_read; this exists so a captain can see which window is the tight one.
+usage_detail() {
+  local harness=$1 src=$2
+  case $harness:$src in
+    claude:cache) printf 'from the harness cache in ~/.claude.json' ;;
+    claude:*)
+      usage_files || return 0
+      jq -rs --arg h "$harness" '
+        map(select((.harness // "claude") == $h))
+        | if length == 0 then "" else
+            (max_by(.at)
+             | "5h \(.five_hour.pct // 0 | floor)%, 7d \(.seven_day.pct // 0 | floor)%, read \(now - .at | floor)s ago")
+          end' "$CAP_USAGE_DIR"/*.json 2>/dev/null || true
+      ;;
+    codex:*)
+      codex_rate_limits | jq -r '
+        "5h \(.primary.used_percent // 0 | floor)%, 7d \(.secondary.used_percent // 0 | floor)%, from the newest codex rollout"
+      ' 2>/dev/null || true
+      ;;
+  esac
 }
 
 # The model the captain's own session is running, from the status line
@@ -656,7 +728,7 @@ role_ladder() {
 # The optional second argument is a profile to skip, so a caller that needs two
 # genuinely independent opinions can ask for a second one.
 role_profile() {
-  local role=$1 avoid=${2:-} ladder rung profile top pct ceil rank harness home_harness
+  local role=$1 avoid=${2:-} ladder rung profile top pct ceil rank harness home_harness pair
   ladder=$(role_ladder "$role")
   [ -n "$ladder" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
 
@@ -672,7 +744,14 @@ role_profile() {
     if profile_blocked "$profile"; then
       continue
     fi
-    read -r harness _ <<<"$(ask_profile "$profile")"
+    # A rung naming a profile that does not exist is a typo in the config, not
+    # a dispatch. Skipping it silently would size the ladder against a harness
+    # of "", which measures nothing and therefore holds nothing back.
+    if ! pair=$(ask_profile "$profile" 2>/dev/null); then
+      warn "ladder for role '$role' names unknown profile '$profile'; skipping it"
+      continue
+    fi
+    read -r harness _ <<<"$pair"
     if [ "$harness" = "$home_harness" ]; then
       rank=$(profile_rank "$profile")
       if [ "$rank" != 0 ] && [ "$rank" -gt "$ceil" ]; then
@@ -740,7 +819,7 @@ role_profile_or_die() {
 
   # Report the reading for the ladder's own harness, not some other account's.
   ladder=$(role_ladder "$role")
-  read -r harness _ <<<"$(ask_profile "${ladder%%:*}")"
+  read -r harness _ <<<"$(ask_profile "${ladder%%:*}" 2>/dev/null || printf 'claude -')"
   read -r pct resets src <<<"$(usage_read "$harness")"
   [ "$pct" != '-' ] || pct=unmeasured
   for rung in $ladder; do
