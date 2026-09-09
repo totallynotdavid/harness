@@ -715,6 +715,25 @@ profile_blocked() {
   return 1
 }
 
+# Sizing is a harness decision, so it reports to a file rather than to whoever
+# is watching. A captain running cap spawn is an agent too: a line of routine
+# "role crew -> sonnet" chatter on every dispatch spends its context to tell it
+# something it did not ask for and cannot act on. cap budget reads this back
+# when the answer needs explaining.
+CAP_DISPATCH_LOG=$CAP_USAGE_DIR/dispatch.log
+
+dispatch_log() {
+  local caller=${0##*/}
+  mkdir -p "$CAP_USAGE_DIR" 2>/dev/null || return 0
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$caller" "$1" "$2" "$3" "$4" >>"$CAP_DISPATCH_LOG" 2>/dev/null || return 0
+  # Keep the tail, drop the history. Nobody audits a dispatch from last month.
+  if [ "$(stat -c %s "$CAP_DISPATCH_LOG" 2>/dev/null || echo 0)" -gt 65536 ]; then
+    tail -n 200 "$CAP_DISPATCH_LOG" >"$CAP_DISPATCH_LOG.tmp" 2>/dev/null &&
+      mv "$CAP_DISPATCH_LOG.tmp" "$CAP_DISPATCH_LOG"
+  fi
+}
+
 role_ladder() {
   local var
   var=CAP_LADDER_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
@@ -762,6 +781,7 @@ role_profile() {
     if [ "$pct" != '-' ] && [ "$pct" -gt "$top" ]; then
       continue
     fi
+    dispatch_log "$role" "$profile" "$harness" "$pct"
     printf '%s' "$profile"
     return 0
   done
@@ -780,6 +800,7 @@ role_top() {
     if profile_blocked "$profile"; then
       continue
     fi
+    dispatch_log "$role" "$profile" override -
     printf '%s' "$profile"
     return 0
   done

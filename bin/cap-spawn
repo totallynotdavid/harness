@@ -68,7 +68,6 @@ if [ -z "$model" ]; then
   else
     model=$(role_profile_or_die "$role")
   fi
-  printf 'cap: role %s -> %s\n' "$role" "$model" >&2
 fi
 
 # Resolve model names that refer to cap-ask profiles.

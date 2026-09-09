@@ -60,3 +60,10 @@ printf '\n%-9s %-10s %s\n' ROLE DISPATCHES LADDER
 for role in crew scout gate-a gate-b chore; do
   printf '%-9s %-10s %s\n' "$role" "$(role_profile "$role" || printf -- '-')" "$(role_ladder "$role")"
 done
+
+if [ -s "$CAP_DISPATCH_LOG" ]; then
+  printf '\nrecent decisions (%s)\n' "$CAP_DISPATCH_LOG"
+  # Skip cap-budget's own probes. Asking what would be dispatched is not a
+  # dispatch, and it would otherwise push the real ones out of view.
+  grep -v $'\tcap-budget\t' "$CAP_DISPATCH_LOG" | tail -n 8 | awk -F'\t' '{printf "  %s  %-11s %-8s -> %-7s %s at %s%%\n", $1, $2, $3, $4, $5, $6}'
+fi

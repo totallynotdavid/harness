@@ -19,7 +19,6 @@ case $profile in
   @*)
     role=${profile#@}
     profile=$(role_profile_or_die "$role")
-    printf 'cap: role %s -> %s\n' "$role" "$profile" >&2
     ;;
 esac
 
