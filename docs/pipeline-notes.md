@@ -189,10 +189,18 @@ reason to stop working. The harness also caches a reading in `~/.claude.json`, w
 `cap budget` will fall back to, but that cache is refreshed rarely - it was 25 hours stale
 and reporting 3% while the live windows were at 70%, so it is a fallback and nothing more.
 
+Readings are per harness. An Anthropic window says nothing about an OpenAI one, so a codex
+rung is never sized against the claude meter. The consequence is that Captain measures no
+codex quota at all: there is no codex status line hook, and `cap ask` only recognises
+claude session-limit rejections, so a codex profile is never taken out of a ladder either.
+`cap budget` prints such a harness as `unmeasured` instead of hiding it. No ladder ships
+with a codex rung, so this costs nothing today; see `paper-cuts.md`.
+
 `CAP_CEILING=auto` additionally keeps a dispatch at or below the model the captain's own
-session is running. An account with no Opus access belongs to someone who did not start
-Opus, so this bounds the fleet correctly without Captain ever reading a plan, a seat tier
-or a quota tier.
+session is running, and only for rungs on the captain's own harness, because ranking
+models across vendors is not a comparison that means anything. An account with no Opus
+access belongs to someone who did not start Opus, so this bounds the fleet correctly
+without Captain ever reading a plan, a seat tier or a quota tier.
 
 Run `cap budget` to see the reading, the ceiling, any rate-limited profiles, and what each
 role resolves to right now. `cap spawn --heavy` and `cap spawn -m <model>` still override

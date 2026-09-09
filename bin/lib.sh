@@ -533,19 +533,25 @@ CAP_BLOCK_DIR=$CAP_HOME/state/usage/blocked
 
 usage_files() { compgen -G "$CAP_USAGE_DIR/*.json" >/dev/null 2>&1; }
 
-# Measured account utilization as "<percent> <resets_at> <source>". The percent
-# is the fullest window the harness reports, because the tightest window is the
-# one that will stop the next dispatch. Prints "- - none" when nothing recent
-# enough exists; every caller reads that as "no reason to hold back", never as
-# "full". Refusing to work because the meter is unreadable would be worse than
-# the problem the meter solves.
+# Measured utilization for one harness, as "<percent> <resets_at> <source>". The
+# percent is the fullest window that harness reports, because the tightest
+# window is the one that will stop the next dispatch.
+#
+# Readings are per harness on purpose. An Anthropic window says nothing about
+# an OpenAI one, and sizing a codex rung against a claude meter would be the
+# same mistake as hardcoding a model: a number that describes a different
+# account.
+#
+# Prints "- - none" when nothing recent enough exists, which every caller reads
+# as "no reason to hold back", never as "full". Refusing to work because the
+# meter is unreadable would be worse than the problem the meter solves.
 usage_read() {
-  local cutoff out
+  local harness=${1:-claude} cutoff out
   cutoff=$(($(now) - ${CAP_USAGE_TTL:-900}))
 
   if usage_files; then
-    out=$(jq -rs --argjson cutoff "$cutoff" '
-      map(select((.at // 0) >= $cutoff))
+    out=$(jq -rs --argjson cutoff "$cutoff" --arg h "$harness" '
+      map(select((.at // 0) >= $cutoff and (.harness // "claude") == $h))
       | if length == 0 then empty else
           (max_by(.at)
            | [(.five_hour.pct // 0), (.seven_day.pct // 0), (.spend_limit.pct // 0)] as $p
@@ -558,9 +564,9 @@ usage_read() {
     fi
   fi
 
-  # The harness also caches a usage reading in ~/.claude.json, but only
+  # The claude harness also caches a usage reading in ~/.claude.json, but only
   # refreshes it now and then, so it is a fallback and carries a longer life.
-  if [ -f "$HOME/.claude.json" ]; then
+  if [ "$harness" = claude ] && [ -f "$HOME/.claude.json" ]; then
     out=$(jq -r --argjson cutoff "$(($(now) - 21600))" '
       .cachedUsageUtilization
       | select(((.fetchedAtMs // 0) / 1000) >= $cutoff)
@@ -579,11 +585,18 @@ usage_read() {
 # The model the captain's own session is running, from the status line
 # recording made in this repository. Only this repository: a haiku crewmate's
 # reading must not cap what the captain can dispatch.
-captain_model() {
+captain_model() { captain_field model_id; }
+
+# The harness that model runs under. The ceiling only bounds rungs on this same
+# harness, because a rank comparison across harnesses is meaningless: "opus is
+# stronger than sonnet" is a fact about one vendor's line-up, not a currency.
+captain_harness() { captain_field harness; }
+
+captain_field() {
   usage_files || return 0
-  jq -rs --arg home "$CAP_HOME" '
+  jq -rs --arg home "$CAP_HOME" --arg f "$1" '
     map(select((.cwd // "") == $home or (.project_dir // "") == $home))
-    | if length == 0 then "" else (max_by(.at) | .model_id // "") end
+    | if length == 0 then "" else (max_by(.at) | .[$f] // "") end
   ' "$CAP_USAGE_DIR"/*.json 2>/dev/null || true
 }
 
@@ -643,12 +656,12 @@ role_ladder() {
 # The optional second argument is a profile to skip, so a caller that needs two
 # genuinely independent opinions can ask for a second one.
 role_profile() {
-  local role=$1 avoid=${2:-} ladder rung profile top pct ceil rank
+  local role=$1 avoid=${2:-} ladder rung profile top pct ceil rank harness home_harness
   ladder=$(role_ladder "$role")
   [ -n "$ladder" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
 
-  read -r pct _ _ <<<"$(usage_read)"
   ceil=$(ceiling_rank)
+  home_harness=$(captain_harness)
 
   for rung in $ladder; do
     profile=${rung%%:*}
@@ -659,10 +672,14 @@ role_profile() {
     if profile_blocked "$profile"; then
       continue
     fi
-    rank=$(profile_rank "$profile")
-    if [ "$rank" != 0 ] && [ "$rank" -gt "$ceil" ]; then
-      continue
+    read -r harness _ <<<"$(ask_profile "$profile")"
+    if [ "$harness" = "$home_harness" ]; then
+      rank=$(profile_rank "$profile")
+      if [ "$rank" != 0 ] && [ "$rank" -gt "$ceil" ]; then
+        continue
+      fi
     fi
+    read -r pct _ _ <<<"$(usage_read "$harness")"
     if [ "$pct" != '-' ] && [ "$pct" -gt "$top" ]; then
       continue
     fi
@@ -698,8 +715,8 @@ role_top() {
 # banner carries only a human time like "resets 11pm (UTC)". Zero means neither
 # was readable, and profile_block falls back to its own window.
 limit_reset_epoch() {
-  local human=${1:-} t
-  t=$(usage_read | awk '{print $2}')
+  local harness=${1:-claude} human=${2:-} t
+  t=$(usage_read "$harness" | awk '{print $2}')
   if [ "$t" != '-' ] && [ "${t:-0}" -gt "$(now)" ] 2>/dev/null; then
     printf '%s' "$t"
     return 0
@@ -715,15 +732,18 @@ limit_reset_epoch() {
 }
 
 role_profile_or_die() {
-  local role=$1 p pct resets src rung profile until blocked="" soonest=0 msg
+  local role=$1 p pct resets src rung profile until blocked="" soonest=0 msg ladder harness
   if p=$(role_profile "$role"); then
     printf '%s' "$p"
     return 0
   fi
 
-  read -r pct resets src <<<"$(usage_read)"
+  # Report the reading for the ladder's own harness, not some other account's.
+  ladder=$(role_ladder "$role")
+  read -r harness _ <<<"$(ask_profile "${ladder%%:*}")"
+  read -r pct resets src <<<"$(usage_read "$harness")"
   [ "$pct" != '-' ] || pct=unmeasured
-  for rung in $(role_ladder "$role"); do
+  for rung in $ladder; do
     profile=${rung%%:*}
     if profile_blocked "$profile"; then
       blocked="$blocked $profile"
@@ -734,7 +754,7 @@ role_profile_or_die() {
     fi
   done
 
-  msg="no profile is dispatchable for role '$role' at utilization $pct (source $src)"
+  msg="no profile is dispatchable for role '$role' at $harness utilization $pct (source $src)"
   [ -z "$blocked" ] ||
     msg="$msg; rate limited:$blocked, first back at $(date -d "@$soonest" '+%H:%M')"
   if [ -z "$blocked" ] && [ "$resets" -gt "$(now)" ] 2>/dev/null; then

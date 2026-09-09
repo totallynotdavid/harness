@@ -77,6 +77,9 @@ try:
     snap = {
         "at": int(time.time()),
         "session_id": session,
+        # Which account these windows belong to. A reading from one harness
+        # says nothing about another harness quota.
+        "harness": "claude",
         "model_id": get("model", "id") or "",
         "model": get("model", "display_name") or "",
         "cwd": get("workspace", "current_dir") or get("cwd") or "",

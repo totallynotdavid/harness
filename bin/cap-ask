@@ -134,6 +134,9 @@ printf '%s\n' "$out"
 
 # The claude harness can silently truncate its response when the account is
 # out of quota, producing output that looks like a terse-but-normal answer.
+# There is no codex equivalent here: nothing in this branch runs for a codex
+# profile, so a codex rung is never taken out of a ladder. Captain measures no
+# codex quota at all (see paper-cuts.md).
 # Fail loudly and distinctly instead of letting a caller mistake this for a
 # real result (e.g. an empty gate verdict) - and record enough to resume
 # this exact call next time instead of paying to re-derive it from scratch.
@@ -142,7 +145,7 @@ if [ "$harness" = claude ] && printf '%s' "$out" | grep -qF "hit your session li
   ctx_pct=$(printf '%s' "$out" | grep -oE "ctx [0-9]+% used" | grep -oE '[0-9]+' | head -1)
   # Take this profile out of every ladder until its window resets. This is the
   # only quota signal that is never an estimate: the account itself said no.
-  profile_block "$profile" "$(limit_reset_epoch "$reset_at")"
+  profile_block "$profile" "$(limit_reset_epoch "$harness" "$reset_at")"
   if [ -n "$session_id" ] && [ -n "$resume_file" ]; then
     mkdir -p "$(dirname "$resume_file")"
     jq -n --arg id "$session_id" --arg ctx "${ctx_pct:-100}" \

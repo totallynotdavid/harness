@@ -5,28 +5,41 @@
 # a captain looks when the answer surprises them.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-read -r pct resets src <<<"$(usage_read)"
+# One line per harness that any ladder actually reaches for. A harness with no
+# reading is reported as unmeasured rather than left out, because "Captain is
+# not watching this account at all" is the thing a captain most needs told.
+harnesses=$(
+  for role in crew scout gate-a gate-b chore; do
+    for rung in $(role_ladder "$role"); do
+      ask_profile "${rung%%:*}" | awk '{print $1}'
+    done
+  done | sort -u
+)
 
-if [ "$src" = none ]; then
-  printf 'utilization  unmeasured (no reading in the last %ss; nothing is held back)\n' "${CAP_USAGE_TTL:-900}"
-else
+for h in $harnesses; do
+  read -r pct resets src <<<"$(usage_read "$h")"
+  if [ "$src" = none ]; then
+    printf '%-8s unmeasured  (no reading in the last %ss; nothing is held back)\n' "$h" "${CAP_USAGE_TTL:-900}"
+    continue
+  fi
   detail=""
-  if usage_files; then
-    detail=$(jq -rs '
-      map(select(.at != null)) | if length == 0 then "" else
+  if [ "$src" = cache ]; then
+    detail="from the harness cache in ~/.claude.json"
+  elif usage_files; then
+    detail=$(jq -rs --arg h "$h" '
+      map(select((.harness // "claude") == $h)) | if length == 0 then "" else
         (max_by(.at)
          | "5h \(.five_hour.pct // 0 | floor)%, 7d \(.seven_day.pct // 0 | floor)%, read \(now - .at | floor)s ago")
       end' "$CAP_USAGE_DIR"/*.json 2>/dev/null) || detail=""
   fi
-  [ "$src" != cache ] || detail="from the harness cache in ~/.claude.json"
-  printf 'utilization  %s%%  (%s)\n' "$pct" "$detail"
+  printf '%-8s %s%%  (%s)\n' "$h" "$pct" "$detail"
   if [ "$resets" -gt "$(now)" ] 2>/dev/null; then
-    printf 'resets       %s\n' "$(date -d "@$resets" '+%H:%M')"
+    printf '%-8s window resets at %s\n' "" "$(date -d "@$resets" '+%H:%M')"
   fi
-fi
+done
 
 case ${CAP_CEILING:-auto} in
-  none) printf 'ceiling      none\n' ;;
+  none) printf '\nceiling      none\n' ;;
   auto)
     m=$(captain_model)
     if [ -n "$m" ]; then
@@ -34,12 +47,13 @@ case ${CAP_CEILING:-auto} in
       # detail; the profile is the thing a captain would pin by hand.
       top=$(printf '%s\n' "${CAP_PROFILE_RANK:-}" | tr ' ' '\n' |
         awk -F: -v c="$(ceiling_rank)" '$2==c {print $1; exit}')
-      printf 'ceiling      %s (auto: this session is running %s)\n' "${top:-none}" "$m"
+      printf '\nceiling      %s on %s (auto: this session is running %s)\n' \
+        "${top:-none}" "$(captain_harness)" "$m"
     else
-      printf 'ceiling      none (auto, but no status line reading from %s yet)\n' "$CAP_HOME"
+      printf '\nceiling      none (auto, but no status line reading from %s yet)\n' "$CAP_HOME"
     fi
     ;;
-  *) printf 'ceiling      %s (pinned)\n' "$CAP_CEILING" ;;
+  *) printf '\nceiling      %s (pinned)\n' "$CAP_CEILING" ;;
 esac
 
 blocked=""
