@@ -108,9 +108,8 @@ and needs no special handling.
 
 ## Gate A frequency: cheap by default, expensive only when it matters
 
-`cap gate <slug>` now runs Gate B (`$CAP_GATE_B`, cheap) only, by default. Gate A
-(`$CAP_GATE_A`, sonnet, a cold fresh session every call) runs only with `cap gate <slug>
---full`. Use `--full` for the first review of a task and for the pass right before
+`cap gate <slug>` now runs Gate B (role `gate-b`, cheap) only, by default. Gate A (role
+`gate-a`, a cold fresh session every call) runs only with `cap gate <slug> --full`. Use `--full` for the first review of a task and for the pass right before
 landing. Use the plain, B-only form for every intermediate fix-verify round.
 
 This came from watching one task (`rqueue-role-model`) go through 6 recorded fix-verify
@@ -160,3 +159,41 @@ check `ps aux --sort=-%mem | grep -E "claude|codex"` for duplicates and `herdr p
 for panes with `"agent_status":"unknown"` sitting in a task's worktree (a leftover shell
 with no tracked agent, from a call that crashed or never got its `herdr pane close`).
 `kill -9` genuine orphaned processes; `herdr pane close <pane_id>` empty leftover panes.
+
+## Dispatch sizing: measure the account, do not describe it
+
+Captain used to name a model at every dispatch site (`CAP_AGENT_MODEL`, `CAP_GATE_A`, and
+so on). That is a description of one account on one day. It is wrong for a different plan,
+and it is wrong for the same plan six hours later.
+
+Every dispatch now names a role and resolves it at the moment it runs, from two things
+Captain can actually measure:
+
+- The rate-limit windows the harness reports to the status line. `bin/cap-statusline`
+  prints the line and records the reading in `state/usage/<session>.json`. Every session
+  Captain starts renders it, so the whole fleet keeps the reading fresh for free, with no
+  agent, no API call and no polling.
+- Session-limit rejections. `cap ask` already recognised these; it now also writes the
+  profile to `state/usage/blocked/<profile>` until the reported reset time, which takes
+  that profile out of every ladder.
+
+Wire the status line up once, in `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }
+```
+
+Without it Captain reports `unmeasured` and dispatches the top of each ladder. That is the
+deliberate failure mode: an unreadable meter is a reason to stop holding back, not a
+reason to stop working. The harness also caches a reading in `~/.claude.json`, which
+`cap budget` will fall back to, but that cache is refreshed rarely - it was 25 hours stale
+and reporting 3% while the live windows were at 70%, so it is a fallback and nothing more.
+
+`CAP_CEILING=auto` additionally keeps a dispatch at or below the model the captain's own
+session is running. An account with no Opus access belongs to someone who did not start
+Opus, so this bounds the fleet correctly without Captain ever reading a plan, a seat tier
+or a quota tier.
+
+Run `cap budget` to see the reading, the ceiling, any rate-limited profiles, and what each
+role resolves to right now. `cap spawn --heavy` and `cap spawn -m <model>` still override
+the sizing, which is what a captain overriding it on purpose should look like.

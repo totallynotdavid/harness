@@ -7,6 +7,7 @@ slug=${1:-}; project=${2:-}; shift 2 2>/dev/null || true
 case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]";; esac
 
 model=""
+heavy=0
 effort=""
 harness=$CAP_AGENT_HARNESS
 harness_set=0
@@ -23,7 +24,7 @@ while [ $# -gt 0 ]; do
     --stack)      parent=${2:?}; shift 2 ;;
     -f|--brief)   brief_src=${2:?}; shift 2 ;;
     --scout)      kind=scout; shift ;;
-    --heavy)      model=$CAP_HEAVY_MODEL; shift ;;
+    --heavy)      heavy=1; shift ;;
     *) die "unknown flag $1" ;;
   esac
 done
@@ -47,10 +48,27 @@ if [ -n "$parent" ]; then
     die "$parent has no branch $base in $repo"
 fi
 
-if [ -z "$model" ]; then
+# Nothing here names a model unless the captain did. An unpinned task asks for
+# a role and gets whatever the account can currently afford for that role, so a
+# spawn made at 10% of the window and one made at 85% are not the same spawn.
+role=crew
+if [ "$kind" = scout ]; then
+  role=scout
+fi
+if [ -z "$model" ] && [ "$heavy" = 0 ]; then
   model=$(proj_model "$project" || true)
-  [ -n "$model" ] && [ "$model" != '-' ] || \
-    { [ "$kind" = scout ] && model=$CAP_SCOUT_MODEL || model=$CAP_AGENT_MODEL; }
+  [ -n "$model" ] && [ "$model" != '-' ] || model=""
+fi
+if [ -z "$model" ]; then
+  # --heavy is the captain overriding the sizing on purpose: take the top of
+  # the ladder and spend it, ahead of any project pin.
+  if [ "$heavy" = 1 ]; then
+    model=$(role_top "$role") ||
+      die "every profile for role '$role' is rate limited; run: cap budget"
+  else
+    model=$(role_profile_or_die "$role")
+  fi
+  printf 'cap: role %s -> %s\n' "$role" "$model" >&2
 fi
 
 # Resolve model names that refer to cap-ask profiles.

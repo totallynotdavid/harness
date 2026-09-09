@@ -19,7 +19,7 @@ Run `cap help` for all flags.
 | `cap check <slug>` | Check an agent's changes. |
 | `cap check --repo <project> [--base REF]` | Check project changes without an agent. |
 | `cap cleanup <slug> [profile]` | Clean up comments and readability. |
-| `cap gate <slug>` | Run two independent reviews (`CAP_GATE_A`, `CAP_GATE_B`) before landing. |
+| `cap gate <slug>` | Run two independent reviews (roles `gate-a`, `gate-b`) before landing. |
 | `cap commit <slug> [profile]` | Stage and commit changes. |
 | `cap land <slug> [--merge]` | Push, open a PR, or merge the work. |
 | `cap restack <slug> [--undo]` | Move stacked tasks onto `<slug>`'s tip. |
@@ -34,6 +34,7 @@ Run `cap help` for all flags.
 | `cap map [--sync]` | Update the project list. |
 | `cap reconcile [--remote]` | Show open work across projects. |
 | `cap project <name> [mode] [model]` | Show or change project settings. |
+| `cap budget` | Show measured quota, and what each dispatch role resolves to now. |
 | `cap papercut "<text>"` | Log a problem with Captain. |
 | `cap explore <owner/repo> [--fresh]` | Clone a repo for inspection. |
 | `cap history --repo <name>\|--task <slug> [opts]` | Search past agent sessions. |

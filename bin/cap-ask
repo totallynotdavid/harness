@@ -8,8 +8,20 @@ if [ "${1:-}" = --list ]; then
   exit 0
 fi
 
-profile=${1:?usage: cap ask <profile> "<prompt>" [--dir D]}
+profile=${1:?usage: cap ask <profile|@role> "<prompt>" [--dir D]}
 shift
+
+# A role is resolved to a profile here, at the moment of the call, rather than
+# in configuration. A captain session that has been open for hours dispatches a
+# smaller model once the account's window fills, and a larger one again after
+# it resets, without anyone editing anything or being told to.
+case $profile in
+  @*)
+    role=${profile#@}
+    profile=$(role_profile_or_die "$role")
+    printf 'cap: role %s -> %s\n' "$role" "$profile" >&2
+    ;;
+esac
 
 prompt=${1:?usage: cap ask <profile> "<prompt>"}
 shift || true
@@ -128,6 +140,9 @@ printf '%s\n' "$out"
 if [ "$harness" = claude ] && printf '%s' "$out" | grep -qF "hit your session limit"; then
   reset_at=$(printf '%s' "$out" | grep -oE "resets [^·]*\(UTC\)" | head -1)
   ctx_pct=$(printf '%s' "$out" | grep -oE "ctx [0-9]+% used" | grep -oE '[0-9]+' | head -1)
+  # Take this profile out of every ladder until its window resets. This is the
+  # only quota signal that is never an estimate: the account itself said no.
+  profile_block "$profile" "$(limit_reset_epoch "$reset_at")"
   if [ -n "$session_id" ] && [ -n "$resume_file" ]; then
     mkdir -p "$(dirname "$resume_file")"
     jq -n --arg id "$session_id" --arg ctx "${ctx_pct:-100}" \

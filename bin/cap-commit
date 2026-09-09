@@ -3,7 +3,7 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 slug=${1:?usage: cap commit <slug> [profile]}
-profile=${2:-$CAP_PROFILE_COMMIT}
+profile=${2:-@chore}
 task_load "$slug"
 
 [ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to commit"

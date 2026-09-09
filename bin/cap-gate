@@ -29,16 +29,19 @@ out_dir=$CAP_HOME/notes/$CAP_PROJECT
 mkdir -p "$out_dir"
 mkdir -p "$TASKS/$slug"
 
-# Gate B (cheap) runs every round. Gate A (sonnet, expensive) only runs on
-# --full: the first review and the pass right before landing. Running it
-# every intermediate round paid for a full cold sonnet session per round
-# even when B was the only profile still finding anything (see
-# docs/pipeline-notes.md, "Gate A frequency").
+# Gate B (cheap) runs every round. Gate A (expensive) only runs on --full: the
+# first review and the pass right before landing. Running it every intermediate
+# round paid for a full cold session per round even when B was the only profile
+# still finding anything (see docs/pipeline-notes.md, "Gate A frequency").
+#
+# Both are roles, not models. cap-ask sizes each one against the account's
+# current window, so a gate round late in a heavy day runs a smaller reviewer
+# instead of failing to run at all.
 profiles=()
 if [ "$full" = 1 ]; then
-  profiles+=("A $CAP_GATE_A")
+  profiles+=("A @gate-a")
 fi
-profiles+=("B $CAP_GATE_B")
+profiles+=("B @gate-b")
 
 fp=$(gate_fingerprint "$CAP_TREE" "$CAP_BASE")
 

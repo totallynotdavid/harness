@@ -518,3 +518,222 @@ ask_profile() {
   printf '%s\n' "$CAP_ASK_PROFILES" | awk -v p="$1" '$1==p {print $2, $3; found=1} END{exit !found}' ||
     die "unknown ask profile '$1' (see config/captain.conf)"
 }
+
+# --- dispatch sizing -------------------------------------------------------
+#
+# Captain never asks what plan the account is on. It reads the rate-limit
+# windows the harness already reports to the status line, which bin/cap-statusline
+# records for every session in the fleet, and it remembers which profiles the
+# harness has actually rejected. Those two facts are enough to pick a model,
+# and both are measurements rather than settings, so the same configuration
+# behaves correctly on a plan Captain has never seen.
+
+CAP_USAGE_DIR=$CAP_HOME/state/usage
+CAP_BLOCK_DIR=$CAP_HOME/state/usage/blocked
+
+usage_files() { compgen -G "$CAP_USAGE_DIR/*.json" >/dev/null 2>&1; }
+
+# Measured account utilization as "<percent> <resets_at> <source>". The percent
+# is the fullest window the harness reports, because the tightest window is the
+# one that will stop the next dispatch. Prints "- - none" when nothing recent
+# enough exists; every caller reads that as "no reason to hold back", never as
+# "full". Refusing to work because the meter is unreadable would be worse than
+# the problem the meter solves.
+usage_read() {
+  local cutoff out
+  cutoff=$(($(now) - ${CAP_USAGE_TTL:-900}))
+
+  if usage_files; then
+    out=$(jq -rs --argjson cutoff "$cutoff" '
+      map(select((.at // 0) >= $cutoff))
+      | if length == 0 then empty else
+          (max_by(.at)
+           | [(.five_hour.pct // 0), (.seven_day.pct // 0), (.spend_limit.pct // 0)] as $p
+           | "\($p | max | floor) \(.five_hour.resets_at // 0) snapshot")
+        end
+    ' "$CAP_USAGE_DIR"/*.json 2>/dev/null) || out=""
+    if [ -n "$out" ]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  fi
+
+  # The harness also caches a usage reading in ~/.claude.json, but only
+  # refreshes it now and then, so it is a fallback and carries a longer life.
+  if [ -f "$HOME/.claude.json" ]; then
+    out=$(jq -r --argjson cutoff "$(($(now) - 21600))" '
+      .cachedUsageUtilization
+      | select(((.fetchedAtMs // 0) / 1000) >= $cutoff)
+      | .utilization.limits // []
+      | if length == 0 then empty else "\(map(.percent) | max | floor) 0 cache" end
+    ' "$HOME/.claude.json" 2>/dev/null) || out=""
+    if [ -n "$out" ]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  fi
+
+  printf -- '- - none\n'
+}
+
+# The model the captain's own session is running, from the status line
+# recording made in this repository. Only this repository: a haiku crewmate's
+# reading must not cap what the captain can dispatch.
+captain_model() {
+  usage_files || return 0
+  jq -rs --arg home "$CAP_HOME" '
+    map(select((.cwd // "") == $home or (.project_dir // "") == $home))
+    | if length == 0 then "" else (max_by(.at) | .model_id // "") end
+  ' "$CAP_USAGE_DIR"/*.json 2>/dev/null || true
+}
+
+profile_rank() {
+  printf '%s\n' "${CAP_PROFILE_RANK:-}" | tr ' ' '\n' |
+    awk -F: -v p="$1" '$1==p {print $2; found=1} END{exit !found}' || printf '0'
+}
+
+# The strongest rank a dispatch may use right now.
+ceiling_rank() {
+  local m
+  case ${CAP_CEILING:-auto} in
+    none) printf '99'; return 0 ;;
+    auto) ;;
+    *) profile_rank "$CAP_CEILING"; return 0 ;;
+  esac
+  m=$(captain_model)
+  case $m in
+    *fable*) profile_rank fable ;;
+    *opus*) profile_rank opus ;;
+    *sonnet*) profile_rank sonnet ;;
+    *haiku*) profile_rank haiku ;;
+    *) printf '99' ;;
+  esac
+}
+
+# A profile the harness has rejected for a session limit is out of every ladder
+# until its window resets. This is the one signal that is never a guess: the
+# account said no.
+profile_block() {
+  local p=$1 until=${2:-0}
+  [ "$until" -gt "$(now)" ] 2>/dev/null || until=$(($(now) + ${CAP_BLOCK_SECS:-3600}))
+  mkdir -p "$CAP_BLOCK_DIR"
+  printf '%s\n' "$until" >"$CAP_BLOCK_DIR/$p"
+}
+profile_block_until() { cat "$CAP_BLOCK_DIR/$1" 2>/dev/null || printf '0'; }
+profile_blocked() {
+  local until
+  until=$(profile_block_until "$1")
+  if [ "$until" -gt "$(now)" ] 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$CAP_BLOCK_DIR/$1"
+  return 1
+}
+
+role_ladder() {
+  local var
+  var=CAP_LADDER_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
+  printf '%s' "${!var:-}"
+}
+
+# Resolve a role to the profile it should dispatch to right now. Walks the
+# ladder strongest first and takes the first rung that the account has not
+# rejected, that is not stronger than the captain's own session, and whose
+# utilization ceiling the current reading is still under.
+role_profile() {
+  local role=$1 ladder rung profile top pct ceil rank
+  ladder=$(role_ladder "$role")
+  [ -n "$ladder" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
+
+  read -r pct _ _ <<<"$(usage_read)"
+  ceil=$(ceiling_rank)
+
+  for rung in $ladder; do
+    profile=${rung%%:*}
+    top=${rung##*:}
+    if profile_blocked "$profile"; then
+      continue
+    fi
+    rank=$(profile_rank "$profile")
+    if [ "$rank" != 0 ] && [ "$rank" -gt "$ceil" ]; then
+      continue
+    fi
+    if [ "$pct" != '-' ] && [ "$pct" -gt "$top" ]; then
+      continue
+    fi
+    printf '%s' "$profile"
+    return 0
+  done
+  return 1
+}
+
+# The strongest rung of a ladder, ignoring utilization and the ceiling. This is
+# what an explicit captain override means: spend it. A blocked profile is still
+# skipped, because a blocked profile cannot run at all.
+role_top() {
+  local role=$1 ladder rung profile
+  ladder=$(role_ladder "$role")
+  [ -n "$ladder" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
+  for rung in $ladder; do
+    profile=${rung%%:*}
+    if profile_blocked "$profile"; then
+      continue
+    fi
+    printf '%s' "$profile"
+    return 0
+  done
+  return 1
+}
+
+# Same, but explains itself instead of returning empty. A dispatch that cannot
+# be sized is a dispatch that must not happen: starting the last rung anyway
+# spends the remainder of the window on a session that will die part-way.
+# When the harness rejects a call for a session limit, believe the reset time it
+# reports. The status line recording carries an exact epoch; the rejection
+# banner carries only a human time like "resets 11pm (UTC)". Zero means neither
+# was readable, and profile_block falls back to its own window.
+limit_reset_epoch() {
+  local human=${1:-} t
+  t=$(usage_read | awk '{print $2}')
+  if [ "$t" != '-' ] && [ "${t:-0}" -gt "$(now)" ] 2>/dev/null; then
+    printf '%s' "$t"
+    return 0
+  fi
+  human=${human#resets }
+  human=${human%%(UTC)*}
+  if [ -n "$human" ] && t=$(date -u -d "$human" +%s 2>/dev/null); then
+    [ "$t" -gt "$(now)" ] || t=$((t + 86400))
+    printf '%s' "$t"
+    return 0
+  fi
+  printf '0'
+}
+
+role_profile_or_die() {
+  local role=$1 p pct resets src rung profile until blocked="" soonest=0 msg
+  if p=$(role_profile "$role"); then
+    printf '%s' "$p"
+    return 0
+  fi
+
+  read -r pct resets src <<<"$(usage_read)"
+  [ "$pct" != '-' ] || pct=unmeasured
+  for rung in $(role_ladder "$role"); do
+    profile=${rung%%:*}
+    if profile_blocked "$profile"; then
+      blocked="$blocked $profile"
+      until=$(profile_block_until "$profile")
+      if [ "$soonest" = 0 ] || [ "$until" -lt "$soonest" ]; then
+        soonest=$until
+      fi
+    fi
+  done
+
+  msg="no profile is dispatchable for role '$role' at utilization $pct (source $src)"
+  [ -z "$blocked" ] ||
+    msg="$msg; rate limited:$blocked, first back at $(date -d "@$soonest" '+%H:%M')"
+  if [ -z "$blocked" ] && [ "$resets" -gt "$(now)" ] 2>/dev/null; then
+    msg="$msg; the window resets at $(date -d "@$resets" '+%H:%M')"
+  fi
+  die "$msg. run: cap budget"
+}

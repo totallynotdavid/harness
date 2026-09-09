@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# cap-statusline - Claude Code status line that also records account quota.
+#
+# Claude Code hands the status line a JSON payload on stdin that already
+# contains what Captain needs to size its dispatches: the model this session is
+# running and the account's live rate-limit windows. Recording it here costs
+# nothing and needs no agent, no API call, and no knowledge of the user's plan.
+# Every session Captain starts renders this same status line, so the whole fleet
+# keeps the reading fresh.
+#
+# Wire it up in ~/.claude/settings.json:
+#   "statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }
+#
+# This runs on every render. It must never fail and never block: a status line
+# that errors is a status line the user stops trusting.
+CAP_HOME=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+export CAP_HOME
+
+exec python3 -c '
+import json, os, sys, time
+
+home = os.environ["CAP_HOME"]
+
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+
+
+def get(*path):
+    cur = d
+    for k in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def window(name):
+    w = get("rate_limits", name)
+    if not isinstance(w, dict):
+        return None
+    return {"pct": w.get("used_percentage"), "resets_at": w.get("resets_at")}
+
+
+# --- the status line itself -------------------------------------------------
+parts = []
+
+model = get("model", "display_name")
+if model:
+    parts.append(str(model))
+
+used = get("context_window", "used_percentage")
+left = get("context_window", "remaining_percentage")
+if used is not None and left is not None:
+    parts.append("ctx %.0f%% used  %.0f%% left" % (used, left))
+
+tin = get("context_window", "total_input_tokens")
+tout = get("context_window", "total_output_tokens")
+if tin is not None and tout is not None:
+    parts.append("in:%s out:%s" % (tin, tout))
+
+rate = []
+for label, name in (("5h", "five_hour"), ("7d", "seven_day")):
+    w = window(name)
+    if w and w["pct"] is not None:
+        rate.append("%s:%.0f%%" % (label, w["pct"]))
+if rate:
+    parts.append(" ".join(rate))
+
+sys.stdout.write("  |  ".join(parts))
+
+# --- the recording ----------------------------------------------------------
+# Anything below here is best effort. The line is already printed.
+try:
+    session = get("session_id") or "unknown"
+    snap = {
+        "at": int(time.time()),
+        "session_id": session,
+        "model_id": get("model", "id") or "",
+        "model": get("model", "display_name") or "",
+        "cwd": get("workspace", "current_dir") or get("cwd") or "",
+        "project_dir": get("workspace", "project_dir") or "",
+        "five_hour": window("five_hour"),
+        "seven_day": window("seven_day"),
+        "spend_limit": window("spend_limit"),
+    }
+
+    d_usage = os.path.join(home, "state", "usage")
+    os.makedirs(d_usage, exist_ok=True)
+    path = os.path.join(d_usage, session + ".json")
+
+    # Renders are frequent and most of them carry the same numbers. Rewrite
+    # only when a window actually moved, or when the reading is old enough
+    # that a reader would start calling it stale.
+    try:
+        with open(path) as fh:
+            prev = json.load(fh)
+    except Exception:
+        prev = None
+    if prev is not None:
+        same = all(prev.get(k) == snap[k] for k in ("five_hour", "seven_day", "spend_limit", "model_id"))
+        if same and snap["at"] - int(prev.get("at", 0)) < 20:
+            sys.exit(0)
+
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(snap, fh)
+    os.replace(tmp, path)
+
+    # Drop readings from sessions that ended. A day is far past any window.
+    cutoff = snap["at"] - 86400
+    for name in os.listdir(d_usage):
+        if not name.endswith(".json"):
+            continue
+        p = os.path.join(d_usage, name)
+        try:
+            if os.path.getmtime(p) < cutoff:
+                os.remove(p)
+        except OSError:
+            pass
+except Exception:
+    pass
+'

@@ -40,8 +40,8 @@ each a different constraint so they diverge on purpose: smallest interface, most
 flexible, best for the common caller.
 
 ```sh
-cap ask "$CAP_GATE_A" - --dir "$project" < packet.md
-cap ask "$CAP_GATE_B" - --dir "$project" < packet.md
+cap ask @gate-a - --dir "$project" < packet.md
+cap ask @gate-b - --dir "$project" < packet.md
 ```
 
 Each returns: the `R` table, two to four materially distinct shapes with their mechanism,

@@ -7,6 +7,14 @@ Install Git, `mise`, Herdr, and Claude Code or Codex.
 mise install
 ```
 
+Point Claude Code's status line at Captain, in `~/.claude/settings.json`. Captain reads the
+account's rate-limit windows from what the harness already hands that line, and uses them
+to size every agent it dispatches:
+
+```json
+"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }
+```
+
 Captain scans `$HOME/git` for projects by default. Register them with:
 
 ```sh
