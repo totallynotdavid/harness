@@ -10,12 +10,14 @@ Captain is a shell CLI. Each part of its state has one source of truth.
 | Worktrees | Git and `CAP_WORK_ROOT` | `bin/cap-spawn`, `bin/cap-drop` |
 | Restack snapshots | `state/restacks/` | `bin/cap-restack`, `bin/lib.sh` |
 | Waves | `state/waves/<name>.tsv` | `bin/cap-wave` |
+| Worktree provisioning | `config/tools/<project>` and lockfile detection | `bin/lib.sh`, `bin/cap-spawn` |
+| Verified commits | `state/verified/<project>/` | `bin/cap-verify` |
 | Path ownership | `CAP_OWNS` in `task.env` | `bin/cap-spawn`, `bin/hooks/guard-task-paths.sh` |
 | Measured memory cost | `state/peaks/<project>` | `bin/cap-verify`, `bin/lib.sh` |
 | Package-manager caches | `CAP_CACHE_ROOT` | `bin/lib.sh` |
 | Project conventions | `cases/<project>/conventions.md` | `bin/cap-conventions`, `bin/cap-check` |
 | Notes and reports | `notes/<project>/` | task and scout commands |
-| Project list | `map.md` | `bin/cap-map` |
+| Project list | `map.md` (generated, untracked) | `bin/cap-map` |
 | Skill sources | `config/skill-sources.tsv` | `bin/cap-skills`, `bin/cap-explore` |
 | Installed skills | `.claude/skills/` | `bin/cap-skills` |
 

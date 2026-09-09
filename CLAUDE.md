@@ -6,7 +6,8 @@ This repo stores briefs, plans, reports, cases, and task records. Project worktr
 source changes. `CAP_WORK_ROOT` keeps those worktrees outside this repo so project agents
 do not inherit its instructions through an ancestor directory.
 
-Read `map.md` for the project inventory. Run `cap reconcile` for the current task state.
+Read `map.md` for the project inventory; `cap map` generates it from this
+machine, so it is not tracked. Run `cap reconcile` for the current task state.
 Use `cap help` for command flags. Read the focused document in `docs/` when a workflow
 needs explanation.
 
