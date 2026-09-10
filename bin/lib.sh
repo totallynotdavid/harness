@@ -533,21 +533,6 @@ task_status_latest() {
 
 git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
 
-# Hash what a task changed against its base, tracked and untracked together.
-# Keyed on working-tree file content, not on diff text: cap cleanup runs on an
-# uncommitted worktree and cap land runs after the commit, and the two have to
-# agree for the same work. Diff text does not survive that boundary, because a
-# committed file moves out of the untracked list and into the diff.
-tree_content_hash() {
-  local tree=$1 base=$2
-  {
-    git -C "$tree" diff --name-only "$base"
-    git -C "$tree" ls-files --others --exclude-standard
-  } 2>/dev/null | sort -u | while IFS= read -r f; do
-    printf '%s %s\n' "$f" "$(git -C "$tree" hash-object -- "$f" 2>/dev/null || echo absent)"
-  done | sha1sum | cut -d' ' -f1
-}
-
 # Sync a worktree onto the current tip of its base branch before review, so
 # an unrelated task landing on base since this one branched never gets
 # misread by a gate as this branch deleting/reverting that feature (see
