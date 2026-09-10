@@ -1,51 +1,57 @@
-I'll start by reading the code rules, then survey the diff.
+I'll start by reading the code rules, then examine the diff.
 ## Defects
 
-**1. A resumed session that emits no result event wedges the profile permanently — `bin/cap-ask:150-155`**
+**1. `ctx_pct` is measured from the turn that was refused, so the resume policy inverts its own fail-safe — `bin/cap-ask:177-182`**
 
-`[ -n "$result_json" ] || break` exits the turn loop, and line 155 dies before the `rm -f "$match_file"` at line 212 ever runs. The pending `state/ask-resume/<id>.json` survives, so the next identical call resumes the same dead session and dies the same way, forever. The comment at 205-211 states this is exactly the loop the change set out to close; the fix covers only the path where a result event exists.
+The 30% branch at `bin/cap-ask:81` decides whether to resume a rejected session directly or compact it first. The number it branches on is computed from the rejected turn's own token accounting. A turn stopped by a 429 never replays the session prefix, so `cache_read_input_tokens` is absent and the sum is just the new prompt.
 
-Reproduced against a stubbed harness that exits without writing stdout:
-
-```
-before: dead-session.json
-cap: claude produced no result event for its last turn; see .../state/ask/dead-session.jsonl
-exit=1
-after:  dead-session.json
-```
-
-Second run, byte-identical. `cap gate <slug>` fails this way until someone deletes the record by hand.
-
-**2. Harness stderr is discarded, so the error it dies on points at an empty file — `bin/cap-ask:145` and `:233`**
-
-`(cd "$dir" && "${cmd[@]}" </dev/null >"$turn_out" 2>/dev/null)` throws away everything the harness said about why it failed. Same on the codex side. With a stub that prints a real startup failure:
+Against the repo's own captured rejection, `state/ask/a7195ba1-ca4a-4351-aba7-8a11e86540f5.jsonl`:
 
 ```
-cap: claude produced no result event for its last turn; see .../3195256d-....jsonl
---- transcript contents ---
-(end)
+{"type":"result","subtype":"error","is_error":true,"api_error_status":429,
+ "terminal_reason":"blocking_limit","usage":{"input_tokens":100},
+ "modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,...}}}
 ```
 
-`Invalid API key . Please run /login` is gone, and the operator is handed a 0-byte transcript. Master surfaced this through the pane capture. `rules/code.md`: "return explicit errors with actionable context."
-
-**3. Orphan resume records are never pruned, and lookup is now O(n) subprocesses — `bin/cap-ask:56-58`, `:78-86`**
-
-Master keyed the record by a hash filename: one `[ -f ]` test, one file per (profile, dir, prompt, key), overwritten in place. The new scheme names records by session id and runs a separate `jq -e` over every `*.json` in the directory on every claude call. A record is deleted only when a later call matches it exactly — but `cap-gate` puts the diff fingerprint in the key *and* the merge-base SHA in the prompt, so once the worktree changes (the normal outcome of a gate finding something) that record can never match again. Line 58 added a 7-day sweep for `state/ask` transcripts; nothing sweeps `state/ask-resume`. `grep -rn ask-resume bin/` returns one line, the directory assignment.
-
-**4. `rl_resets` is empty rather than `0` when the turn carried no rate-limit event — `bin/cap-ask:172`**
-
-`jq -r '.rate_limit_info.resetsAt // 0' <<<""` reads no input: it prints nothing and exits 0, so the `|| echo 0` never fires and the `// 0` never applies. Verified:
+Running the shipped expression over it:
 
 ```
-rl_resets=[] rc-of-date=(fell back)
+$ jq -r '((.usage.input_tokens // 0) + ... ) as $used | ... | ($used / $win * 100 | floor)'
+0
 ```
 
-The two session-limit signals that need no `rate_limit_event` — `api_error_status = 429` and `terminal_reason = blocking_limit`, lines 183 — are precisely the ones that land here. `profile_block "$profile" ""` then silently falls back to `CAP_BLOCK_SECS` (1h) instead of the real reset, and the die message reads "resets an unknown time". If the real window is four hours out, the profile unblocks early and the next round buys another rejection.
+Failure: a session rejected at 90% context is recorded as `ctx_pct: 0`, takes the `-lt 30` branch, and is resumed uncompacted — the case `bin/cap-ask:65-66` says must never happen. The `CAP_ASK_RESUME=force` compact-first branch (`:83-85`) becomes unreachable, since it is only reached when the recorded value is ≥30. It is not always zero — a turn that made several successful tool round trips before the 429 accumulates real `cache_read` — but it is zero in exactly the case the change captured and documented.
 
-## Checked and clean
+The replaced code read `ctx N% used` off the pane, which was the session's real usage, and defaulted to `100` when it could not find it. The new code defaults to `100` only if `jq` itself errors; a computed `0` is trusted. The fail-safe direction flipped from "start fresh when unsure" to "resume when unsure".
 
-`mise run lint`, `check:andlist`, `check:syntax` all pass. `limit_reset_epoch` has no remaining callers; `require_herdr` is still used by `cap-spawn`/`cap-send`. `usage_write` verified against a captured `rate_limit_event`: `utilization` is a 0-1 fraction and `resetsAt` epoch seconds, so `*100` is right and `usage_read`/`usage_detail` read the file back correctly (`35 1789057200 snapshot`). `gate_verdict`'s unbounded scan is safe — `tail -1` keeps the last real verdict line, and quoted instruction text does not match. All `codex exec` and `claude -p` flags used exist. `diff_base` is consistent between `cap-gate`'s prompt and `gate_fingerprint`/`gate_ready`, and matches `cap-check:45`.
+**2. `state/usage` has no pruner on the headless path — `bin/lib.sh:1046-1089`**
 
-<cc-memory filenames="log-captain-friction-to-papercuts.md">These four belong in `paper-cuts.md`; I did not add them there because this gate forbids edits.</cc-memory>
+`usage_write` adds one file per headless call. The only code that deletes from that directory is `bin/cap-statusline:110-118`, and the diff's own doc change (`docs/pipeline-notes.md:264-268`) states a headless call never renders a status line. `usage_read` (`bin/lib.sh:983`) and `bin/cap-models:54` both slurp `"$CAP_USAGE_DIR"/*.json` on every sizing decision.
+
+Failure: on a box running Captain headless — the case this branch exists for — the directory grows one file per `cap ask`/`cap gate` round with nothing reclaiming it, and every dispatch-sizing read parses all of them. `cap-ask:56-57` prunes `state/ask` and `state/ask-resume` on a 7-day sweep and skips this one.
+
+**3. `diff_base` extracted, two of its copies left behind — `bin/lib.sh:537`, `bin/cap-check:45-46`, `bin/cap-cleanup:16`**
+
+The new helper's comment says `bin/cap-check` "computes the same thing for the same reason", and both `cap-check:45-46` and `cap-cleanup:16` still hand-roll `git merge-base "$base" HEAD` with the same fallback. Three definitions of where a branch left base. No runtime failure today; the failure mode is drift, and `rules/code.md` calls for one consistent term per concept across modules.
+
+**4. `"${result_json:-{}}"` is not the guard it looks like — `bin/lib.sh:1069`**
+
+Bash closes the expansion at the first `}`, so this is `${result_json:-{}` plus a literal `}`:
+
+```
+$ bash -c 'y=A; echo "[${y:-{}}]"'
+[A}]
+```
+
+The here-string carries the JSON with a trailing `}`. `jq` prints the first value and then exits 5 on the junk; `2>/dev/null || true` swallows both, and the empty case happens to expand to `{}` anyway. No failure — it works by accident on both paths.
+
+**5. Two comments do not describe their code**
+
+- `bin/cap-ask:55` — the pruning comment ends with an aside about `dispatch_log`, which neither `find` touches.
+- `bin/cap-ask:120-122` — "Each turn writes to its own file first so a death without a result leaves nothing to fall back to" states the opposite of the reason. The per-turn file exists so `result_json` reflects the current turn instead of matching an earlier turn's result already appended to `$jsonl`.
+
+## Verified working
+
+`mise run lint`, `check:andlist`, `check:syntax` pass. Live end-to-end: `cap ask haiku` returned in 2.8s, wrote `state/usage/8ed5a015-….json`, and `cap budget` read it back as `claude 60% (5h 60%, 7d 39%, read 4s ago)` — so `utilization × 100` and `resetsAt` are the right shapes. Confirmed against a live session that headless `--resume` preserves the session id and that `/compact` executes as a real slash command in `-p` mode ("Not enough messages to compact."), so the two-turn compact path is sound. `codex exec` accepts `--json`, `-C`, `-o/--output-last-message`. `limit_reset_epoch` has no remaining callers; `require_herdr` is still used by `cap-send`/`cap-spawn`. The error-shaped result the resume-clearing logic targets is real and matches (`errors: ["No conversation found with session ID: …"]`, `is_error: true`, no `api_error_status`).
 
 GATE: FAIL
