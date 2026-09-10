@@ -124,22 +124,6 @@ if [ -n "$project" ]; then
 fi
 [ "$collide" = 0 ] && echo "  ok"
 
-# A reported signal, not a refusal. An em dash marks a sentence carrying two
-# ideas, so these lines are the ones worth re-reading, in comments, page titles
-# and UI strings alike. Only added lines are examined, so a task is never
-# flagged for em dashes it inherited.
-printf '\n## em dashes\n'
-# Every grep here exits 1 on no match, which `set -euo pipefail` turns into a
-# silent death of the whole check, so the status is swallowed deliberately.
-dashes=$({ printf '%s\n' "$diff_text" |
-	grep -nE '^\+' | grep -v '^[0-9]*:+++' | grep -F '—' | head -10; } || true)
-if [ -n "$dashes" ]; then
-	printf '%s\n' "$dashes" | sed 's/^/      /'
-	note "added lines use an em dash; re-read each, the sentence usually wants splitting"
-else
-	echo "  ok"
-fi
-
 # Two signals about added comments, both reported rather than refused. A
 # comment that narrates history is stating what the commit message already
 # says, and a comment block past six lines is usually defending a decision
