@@ -178,9 +178,24 @@ fi
 # Fail loudly and distinctly instead of letting a caller mistake this for a
 # real result (e.g. an empty gate verdict) - and record enough to resume
 # this exact call next time instead of paying to re-derive it from scratch.
-if [ "$harness" = claude ] && printf '%s' "$out" | grep -qF "hit your session limit"; then
-  reset_at=$(printf '%s' "$out" | grep -oE "resets [^·]*\(UTC\)" | head -1)
-  ctx_pct=$(printf '%s' "$out" | grep -oE "ctx [0-9]+% used" | grep -oE '[0-9]+' | head -1)
+#
+# Scoped to the text after the last real prompt line, not the whole capture.
+# A resumed session's scrollback still carries the rejection banner from the
+# turn that got interrupted; --lines 1000 (widened to stop losing long
+# reviews) now pulls enough history for that stale banner to still be in
+# view even after a later turn in the same session finished cleanly. Without
+# this scoping, a genuine GATE: PASS was discarded and the profile blocked
+# until a reset time read from that same stale banner: rqueue-task-declare's
+# Gate B completed a full review and concluded PASS at 13% context, with the
+# rejection two turns behind it in the same capture.
+tail_from_prompt=$out
+last_prompt_line=$(printf '%s\n' "$out" | grep -n '^❯ .' | tail -1 | cut -d: -f1)
+if [ -n "$last_prompt_line" ]; then
+  tail_from_prompt=$(printf '%s\n' "$out" | tail -n "+$last_prompt_line")
+fi
+if [ "$harness" = claude ] && printf '%s' "$tail_from_prompt" | grep -qF "hit your session limit"; then
+  reset_at=$(printf '%s' "$tail_from_prompt" | grep -oE "resets [^·]*\(UTC\)" | head -1)
+  ctx_pct=$(printf '%s' "$tail_from_prompt" | grep -oE "ctx [0-9]+% used" | grep -oE '[0-9]+' | head -1)
   # Take this profile out of its tier until its window resets. This is the
   # only quota signal that is never an estimate: the account itself said no.
   profile_block "$profile" "$(limit_reset_epoch "$harness" "$reset_at")"
