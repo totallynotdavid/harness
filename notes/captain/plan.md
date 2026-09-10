@@ -150,6 +150,15 @@ the way map.md already is.
   worktree the project cannot build in is not ready, and telling the agent to
   start anyway spends a session finding that out one failed turn at a time.
   Blocked only by file ownership while stage 2 holds `lib.sh`.
+- `cap-ask`'s claude branch is one inline block of about 170 lines covering
+  resume-key resolution, the turn loop, result parsing, session-limit
+  classification, usage recording and error reporting, and the harness dispatch
+  is three top-level `if ... exit 0` blocks rather than one `case`, so the set
+  of supported harnesses is no longer stated in one place. Raised by Gate A at
+  round ten of cap-headless and deliberately not acted on there: restructuring
+  the file at that point was the surest way to add a defect to a branch that
+  had spent ten rounds removing them. It belongs to whoever next opens that
+  file, which is the stage 3 spawn work.
 - `cap doctor`. Comparing two Captain hosts took a dozen manual ssh probes.
 - Locking. `task_lock` exists and only `cap gate`, `cap check`, `cap drop`,
   `cap land` and `cap cleanup` take it. Three captain sessions share this hub
