@@ -75,10 +75,12 @@ printf '\n## names\n'
 for i in $(seq 0 $((n - 1))); do
 	s=${slugs[$i]}
 	case $s in *[!a-zA-Z0-9._-]*) note "$s is not a usable slug"; fail=1 ;; esac
-	if [ -d "$TASKS/$s" ]; then
-		note "$s already exists as a task"
-		fail=1
-	fi
+	# A live task is not a broken partition. The spawn loop skips rows that
+	# already have a task, which is how a wave that only half started (one
+	# agent up, the rest refused for capacity or an unverified base) gets
+	# resumed by running the same command again. Failing here made that
+	# resume impossible.
+	[ ! -d "$TASKS/$s" ] || note "$s already running, will be skipped"
 	for j in $(seq 0 $((n - 1))); do
 		[ "$j" -gt "$i" ] || continue
 		[ "$s" != "${slugs[$j]}" ] || { note "$s appears twice"; fail=1; }
