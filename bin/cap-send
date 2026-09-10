@@ -99,22 +99,52 @@ if ! pane_live "$slug"; then
 	exit 0
 fi
 
-# Refuse before delivering, not after. This check used to print an advisory
-# *below* the `deliver` call, so the message was already in the agent's input
-# box by the time the captain read the warning, and the threshold was 50% so
-# local-env at 47% never tripped it at all. A session near its limit is the
-# failure that made aula-integrate report tests passing while seven files
-# errored: it ran out of context mid-verification and summarised optimistically.
-# Continuing to fill a large session is a decision, so it is the captain's to
-# make explicitly rather than a hint printed after the fact.
+# A session near its limit is the failure that made aula-integrate report tests
+# passing while seven files errored: it ran out of context mid-verification and
+# summarised optimistically. So the ceiling is checked before delivering, not
+# after, back when this printed an advisory *below* the `deliver` call the
+# message was already in the agent's input box by the time the captain read it.
+#
+# The recovery is compaction, and cap-ask already does exactly this before it
+# resumes a large session. Doing it here too keeps it off the captain's hands.
+# The alternatives this replaces were both worse: --force fills the session the
+# ceiling exists to protect, and cap drop throws away the worktree.
+compact_pane() {
+	local deadline waited=0 now
+	warn "$slug: at $ctx% context; compacting before the message goes in"
+	pane_send "$slug" "/compact"
+	sleep 0.4
+	pane_enter "$slug"
+	wait_working || return 1
+
+	# Wait on the context reading, not on the agent status. Compacting a full
+	# session runs for minutes behind a progress bar, and the status line keeps
+	# the pre-compaction percentage until the moment it finishes.
+	deadline=${CAP_SEND_COMPACT_SECS:-600}
+	while [ "$waited" -lt "$deadline" ]; do
+		sleep 10
+		waited=$((waited + 10))
+		now=$(pane_context_pct "$slug")
+		if [ -n "$now" ] && [ "$now" -lt "$CAP_SEND_CTX_MAX" ] 2>/dev/null; then
+			ctx=$now
+			return 0
+		fi
+	done
+	return 1
+}
+
 ctx=$(pane_context_pct "$slug")
-if [ "$force" = 0 ] && [ -n "$ctx" ] && [ "$ctx" -ge "${CAP_SEND_CTX_MAX:-40}" ] 2>/dev/null; then
-	printf 'cap: %s is at %s%% context, at or over the %s%% ceiling.\n' \
-		"$slug" "$ctx" "${CAP_SEND_CTX_MAX:-40}" >&2
-	printf 'A session this full is the one that reports done without finishing.\n' >&2
-	printf 'Either finish it (cap check / cap commit / cap land), restart it clean\n' >&2
-	printf '(cap drop %s then cap spawn with an updated brief), or send anyway:\n' "$slug" >&2
-	die "cap send $slug --force \"...\""
+if [ "$force" = 0 ] && [ -n "$ctx" ] && [ "$ctx" -ge "$CAP_SEND_CTX_MAX" ] 2>/dev/null; then
+	if compact_pane; then
+		printf 'compacted %s to %s%% context\n' "$slug" "$ctx"
+	else
+		printf 'cap: %s is at %s%% context and compacting it did not bring it under %s%%.\n' \
+			"$slug" "$(pane_context_pct "$slug")" "$CAP_SEND_CTX_MAX" >&2
+		printf 'The live conversation is genuinely that large. Either finish the task\n' >&2
+		printf '(cap check / cap commit / cap land), restart it clean (cap drop %s then\n' "$slug" >&2
+		printf 'cap spawn with an updated brief), or send anyway:\n' >&2
+		die "cap send $slug --force \"...\""
+	fi
 fi
 
 deliver
