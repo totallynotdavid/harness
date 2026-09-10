@@ -199,28 +199,24 @@ CAP_HARNESS=$harness
 CAP_STARTED=$(now)
 EOF
 
-# Install the ownership guard into the worktree itself. A rule the agent is
-# told costs context and can be ignored; a PreToolUse hook cannot. The settings
-# file is per-worktree and never tracked, so it is excluded locally rather than
-# added to the project's .gitignore, which belongs to the project.
+# The ownership guard travels on the session's command line, not in the
+# worktree. A rule the agent is told costs context and can be ignored; a
+# PreToolUse hook cannot. claude's --settings takes the JSON itself, so
+# Captain's hook config never becomes a file the project could commit and
+# never needs an exclude entry in a file Captain does not own.
+guard_settings=""
 if [ -n "$owns" ]; then
   read -r -a owns_list <<<"$owns"
   owns_write "$slug" "${owns_list[@]}"
 
-  mkdir -p "$tree/.claude"
-  jq -n --arg cmd "$CAP_HOME/bin/hooks/guard-task-paths.sh" --arg slug "$slug" '{
+  guard_settings=$(jq -nc --arg cmd "$CAP_HOME/bin/hooks/guard-task-paths.sh" --arg slug "$slug" '{
     hooks: {
       PreToolUse: [{
         matcher: "Edit|Write|NotebookEdit|MultiEdit",
         hooks: [{ type: "command", command: ($cmd + " " + $slug) }]
       }]
     }
-  }' >"$tree/.claude/settings.local.json"
-
-  excl=$(git -C "$repo" rev-parse --git-common-dir)/info/exclude
-  mkdir -p "$(dirname "$excl")"
-  grep -qxF '.claude/settings.local.json' "$excl" 2>/dev/null ||
-    printf '.claude/settings.local.json\n' >>"$excl"
+  }')
 fi
 
 # Make the worktree usable before the agent is told it is ready. Best effort:
@@ -296,6 +292,7 @@ case $harness in
     # the active model's highest supported level on its own (confirmed:
     # notes/captain/effort-levels.md) - no validation needed here.
     [ -n "$effort" ] && margs+=(--effort "$effort")
+    [ -n "$guard_settings" ] && margs+=(--settings "$guard_settings")
     # shellcheck disable=SC2206 # CAP_AGENT_FLAGS is a flag string, split on purpose
     cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$kick")
     ;;
@@ -305,6 +302,9 @@ case $harness in
     # has no "ultra") with no clear client-side rejection of a bad value
     # (notes/captain/effort-levels.md) - pass through and trust the caller.
     [ -n "$effort" ] && margs+=(-c "model_reasoning_effort=$effort")
+    # The guard is a claude hook. codex has no equivalent, and a partition the
+    # captain asked for that is not actually in force has to be said out loud.
+    [ -z "$guard_settings" ] || warn "$slug: --owns is not enforced under codex; the guard is a claude hook"
     cmd=("${scrub[@]}" codex "${margs[@]}"
          --dangerously-bypass-approvals-and-sandbox "$kick")
     ;;
