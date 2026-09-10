@@ -227,6 +227,12 @@ preflight_note=""
 if [ "$kind" = ship ]; then
   preflight_tools "$project"
   printf 'cap: preparing %s\n' "$tree" >&2
+  # A gitignored .env does not come with the worktree, so every fresh tree
+  # starts unable to build a project that needs one. It is the same machine
+  # and the same user, so the checkout's own .env is the right file to use.
+  if [ -f "$repo/.env" ] && [ ! -e "$tree/.env" ]; then
+    cp "$repo/.env" "$tree/.env"
+  fi
   plog=$(mktemp)
   if preflight_deps "$tree" >"$plog" 2>&1; then
     preflight_note="Dependencies are installed. The worktree is ready to build."
