@@ -1,50 +1,50 @@
-  Report concrete defects: what is wrong, where, and the failure it causes. Do
-  not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL.
 
-  Searched for 1 pattern, read 21 files, ran 11 shell commands
+  .devstack/dev-install.sh:56-64:
+  elif [ "$schema_exit" -eq 1 ]; then
+      echo "Installed schema does not match install.xml ... Running admin/cli/upgrade.php..."
+      "$DEVSTACK_DIR/dev-upgrade.sh"
+      ...
+  This call is not wrapped in any set +e/diagnosis, unlike every other failure branch in the same file (the dbconnectionfailed check at lines 44-54, and the post-upgrade
+  stale-schema check at lines 66-79, both of which print contextual, actionable guidance). If admin/cli/upgrade.php itself fails, set -euo pipefail aborts dev-install.sh
+  immediately and the user gets only the raw Moodle exception, with no message about what happened or how to recover — breaking the pattern the rest of this exact function
+  otherwise follows carefully (code.md: "Validate at boundaries and return explicit errors with actionable context").
 
-● Review: cap/local-env vs master
+  I reproduced this live: a real mise run dev:install in this worktree hit
+  !!! Site is being upgraded, please retry later. !!!
+  Error code: upgraderunning
+  (Moodle's own upgraderunning lock in lib/setup.php:786-792, set by an earlier interrupted upgrade run in this worktree) and aborted with nothing but that raw dump. A
+  second run, once the 5-minute lock window (lib/upgradelib.php:1571) expired, succeeded end-to-end (install, upgrade, cron all completed). So the failure is self-healing,
+  but nothing in the script or .cicat/LOCAL-ENV.md says so — a developer who Ctrl-C's a slow dev:install, or re-runs it too soon after an interrupted one, hits an
+  unexplained crash.
 
-  I reviewed the full diff (23 files, local dev stack: .devstack/, mise.toml, doc updates, .gitignore, deploy.yml) against rules/code.md. I ran shellcheck on every script
-  (clean, aside from expected info-level notices), decoded the embedded fixture PNG (valid 1×1 PNG), and actually executed .devstack/generate-config.sh against the real
-  .cicat/config.php.example to verify the sed/strip/verify pipeline produces a correct config.php (it does — cleaned up afterward, working tree is untouched).
+  Defect 2 — uncommitted regression currently sitting in .gitignore
 
-  Defect: directorypermissions tightening is a no-op in the generated dev config.php
+  The working tree (in scope per "plus any uncommitted change") currently has an uncommitted edit to .gitignore that re-adds the
+  # =============================================================================
+  # CICAT Aula Virtual — Moodle deployment repository
+  #
+  ...
+  # =============================================================================
+  banner header — the exact redundant ceremony this branch's own committed diff (part of the local-dev-stack work) deliberately removed. If committed as-is, it silently
+  reverts that cleanup (code.md: "Remove dead code, commented-out code, and ceremony without active value").
 
-  .devstack/generate-config.sh:163:
-  -e "s|\$CFG->directorypermissions = 0777;|\$CFG->directorypermissions = 02777;|" \
-  and verified at .devstack/generate-config.sh:178 (02777).
+  (Two other uncommitted edits in the tree — .devstack/lib.sh adding required-env-var guards, and .devstack/render-test-certificate.php de-duplicating the hardcoded fontsize
+  into AUTOFITNAME_STARTSIZE and splitting the pdfimages exit-code check from the image-count check — are genuine improvements with no defects found.)
 
-  The comment block this replaces (.cicat/config.php.example:33, also duplicated as STRIP_LINES in generate-config.sh:130) says:
+  Everything else checked out
 
-  ▎ // Production currently uses 0777. 02770 (setgid, no world access) is tighter
+  I verified, against actual source (not assumption), every non-obvious claim the diff makes: the sed/sanitized regexes in generate-config.sh against the real
+  .cicat/config.php.example byte-for-byte; the mod_customcert element behavior (cargogrupo, date, autofitname) against their real render() code; the local_certengine
+  resolver's title/name precedence against the fixture it seeds; the rsync exclude-anchoring claims in DEPLOY.md against deploy.yml; the PHP 8.2 minimum claim against
+  admin/environment.xml and this tree's actual version.php (5.0.4); and the official php:8.2-fpm-bookworm image's WorkingDir (confirmed /var/www/html, which the
+  relative-path php_exec calls depend on). All of it was accurate.
 
-  But the sed substitution writes 02777, not 02770. 0777 → 02777 only adds the setgid bit; it keeps full world read/write/execute on every directory Moodle creates under
-  moodledata inside the dev container — the opposite of "no world access." This looks like a transposed digit (02770 → 02777) rather than an intentional choice: nothing else
-  in the diff (LOCAL-ENV.md, docker-entrypoint.sh) explains or relies on world-writable moodledata, and only www-data ever touches that tree (php-fpm and cron both run as
-  www-data via php_exec/su), so there's no reason group-vs-world would need to differ from what the adjacent comment recommends.
+  GATE: FAIL
 
-  Impact: every directory Moodle creates in the local dev moodledata volume ends up world-writable inside the container. Low real-world severity (isolated, throwaway dev
-  container, no other OS user present to exploit it), but it's a verifiable deviation from the script's own stated intent and silently defeats the "tighter" permission goal
-  the copied comment describes.
-
-  Minor: check_safe_value's error message overstates what it enforces
-
-  .devstack/generate-config.sh:99-110 blocks only sed/ERE metacharacters and the quote character, then tells the user "Use only letters, digits, underscores and dashes."
-  Characters outside that stated charset but not in the unsafe class (e.g. #, %, space, ;) would pass the check silently. Not a security or correctness bug — the two
-  characters that actually matter for breaking the sed substitution or the PHP single-quoted string (\ and ') are both blocked — but the message describes a stricter rule
-  than the code enforces.
-
-  Everything else — docker-compose.yml, the nginx template, the PHP Dockerfile/entrypoint, lib.sh's compose/runtime detection, the install/upgrade/seed/reset scripts' guard
-  logic, the deploy workflow's new anchored excludes, and render-test-certificate.php's fixture/assertion logic — is internally consistent with its own extensive inline
-  documentation and with .cicat/LOCAL-ENV.md/DEPLOY.md, and I found no correctness bugs in them.
-
-  GATE: PASS
-
-✻ Churned for 5m 25s · done 8:22 AM
+✻ Baked for 10m 8s · done 9:04 AM
 
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯ 
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Sonnet 5  |  ctx 11% used  89% left  |  in:113055 out:10  |  5h:64% 7d:40%                                                                                            /rc
-  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+  Sonnet 5  |  ctx 16% used  84% left  |  in:164180 out:3  |  5h:82% 7d:42%                                                                                             /rc
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · 1 memory recalled · ← for agents
