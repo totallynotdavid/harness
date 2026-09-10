@@ -4,47 +4,63 @@
   ▝▝ ▝▝    ~/.cap-work/local-env
 
 
+
 ❯ Read /home/dubu/git/captain/rules/code.md, then review every change in this
   worktree against master (git diff master, plus any uncommitted change).
   Report concrete defects: what is wrong, where, and the failure it causes. Do
   not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL.
 
-  Searched for 1 pattern, read 1 file, ran 3 shell commands, recalled 1 memory
-  ⎿  Recalled this user's machine standardizes dev-environment commands as mise tasks, not custom shell scripts a person runs directly
 
-● Good — .devstack/.env is properly ignored, and the mise.toml setup matches the memory's convention (namespaced tasks, check task, script-per-task, env split). Now let me
-  look at the actual content of the scripts and other new files.
 
-  Searched for 6 patterns, read 21 files, ran 4 shell commands
+  Searched for 3 patterns, read 24 files, ran 3 shell commands
 
-● All syntax checks pass (bash, YAML, TOML — PHP wasn't available to lint but the file was read in full and traced logically against the actual check_database_schema.php and
-  default_exception_handler/cli_error sources in this tree, which confirmed the exit-code assumptions the scripts rely on).
 
-  Summary of what I checked against rules/code.md and for correctness:
 
-  - .cicat/UPGRADE.md, .cicat/config.php.example, .gitignore: cosmetic wording/punctuation changes only; verified the sed patterns in generate-config.sh still match
-    config.php.example's exact whitespace byte-for-byte (checked with cat -A), and the self-verifying grep check in that script would catch any future drift.
-  - .github/workflows/deploy.yml: the new leading-/ anchoring on --exclude genuinely fixes a real bug (an unanchored config.php pattern was silently excluding six unrelated
-    tracked files, e.g. theme/boost/config.php, from every deploy). New excludes for /.devstack/, /mise.toml, /.cicat/LOCAL-ENV.md correctly keep dev-only tooling off
-    production.
-  - .devstack/ (new mise-driven dev stack): matches this repo's mise-task convention (task per script, check task present, .env.example/.env split, ${VAR:?...} required-var
-    guards). Traced lib.sh's project-name isolation, port-conflict detection, config_is_ours safety checks in generate-config.sh/dev-reset.sh, and dev-install.sh's three-way
-    exit-code handling (0/1/2, plus the dbconnectionfailed disambiguation) against the actual Moodle source — all consistent and correct. nginx template's
-    NGINX_ENVSUBST_FILTER scoping, the HTTP_PORT alignment between nginx listen and the published port, and the check_safe_value metacharacter/quote-escaping guard in
-    generate-config.sh are all sound.
-  - No dead code, no boolean-mode-argument smells, no generic naming, no unremoved debug ceremony.
+● Good, that confirms the assumption is sound. Now let me check for a few remaining consistency issues: the .gitignore diff wording and whether .devstack/ itself needs any
+  additional ignore entries (e.g. build artifacts), and verify the README's directory tree/text is accurate.
 
-  I found no concrete correctness defects in this diff.
+  Searched for 4 patterns, read 1 file, ran 4 shell commands
+
+● This matches exactly — render-test-certificate.php's create_file_from_string call uses context_system::instance()->id, asset_store::COMPONENT, asset_store::FILEAREA, and
+  itemid => $sigid, which is precisely what asset_store::get_file() looks up. No mismatch there.
+
+  Now let me check how ceasset/cetext element classes resolve slots/variants, to confirm the seeded data shape (particularly rule::MATCH_CARGO and the resolution path) is
+  actually consumed correctly.
+
+  Searched for 8 patterns, read 2 files, ran 1 shell command
+
+● Good, confirmed accurate. I've done a thorough pass across the whole diff now — mise/devstack scripts, docker-compose, nginx config, config generation with its safety
+  checks, deploy workflow, gitignore, and the certificate-rendering integration test cross-checked against the actual local_certengine/mod_customcert code it exercises.
+  Everything checked out functionally; I found one documentation completeness gap worth flagging.
+
+  Ran 1 shell command
+
+● Review findings
+
+  Reviewed the full diff (tracked file changes + untracked .devstack/, mise.toml, .cicat/LOCAL-ENV.md) against master and against rules/code.md. This adds a containerized
+  local dev stack (nginx/php-fpm/MariaDB via mise tasks) plus small edits to deploy/docs files.
+
+  I traced the riskier logic end-to-end rather than just reading it: the config.php sed/grep generation and its metacharacter guard in generate-config.sh, the exit-code
+  contract between dev-install.sh and admin/cli/check_database_schema.php (verified against that file's actual source), and the check:certificate integration script against
+  the real local_certengine/mod_customcert classes it drives (asset_store, emission_context's digital-mode default, the local_certengine_slot/asset schema). All of it lines
+  up correctly — no functional bugs found in any of these paths.
+
+  One gap, not a functional bug:
+
+  - .cicat/DEPLOY.md (touched in this diff) documents the new leading-/ anchoring fix in detail, including the one-time effect on six pre-existing config.php-named files,
+    but says nothing about the four new excludes added to .github/workflows/deploy.yml in this same change (/.devstack/, /mise.toml, /config.php.tmp.*,
+    /.cicat/LOCAL-ENV.md). In particular, excluding only .cicat/LOCAL-ENV.md while every other .cicat/*.md file still deploys is a deliberate-looking exception with no
+    stated reason. Since DEPLOY.md is exactly the doc a deploy operator is told to check before running the workflow for real, this is worth a line explaining what's newly
+    excluded and why — but it doesn't change deploy behavior incorrectly, so it's informational rather than a defect that breaks anything.
+
+  No correctness bugs, readability violations, dead code, or boundary-validation gaps found elsewhere in the diff.
 
   GATE: PASS
 
-✻ Worked for 5m 15s · done 9:28 PM
-
-
-
+✻ Cogitated for 4m 56s · done 10:02 PM
 
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ 
+❯
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Sonnet 5  |  ctx 10% used  90% left  |  in:100800 out:3685  |  5h:26% 7d:25%                                                                                          /rc
-  ⏵⏵ bypass permissions on (shift+tab to cycle) · 1 memory recalled · ← for agents
+  Sonnet 5  |  ctx 11% used  89% left  |  in:112718 out:2  |  5h:38% 7d:26%                                                                                             /rc
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
