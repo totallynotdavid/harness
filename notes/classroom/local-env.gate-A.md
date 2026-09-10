@@ -1,80 +1,98 @@
 ## gate A (opus)
 
-Recovered from the reviewer's own session transcript: the pane capture
-lost finding 1 and the heading of finding 2 off the top.
+Recovered from the reviewer's own transcript; the pane capture
+lost findings 1 to 3 off the top.
 
-Reviewed `git diff master` plus the untracked `.devstack/`, `mise.toml`, `.cicat/LOCAL-ENV.md`. Verified against a live run of the stack (podman-compose, project `devstack-local-env-1711220984`): `mise run check` and `mise run check:certificate` both pass, the site serves on `127.0.0.1:8080`, and the deny rules 404 `/config.php`, `/.devstack/*`, `/.git/config`.
+## Confirmed defects
 
-Defects found:
+**1. `.devstack/dev-install.sh:45-47` — the connection-failure guard can never fire.**
 
-**1. `generate-config.sh` leaves `HTTP_PORT` unvalidated, defeating its own guard** — `.devstack/generate-config.sh:39-41` vs `:60` and `:83`
+```bash
+schema_says_disconnected() {
+    printf '%s' "$1" | grep -q 'dbconnectionfailed'
+}
+```
 
-`check_safe_value` is applied to `DB_NAME`, `DB_USER`, `DB_PASSWORD` only, but `HTTP_PORT` is interpolated unescaped into both the sed replacement (`:60`) and the verification pattern built from the same value (`:83`). With `HTTP_PORT=80'` the script writes
+`dbconnectionfailed` is a lang-string *key*, not output. On a DB connection failure `setup_DB()` (`lib/dmllib.php:344`) rethrows `dml_connection_exception`, `default_exception_handler` reaches `bootstrap_renderer::early_error`, and the CLI branch (`lib/classes/output/bootstrap_renderer.php:179-189`) prints:
 
-    $CFG->wwwroot   = 'http://localhost:80'';
+```php
+if (CLI_SCRIPT) {
+    echo "!!! $message !!!\n";
+```
 
-a PHP parse error, and the grep at `:83` — built from that same unescaped value — matches the broken line, so verification passes and the script prints `Wrote .../config.php` and exits 0. This is verbatim the failure the script's own comment at `:36-38` and `LOCAL-ENV.md:124-132` say the guard exists to prevent. It is then sticky: `config_is_ours` matches the `'http://localhost` prefix of the broken line, so every later run short-circuits on "config.php already exists, leaving it as is" and never regenerates. Only `dev:reset` recovers.
+`$message` is the resolved string from `lang/en/error.php:204`:
 
-**2. `check:certificate` permanently disables `local/certengine/cli/seed_example.php`** — `.devstack/render-test-certificate.php:88-91` vs `local/certengine/cli/seed_example.php:50-51`
+```
+$string['dbconnectionfailed'] = '<p>Error: Database connection failed</p>
+```
 
-The render test creates cargo `ponente` when absent. `seed_example.php` hard-exits on exactly that record:
+The `$errorcode` argument is used only in the AJAX branch. So stdout carries `!!! <p>Error: Database connection failed</p>… !!!` and never the token being grepped for. `default_exception_handler` then `exit(1)` (`lib/setuplib.php:202`).
 
-    if (cargo::get_record(['shortname' => 'ponente'])) {
-        cli_error("El cargo 'ponente' ya existe. Nada que hacer.");
-    }
+Failure: the exact scenario `dev-install.sh:50` and `.cicat/LOCAL-ENV.md:54-62` exist to diagnose — `.devstack/.env` credentials edited without `dev:reset`, so `config.php` and the MariaDB volume disagree — falls through to the `schema_exit -eq 1` branch instead. The user is told *"Installed schema does not match install.xml (a plugin or core upgrade is pending). Running admin/cli/upgrade.php…"*, upgrade.php then fails to connect too, and `set -e` aborts. The diagnosis is the opposite of correct. Same bug at line 67 for the post-upgrade re-check. A match on `Error: Database connection failed` would work.
 
-Confirmed on the running stack after two task runs: `local_certengine_cargo (shortname=ponente): 1`. A developer who runs the new check task before the repo's own example seeder can never run the seeder on that site. The render test reuses the cargo but seeds no `cargo_label` rows, so `{{cargo}}` in the body resolves through a degraded path the seeder would have populated.
+**2. `.devstack/generate-config.sh:87` — `tail -n +6` is an unguarded magic offset, and both verification blocks miss it.**
 
-**3. `check:certificate` accumulates data without bound** — `.devstack/render-test-certificate.php:34-36`
+The comments at lines 100-105 and 137-140 claim a reformatted `.cicat/config.php.example` breaks the script loudly. It does not, because neither guard covers the positional strip. Simulated with one line added to the example's header:
 
-Every run creates a new course (`certrendertest-` . time()), a customcert instance and a participant row, and deletes nothing. After two runs on this stack:
+```
+### grow header by 1 line -> tail -n +6 output starts at:
+// NEW production-only note added later.
 
-    certrendertest courses: 2
-    customcert instances: 2
-    participants: 2
+unset($CFG);
+```
 
-`LOCAL-ENV.md:178` calls the course "throwaway"; nothing throws it away. A task meant to run on every change to the certificate pipeline grows the dev site each time.
+That line is not in `STRIP_LINES`, so `grep -vFx` leaves it, and the survivor check at line 141 passes. Simulating a two-line-shorter header through the full pipeline:
 
-**4. The cetext assertion is a hardcoded copy of `seed_example.php`'s body text and fails on a legitimate edit** — `.devstack/render-test-certificate.php:98`, `:100`, `:214-215`
+```
+missing: <none>  (exit-would-be: PASS)
+strip-check: PASS
+--- does output still contain unset($CFG)? ---
+0
+```
 
-`$bodyfragment = 'por haber'` is asserted on every run, including runs that reuse a pre-existing variant named `Ponente` (`:100`) whose body this script did not write. `cetext`'s own docblock states the body "vive en `local_certengine_variant.bodytext`, editable desde la biblioteca de variantes" — editing it there, the intended workflow, makes the task fail with
+Both guards report success while `unset($CFG);` has been silently swallowed. Three lines shorter also drops `global $CFG;`; four drops `$CFG = new stdClass();`, which makes every following `$CFG->…` a fatal on null. The `expected` map (lines 111-122) only checks settings that *are* present; nothing asserts that the structural lines survived, or that the header length is what line 87 assumes.
 
-    check:certificate FAILED: rendered PDF does not contain the seeded cetext body text ('por haber'); cetext may be silently rendering nothing.
+**3. `mise.toml:40` — `check` does not fan out to `check:certificate`.**
 
-diagnosing a rendering bug that does not exist. The string also duplicates `seed_example.php:73-74` with no link between the two.
+```toml
+[tasks.check]
+depends = ["dev"]
+```
 
-**5. `deploy.yml`'s new comment cites an example that is false** — `.github/workflows/deploy.yml:53-56`
+Verified that mise has no implicit colon fan-out: a parent `check` with a `check:child` runs only `PARENT-RAN`. `.cicat/LOCAL-ENV.md:196-199` justifies the certificate render as "the only proof in this repository that the certificate pipeline still renders, so it runs as its own task rather than a script someone has to remember to invoke" — but as wired, `mise run check` (and therefore `cap verify`, which looks for the task named exactly `check`) never runs it. It remains exactly the thing someone has to remember to invoke.
 
-> several of these names (config.php, mise.toml) also occur elsewhere in Moodle core
+**4. `.cicat/DEPLOY.md:86` — blanket claim that is false for most of the list.**
 
-`git ls-files | grep mise.toml` returns nothing; the new root file is the only one. Only `config.php` has duplicates (six). `.cicat/DEPLOY.md:84-94` states this correctly, so the workflow comment and the doc it points at disagree, and the reader who checks the claim finds the rule's stated justification half wrong.
+> `deploy.yml`'s excludes are anchored to the repository root with a leading `/`.
 
-**6. `--exclude='/config.php.tmp.*'` can never match** — `.github/workflows/deploy.yml:65`
+Four of the eleven are (`/.devstack/`, `/mise.toml`, `/config.php`, `/.cicat/LOCAL-ENV.md`). `.git/`, `.github/`, `.well-known/`, `certificados_sin_firma/`, `.user.ini`, `.htaccess`, `error_log` and `*.log` are not. `.github/` is not hypothetical — it matches five tracked directories inside core/plugins:
 
-The job syncs from `actions/checkout@v4`. `config.php.tmp.$$` is a git-ignored artefact that only `generate-config.sh` creates, on a developer machine, and only survives a SIGKILL past its EXIT trap. It cannot exist in a CI checkout.
+```
+availability/condition/role/.github/workflows/…
+filter/generico/.github/workflows/ci.yml
+mod/customcert/.github/workflows/moodle-ci.yml
+theme/adaptable/.github/ISSUE_TEMPLATE/…
+theme/adaptable/.github/workflows/ci.yml
+```
 
-**7. The generated dev `config.php` carries production comments that are false for it** — `.devstack/generate-config.sh:56-66`
+The content is benign, but the doc is what a reader consults before a production deploy, and it asserts a property the workflow does not have. (The six-file `config.php` claim at lines 88-92 *is* correct — `git ls-files` returns exactly those six.)
 
-sed rewrites the values but not the prose around them, so the generated file reads:
+**5. `.devstack/generate-config.sh:17-21` + `dev-install.sh:15` — `HTTP_PORT` drift is undetected, unlike DB drift.**
 
-    // Production currently uses 0777. 02770 (setgid, no world access) is tighter
-    ...
-    $CFG->directorypermissions = 02777;
+`generate-config.sh` short-circuits on any existing `config.php` whose wwwroot starts with `http://localhost`, regardless of port. `dev-install.sh` then port-checks and binds the *new* `HTTP_PORT`, and nginx listens on it. `config.php` still carries the old one. `initialise_fullme()` (`lib/setuplib.php:694`) redirects the browser to `$CFG->wwwroot` with the "Incorrect access detected" message — i.e. to the old port, where nothing is listening. Connection refused, with nothing naming the cause. `.devstack/.env.example:8-12` documents that `dev:reset` is required, and the DB-drift case got explicit detection and a named fix; the port case, which is equally detectable here (compare `$HTTP_PORT` against the wwwroot in `config.php`), gets neither.
 
-and, above `$CFG->dataroot = '/var/www/moodledata';`, "the docroot is .../aulavirtual.cicat.edu.pe/intranet, so this path (a sibling of the docroot, not a child) is correctly unreachable over HTTP" — which describes neither path. The header still says "Copy this file to the Moodle root as config.php and fill in the real values."
+## Lower severity
 
-**8. `LOCAL-ENV.md` contradicts `lib.sh` on runtime selection** — `.cicat/LOCAL-ENV.md:15-16` vs `.devstack/lib.sh:27`
+**6. `README.md:76-78` overstates the guard.**
 
-The doc says "Tasks detect whichever is actually usable and use it; you do not choose." `lib.sh:27` is `if [ -z "${COMPOSE:-}" ]`, an environment override that is either real and undocumented or dead.
+> every tool in `.devstack/` that touches `config.php` checks for `http://localhost` first and refuses to run against anything else
 
-**9. `dev-install.sh` misdiagnoses any non-zero post-upgrade exit as a stale schema** — `.devstack/dev-install.sh:71-72`
+`config_is_ours` is called by exactly two scripts (`generate-config.sh:18`, `dev-reset.sh:17`). `render-test-certificate.php:14` requires `config.php` and then creates a course, a customcert instance and `local_certengine` cargo/variant/asset/slot/rule/participant rows in whatever database that config points at, with no wwwroot check.
 
-The `elif` catches every non-zero code and asserts "still reports the schema stale ... install.xml was edited without bumping version.php". Exit 2 from that script means "Database is not yet installed", and the top-level `else` at `:88` already establishes that codes other than 0/1/2 are treated as unknown. The branch names a cause it has not established.
+**7. `.github/workflows/deploy.yml:65` — `--exclude='/.cicat/LOCAL-ENV.md'` has no active value.** Every other `.cicat/*.md` still deploys; the file is prose, and the things that actually must not reach the docroot (`/.devstack/`, `/mise.toml`) are already excluded on lines 62-63. It is one more line a reviewer of the exclude list has to reason about.
 
-**10. `LOCAL-ENV.md:200-206` documents an error in an unavailable external document**
+**8. `.devstack/render-test-certificate.php:127-175` — the fixture seed is not repairable.** `$sigid`, the `local_certengine_slot` row and the `rule` are created inside `if (!$variant)`. A run interrupted after `$variant->create()` leaves the variant present and the asset/slot/rule missing; every later run skips the whole block and dies at line 275 with *"rendered PDF has no embedded images; ceasset may be silently rendering nothing"* — a rendering diagnosis for what is actually missing seed data, with no path back except manual DB edits.
 
-"The task brief that shaped this stack named `admin/cli/checkdatabase.php`..." is an unresolvable reference for any reader of the repository. It belongs in the PR description.
-
-Unrelated churn: `.cicat/UPGRADE.md:45`, `.cicat/config.php.example:1` and `:28-29`, and `.github/workflows/deploy.yml:12` change only to replace em dashes, enlarging the diff of a branch whose subject is the local dev stack.
+**9. `.gitignore:1-4` — the reflowed header dropped an instruction, not just ceremony.** The removed banner ended with "Do not un-anchor these."; the replacement explains the reasoning but no longer states the rule. Reflowing the header at all is outside what this branch needed (it needed lines 9-14), and it enlarges the diff a reviewer has to read.
 
 GATE: FAIL
