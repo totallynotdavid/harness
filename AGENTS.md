@@ -14,7 +14,9 @@ Add dependencies through the package manager's command (`npm install`, `uv add`,
 
 Comments earn their place when they explain non-obvious intent, a rejected alternative, or
 an external quirk. Comments must not restate code or summarize material that belongs in a
-document. Use a repository comment checklist when one exists.
+document. They must not narrate how the code used to work or what used to fail; that is
+what the commit message is for. A comment that grows into a paragraph is usually
+defending a decision that should be changed instead. Use a repository comment checklist when one exists.
 
 ## Diagnosing
 

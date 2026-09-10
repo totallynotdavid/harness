@@ -36,16 +36,18 @@ not obvious from the code itself.
     response, auth, and status; a domain comment explains business rules and invariants;
     an integration comment explains provider quirks; a UI comment explains non-obvious
     state or composition.
-13. Prefer the current contract over history. Explain how the code used to work only when
-    that history prevents a likely regression. This does not cover a comment that
-    justifies a non-obvious design choice with a concrete incident - a date, a name, a
-    consequence. That comment states why the contract is shaped this way, not how it
-    changed. Compress its prose if it can be tighter; never cut the facts that make the
-    justification checkable.
+13. State the current contract, not the history. Do not explain how the code used to
+    work, what used to fail, or what a previous version did. The commit message carries
+    that. A design choice that needs defending may state the constraint it protects, in
+    one or two sentences, without narrating the incident that revealed it.
 14. Delete comments that duplicate what the name already says. Comment only when there is
     a non-obvious rule, boundary, or privacy constraint the name can't carry.
 15. Keep examples stable. Avoid colorful examples that can go false (a specific copy
     string, a specific analytics event); use invariant wording.
+16. Treat length as a signal about the code. A comment that grows past a few lines is
+    usually defending a decision rather than explaining one. Read the code it sits on
+    before shortening the prose: the fix is often to change the code so the comment is
+    unnecessary.
 
 ## Auditing a diff's comments
 
