@@ -132,7 +132,12 @@ removed=$({
 
 stale=0
 for id in $removed; do
-	printf '%s\n' "$diff_text" | grep -q "^+.*\b$id\b" && continue
+	# Not `printf ... | grep -q`: under pipefail, grep -q's early exit on a
+	# match (this diff can be 70KB+) sends SIGPIPE to printf before it
+	# finishes writing, and the pipeline then reports printf's 141 instead of
+	# grep's 0 - a real match gets masked as "not found" and a symbol still
+	# in the diff gets flagged as removed. A here-string has no pipe to break.
+	grep -q "^+.*\b$id\b" <<<"$diff_text" && continue
 
 	hits=$(outside "$id")
 	[ -n "$hits" ] && {

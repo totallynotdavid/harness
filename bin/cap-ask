@@ -193,9 +193,15 @@ last_prompt_line=$(printf '%s\n' "$out" | grep -n '^❯ .' | tail -1 | cut -d: -
 if [ -n "$last_prompt_line" ]; then
   tail_from_prompt=$(printf '%s\n' "$out" | tail -n "+$last_prompt_line")
 fi
-if [ "$harness" = claude ] && printf '%s' "$tail_from_prompt" | grep -qF "hit your session limit"; then
-  reset_at=$(printf '%s' "$tail_from_prompt" | grep -oE "resets [^·]*\(UTC\)" | head -1)
-  ctx_pct=$(printf '%s' "$tail_from_prompt" | grep -oE "ctx [0-9]+% used" | grep -oE '[0-9]+' | head -1)
+# Here-strings, not `printf ... | grep -q`: under pipefail, grep -qF's early
+# exit on a match in a large buffer sends SIGPIPE to printf before it
+# finishes writing, and the pipeline then reports printf's 141 instead of
+# grep's 0 - a real "hit your session limit" gets masked as "not found" and
+# the rejection is missed instead of caught. Found while root-causing the
+# same masking in cap-check's stale-symbol scan.
+if [ "$harness" = claude ] && grep -qF "hit your session limit" <<<"$tail_from_prompt"; then
+  reset_at=$(grep -oE "resets [^·]*\(UTC\)" <<<"$tail_from_prompt" | head -1)
+  ctx_pct=$(grep -oE "ctx [0-9]+% used" <<<"$tail_from_prompt" | grep -oE '[0-9]+' | head -1)
   # Take this profile out of its tier until its window resets. This is the
   # only quota signal that is never an estimate: the account itself said no.
   profile_block "$profile" "$(limit_reset_epoch "$harness" "$reset_at")"
