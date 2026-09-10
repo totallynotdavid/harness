@@ -24,6 +24,7 @@ sha=$(git -C "$CAP_TREE" rev-parse HEAD 2>/dev/null || true)
 dirty=$(git_dirty "$CAP_TREE")
 
 status=0
+failed=()
 # A die before any check leaves status at 0, so the trap needs to know whether
 # anything actually ran before it records a commit as verified.
 ran=0
@@ -41,13 +42,24 @@ run() {
   local m rss
   if [ -x /usr/bin/time ]; then
     m=$(mktemp)
-    /usr/bin/time -f '%M' -o "$m" "$@" </dev/null || status=1
+    /usr/bin/time -f '%M' -o "$m" "$@" </dev/null || { status=1; failed+=("$*"); }
     rss=$(tail -1 "$m" 2>/dev/null || echo 0)
     rm -f "$m"
     case $rss in '' | *[!0-9]*) rss=0 ;; esac
     [ "$rss" -le "$peak_kb" ] || peak_kb=$rss
   else
-    "$@" </dev/null || status=1
+    "$@" </dev/null || { status=1; failed+=("$*"); }
+  fi
+}
+
+# A count of what ran is not a verdict. The failing script has to be named in
+# the last line, because that is the line the reader acts on.
+report_result() {
+  if [ "$status" = 0 ]; then
+    printf '\n%s %s(s) run, all green\n' "$1" "$2"
+  else
+    printf '\nFAILED: %s\n' "$(printf '%s, ' "${failed[@]}" | sed 's/, $//')"
+    printf '%s of %s %s(s) failed\n' "${#failed[@]}" "$1" "$2"
   fi
 }
 
@@ -83,7 +95,7 @@ if [ -f mise.toml ] && have mise; then
     run mise run "$t"
   done
   ran=1
-  printf '\n%s task(s) run\n' "${#list[@]}"
+  report_result "${#list[@]}" task
   exit $status
 fi
 
@@ -93,11 +105,8 @@ if [ -f package.json ]; then
   [ -f yarn.lock ] && pm=yarn
   have jq || die "$slug: jq is required to read package.json scripts"
   scripts=$(jq -r '.scripts // {} | keys[]' package.json 2>/dev/null || true)
-  # `build` is in this list because leaving it out let me report "build clean"
-  # for days while aula's master could not build at all: prerendering / threw
-  # because BETTER_AUTH_SECRET was unset, and every CI run since the workflow
-  # was added had been red. test, lint and typecheck all passed throughout.
-  # Compiling is part of what "green" has to mean, or the word is a guess.
+  # `build` belongs here: a project whose tests pass but which does not
+  # compile is not verified.
   matched=$(printf '%s\n' "$scripts" | grep -E '^(test|lint|typecheck|check|build)$' || true)
   [ -n "$matched" ] || die "$slug: no test/lint/typecheck scripts found in $CAP_TREE/package.json"
   mapfile -t list <<<"$matched"
@@ -106,7 +115,7 @@ if [ -f package.json ]; then
     run "$pm" run "$s"
   done
   ran=1
-  printf '\n%s script(s) run\n' "${#list[@]}"
+  report_result "${#list[@]}" script
   exit $status
 fi
 
