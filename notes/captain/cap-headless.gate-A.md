@@ -1,48 +1,51 @@
-Gates pass (`mise run lint`, `check:andlist`, `check:syntax` all rc=0) and the happy path works live: `./bin/cap-ask haiku "Say the single word: alpha"` printed `alpha`, and `cap budget` read the reading `usage_write` had just left (`5h 14%, 7d 35%, read 6s ago`). The defects are below.
+I'll start by reading the code rules, then survey the diff.
+## Defects
 
-## 1. Landing a task destroys its gate reports (`bin/cap-gate:29,62`)
+**1. A resumed session that emits no result event wedges the profile permanently — `bin/cap-ask:150-155`**
 
-`out_dir` moved from `$CAP_HOME/notes/$CAP_PROJECT` to `$TASKS/$slug`, which is `state/tasks/<slug>/`. `state/` is in `.gitignore`, and `bin/cap-land:185` runs `cap-drop "$slug" --force`, whose line 51 is `rm -rf "$(task_dir "$slug")"`.
+`[ -n "$result_json" ] || break` exits the turn loop, and line 155 dies before the `rm -f "$match_file"` at line 212 ever runs. The pending `state/ask-resume/<id>.json` survives, so the next identical call resumes the same dead session and dies the same way, forever. The comment at 205-211 states this is exactly the loop the change set out to close; the fix covers only the path where a result event exists.
 
-Failure: the documented delivery path (`cap check` → `cap cleanup` → `cap commit` → `cap land`) now deletes `gate-A.md` and `gate-B.md` at the moment the work lands. Every accepted task loses the review that accepted it. Before this change the reports were tracked files — `paper-cuts.md:21` records recovering a zero-byte `local-env.gate-A.md` *from git*, which is no longer possible. The 12 reports already tracked under `notes/` (`notes/classroom/local-env.gate-A.md` and others) are now orphaned: `cap gate` will never rewrite them, so they stay permanently stale next to the real ones. This also contradicts `docs/architecture.md:19` (`| Notes and reports | notes/<project>/ |`) and is outside the brief, which said not to change output a human reads.
+Reproduced against a stubbed harness that exits without writing stdout:
 
-## 2. A dead session wedges the retry path permanently (`bin/cap-ask:196-200`)
+```
+before: dead-session.json
+cap: claude produced no result event for its last turn; see .../state/ask/dead-session.jsonl
+exit=1
+after:  dead-session.json
+```
 
-The resume record is deleted only on the success path (line 200) and in the `>=30%` branch (line 100). The `is_error` die at line 196 exits first, so the record survives.
+Second run, byte-identical. `cap gate <slug>` fails this way until someone deletes the record by hand.
 
-Verified failure: `claude -p --output-format stream-json --verbose --resume <unknown-id>` exits 1 and emits a fresh result event with `is_error: true`, `subtype: "error_during_execution"`, `errors: ["No conversation found with session ID: ..."]`. So once a record exists (written on a session limit) and its session becomes unresumable — the worktree was dropped, or claude pruned the transcript — every subsequent `cap gate <slug>` on that same fingerprint matches the record, resumes the dead id, dies at line 197, and leaves the record in place. `cap-gate` warns "did not run to completion", records nothing, and exits 2 forever. No review ever runs again until someone deletes `state/ask-resume/*.json` by hand. Master self-healed here: it printed the pane text and exited 0, which reached the unconditional `rm -f "$resume_file"`.
+**2. Harness stderr is discarded, so the error it dies on points at an empty file — `bin/cap-ask:145` and `:233`**
 
-## 3. The result and rate-limit events are read from the previous run (`bin/cap-ask:137-142,157-168`)
+`(cd "$dir" && "${cmd[@]}" </dev/null >"$turn_out" 2>/dev/null)` throws away everything the harness said about why it failed. Same on the codex side. With a stub that prints a real startup failure:
 
-`$jsonl` is opened with `>>` and, on the resume path (line 116), is the *previous* run's file. Both `result_json` and `rl_json` are then `tail -1` over the whole accumulated file, so nothing scopes them to this run's turn.
+```
+cap: claude produced no result event for its last turn; see .../3195256d-....jsonl
+--- transcript contents ---
+(end)
+```
 
-Failure: a resumed turn that dies without emitting its own result event (the low-memory guard killing a backgrounded `cap gate` is recorded in `paper-cuts.md:34`) leaves `result_json` = the previous run's session-limit result and `rl_json` = its `status: "rejected"` event. Line 174 then sees `is_error=true` plus `rl_status=rejected`, calls `profile_block` with the *old* `resetsAt`, and rewrites the resume record — reporting a session limit that did not happen this run. That is the same bug `docs/pipeline-notes.md` describes for master's stale scrollback banner, reintroduced through the file instead of the screen. Separately, `usage_write` at line 167 stamps that stale reading with `at: $(now)`, and `usage_read` picks the newest `at`, so tier sizing runs on an old quota number.
+`Invalid API key . Please run /login` is gone, and the operator is handed a 0-byte transcript. Master surfaced this through the pane capture. `rules/code.md`: "return explicit errors with actionable context."
 
-The `CAP_ASK_RESUME=force` path is worse: turn 1 is `/compact`, turn 2 is the real prompt. If turn 2 dies without a result, `result_json` is turn 1's `/compact` result with `is_error=false`, so cap-ask prints the compaction output as the answer and exits 0. `cap-cleanup:29` and `cap-commit:33` consume that answer directly.
+**3. Orphan resume records are never pruned, and lookup is now O(n) subprocesses — `bin/cap-ask:56-58`, `:78-86`**
 
-The fix is per-turn scoping: record `wc -c <"$jsonl"` before each turn and read only past that offset, or give each turn its own file.
+Master keyed the record by a hash filename: one `[ -f ]` test, one file per (profile, dir, prompt, key), overwritten in place. The new scheme names records by session id and runs a separate `jq -e` over every `*.json` in the directory on every claude call. A record is deleted only when a later call matches it exactly — but `cap-gate` puts the diff fingerprint in the key *and* the merge-base SHA in the prompt, so once the worktree changes (the normal outcome of a gate finding something) that record can never match again. Line 58 added a 7-day sweep for `state/ask` transcripts; nothing sweeps `state/ask-resume`. `grep -rn ask-resume bin/` returns one line, the directory assignment.
 
-## 4. Session-limit detection has no evidence and ignores `subtype` (`bin/cap-ask:148,174`)
+**4. `rl_resets` is empty rather than `0` when the turn carried no rate-limit event — `bin/cap-ask:172`**
 
-The prose match on `hit your session limit` was removed and replaced with `rl_status = rejected || api_error_status = 429 || terminal_reason = blocking_limit`. `subtype` is extracted at line 148 and used only in the error message, never in the test, although the brief named it as a detection signal. Nothing in the diff or the repo shows a captured result event from an actual session limit, so it is unverified which of these three fields the harness sets.
+`jq -r '.rate_limit_info.resetsAt // 0' <<<""` reads no input: it prints nothing and exits 0, so the `|| echo 0` never fires and the `// 0` never applies. Verified:
 
-Failure if none is set: `session_limit` stays 0, cap-ask dies with the generic error at line 197, `profile_block` is never called and no resume record is written. The tier keeps dispatching to an exhausted profile, which is exactly what `profile_block` exists to prevent.
+```
+rl_resets=[] rc-of-date=(fell back)
+```
 
-## 5. The reason for a failure is thrown away (`bin/cap-ask:137,197`)
+The two session-limit signals that need no `rate_limit_event` — `api_error_status = 429` and `terminal_reason = blocking_limit`, lines 183 — are precisely the ones that land here. `profile_block "$profile" ""` then silently falls back to `CAP_BLOCK_SECS` (1h) instead of the real reset, and the die message reads "resets an unknown time". If the real window is four hours out, the profile unblocks early and the next round buys another rejection.
 
-The harness call sends stderr to `/dev/null` and the die message reports only `subtype`/`terminal_reason`/`api_error_status`. The result event carries `errors: [...]` with the actual text (verified above) and it is never read. An operator gets `subtype error_during_execution, terminal_reason unknown, api_error_status none` and has to open the JSONL to learn "No conversation found with session ID".
+## Checked and clean
 
-## 6. Stale text describing a pane that is gone
+`mise run lint`, `check:andlist`, `check:syntax` all pass. `limit_reset_epoch` has no remaining callers; `require_herdr` is still used by `cap-spawn`/`cap-send`. `usage_write` verified against a captured `rate_limit_event`: `utilization` is a 0-1 fraction and `resetsAt` epoch seconds, so `*100` is right and `usage_read`/`usage_detail` read the file back correctly (`35 1789057200 snapshot`). `gate_verdict`'s unbounded scan is safe — `tail -1` keeps the last real verdict line, and quoted instruction text does not match. All `codex exec` and `claude -p` flags used exist. `diff_base` is consistent between `cap-gate`'s prompt and `gate_fingerprint`/`gate_ready`, and matches `cap-check:45`.
 
-- `bin/cap-ask:193`: "output above is truncated, not a real result" — headless cap-ask prints nothing before this die, so there is no output above. `cap-gate`'s `tee` receives an empty file.
-- `bin/lib.sh:557`: "never the prompt or a pane's chrome" defends the whole-file scan by naming a pane cap-ask no longer opens. `rules/comments.md:13` — state the current contract.
-- `docs/pipeline-notes.md:84-85` still documents `state/ask-resume/<hash of profile+dir+prompt>.json` and "the pane's reported context-usage percentage". Records are now named by session id and the percentage is computed from `usage`/`contextWindow`. `CLAUDE.md` tells agents to read this file before running gate rounds.
-
-## 7. Minor
-
-- `bin/lib.sh:33`: the `python3` fallback in `new_uuid` is unreachable by the comment's own reasoning ("uuidgen is not guaranteed present; the kernel's own generator is") and adds an undeclared dependency. `rules/code.md`: remove ceremony without active value.
-- `bin/lib.sh:1051`: `usage_write` takes eight positional arguments and writes `cwd` and `project_dir` from the same one. Callers have to remember the order of four unlabelled numbers.
-- `state/ask/*.jsonl` grows without bound (7–23 KB per call, carrying full review text); nothing prunes it, unlike `dispatch_log`. The resume scan at `bin/cap-ask:77-85` now forks a `jq` per record file on every claude ask.
-- `bin/cap-ask:236`: `printf '%s\n' "$(cat "$last_msg")"` where `cat "$last_msg"` does the same thing.
+<cc-memory filenames="log-captain-friction-to-papercuts.md">These four belong in `paper-cuts.md`; I did not add them there because this gate forbids edits.</cc-memory>
 
 GATE: FAIL

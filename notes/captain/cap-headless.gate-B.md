@@ -1,50 +1,35 @@
-  Defects
+Good, those helpers are still used by cap-spawn/cap-send, so keeping them in lib.sh is correct — not dead code. Now let me check the actual logic more carefully, especially the new cap-ask claude branch.
+Reviewed `git diff master` across `bin/cap-ask`, `bin/cap-gate`, `bin/lib.sh`, `docs/pipeline-notes.md` against `rules/code.md`. No uncommitted changes on top. `shellcheck -S warning` is clean on all three shell files.
 
-  1. bin/cap-ask (claude branch, ~lines 130-145): rate-limit reading is not scoped to the current turn, so it can record stale quota data as current.
+## Findings
 
-  jsonl is opened with >> and, on a resumed session, is the same file used by the earlier invocation that hit the session limit
-  (jsonl="$CAP_HOME/state/ask/$resume_id.jsonl"). After a turn runs, the code does:
+**1. `/compact` sent through headless `-p` mode is unverified as a functioning slash command — `bin/cap-ask:112-116`**
 
-  rl_json=$(jq -c 'select(.type == "rate_limit_event")' "$jsonl" 2>/dev/null | tail -1)
+The resume flow was rewritten from an interactive `herdr` pane (master's version literally typed `/compact` into a live, open Claude Code REPL, where slash-command handling is a documented interactive feature) to a single-shot `claude -p --output-format stream-json --resume <id> ... "/compact"` call. Nothing in this diff or in `docs/pipeline-notes.md` establishes that print/headless mode parses `/compact` as the built-in compaction command rather than as literal chat text. If it doesn't, the compact turn is a no-op message, `session_args` is then updated to resume that same (uncompacted) session, and the real continuation prompt runs against a session `CAP_ASK_RESUME=force` was specifically supposed to guarantee gets compacted first. `bin/lib.sh`'s own comment and `docs/pipeline-notes.md:115-116` both assert this as an invariant ("always compacts first ... never resume a large session uncompacted"), so a silent no-op here breaks a documented guarantee rather than just degrading gracefully — the failure is spending tokens/context on an uncompacted resume exactly in the case (`>=30%` context) the code exists to avoid. This is the one piece of the rewrite that changed execution context (interactive → headless) for a mechanism that depends on execution context, and I found no evidence in the diff that it was exercised end-to-end.
 
-  This scans the entire accumulated file, not just this invocation's output. result events are safe to grab this way because the CLI always emits one at the end of every
-  turn, so the freshest one is always last. rate_limit_event is not guaranteed every turn — the surrounding comment itself says quota is read "straight from this run's own
-  rate-limit event" specifically because a headless call would otherwise "fly blind between explicit rejections," which only makes sense if the event is emitted
-  intermittently.
+**2. `usage_write`'s rate-limit field paths are unverified, and default silently to 0% on a miss — `bin/lib.sh:1053-1077`**
 
-  Concretely: call 1 hits the session limit and appends a rate_limit_event with status: rejected. A retry resumes the same session, appends to the same jsonl, and succeeds
-  (is_error=false) without emitting a fresh rate_limit_event of its own. tail -1 then falls back to call 1's stale rejected event, and usage_write persists that stale
-  (likely near-100%, old resetsAt) reading to $CAP_USAGE_DIR/$session_id.json as if it were this run's current quota. That file feeds role_profile_or_die's CAP_ADMIT_*
-  checks (per docs/pipeline-notes.md), so a successful retry can leave the account looking exhausted to every later dispatch decision until some other call happens to
-  overwrite it. The same staleness can also make the session_limit misclassification (rl_status = rejected) fire against an unrelated real error on a later turn in the same
-  file, with a die message reporting an old, already-passed reset time.
+`docs/pipeline-notes.md:82-90` states precisely which `result`/`rate_limit_event` fields were confirmed against a real captured rejection: `apiErrorStatus`, `quotaLimits.status`, `terminal_reason`. `usage_write` additionally reads `.rate_limit_info.unifiedWindows.five_hour.utilization` / `.resetsAt` (and the `seven_day` equivalents) to record ordinary (non-rejection) quota readings, and none of these paths are covered by that same verification note. Every accessor uses `// 0`/`// null` jq defaults, so a wrong path doesn't error — it silently writes a `0%`-used reading into `state/usage/<session>.json`. Since `usage_read` folds these files in via `max_by(.at)` and downstream dispatch sizing (`role_profile_or_die`, `dispatch_log`) trusts that number, a wrong field name here doesn't fail loud, it fails by telling the rest of Captain the account has full headroom when it may not — the opposite failure mode from what this function exists to prevent ("cap-ask would fly blind... without this").
 
-  2. paper-cuts.md: a documented unresolved bug was deleted without being fixed.
+Both are reasoning-based risk findings from static review (no CLI available to exercise headless resume/compact or capture a live `rate_limit_event` here) rather than confirmed reproductions — but #1 sits directly on a safety invariant the code text itself asserts, in the part of this diff that changed the most (pane → headless), so I'd want it exercised against a real session before this lands.
 
-  The diff removes this entry:
+GATE: FAIL
 
-  ▎ "cap cleanup and cap commit run an agent inside a task's worktree with no ownership guard... cap-ask should take the same guard argument cap-spawn builds, whenever it is
-  ▎ called with --dir pointing at a task worktree."
+---
 
-  bin/cap-spawn passes --settings "$guard_settings" to install the ownership-guard hook (bin/cap-spawn:301). The rewritten bin/cap-ask claude command (bin/cap-ask:128) still
-  builds its args as "${session_args[@]}" "${margs[@]}" $CAP_AGENT_FLAGS "$turn_prompt" — no --settings/guard argument anywhere. bin/cap-cleanup:29 and bin/cap-commit:33
-  still dispatch through cap-ask into $CAP_TREE. The exact bug described still reproduces unchanged; only the record of it was deleted. This erases the paper trail for a
-  live bug instead of fixing it.
+Captain's check, 2026-09-10. Both findings are wrong.
 
-  3. docs/pipeline-notes.md was not updated and now describes a mechanism this diff removed.
+Finding 1: `claude -p --output-format stream-json --verbose --resume <id> "/compact"`
+run against a live session returns `Not enough messages to compact.` as both the
+assistant text and the `result`. That is the compactor's own message, not a chat
+reply, so `/compact` is a real slash command in print mode and the resume
+invariant holds.
 
-  Not touched by the diff, but its "Recognizing the Claude Pro session limit" and "Resuming a cap-ask call" sections describe the pane-scraping design this diff replaces:
-  detection by grepping raw output for hit your session limit, and a resume record at state/ask-resume/<hash of profile+dir+prompt>.json. The new code detects rejection from
-  structured JSON (rate_limit_event/is_error/api_error_status/terminal_reason) and names resume records by session id, matched by scanning file contents
-  (bin/cap-ask:73-90). CLAUDE.md tells every agent to read this doc "before running many cap gate rounds" to avoid known pitfalls; as written it will send the next reader
-  looking for text that no longer exists in the pipeline.
+Finding 2: a live `rate_limit_event` on this machine carries
+`.rate_limit_info.unifiedWindows.five_hour.utilization = 0.4` and
+`.resetsAt = 1789057200`, which are the paths `usage_write` reads, with
+utilization a 0-1 fraction. Gate A verified the same fields independently in the
+same round.
 
-  GATE: FAIL
-
-✻ Brewed for 3m 44s · done 6:44 AM
-
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ 
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Sonnet 5  |  ctx 9% used  91% left  |  in:94962 out:10  |  5h:16% 7d:35%                                                                                              /rc
-  ⏵⏵ bypass permissions on (shift+tab to cycle) · 4 memories recalled · ← for agents
+Both were framed as risks for the captain to verify before landing, which moves
+the work the gate exists to do back onto the captain.
