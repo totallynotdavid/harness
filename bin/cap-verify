@@ -93,7 +93,12 @@ if [ -f package.json ]; then
   [ -f yarn.lock ] && pm=yarn
   have jq || die "$slug: jq is required to read package.json scripts"
   scripts=$(jq -r '.scripts // {} | keys[]' package.json 2>/dev/null || true)
-  matched=$(printf '%s\n' "$scripts" | grep -E '^(test|lint|typecheck|check)$' || true)
+  # `build` is in this list because leaving it out let me report "build clean"
+  # for days while aula's master could not build at all: prerendering / threw
+  # because BETTER_AUTH_SECRET was unset, and every CI run since the workflow
+  # was added had been red. test, lint and typecheck all passed throughout.
+  # Compiling is part of what "green" has to mean, or the word is a guess.
+  matched=$(printf '%s\n' "$scripts" | grep -E '^(test|lint|typecheck|check|build)$' || true)
   [ -n "$matched" ] || die "$slug: no test/lint/typecheck scripts found in $CAP_TREE/package.json"
   mapfile -t list <<<"$matched"
   for s in "${list[@]}"; do
