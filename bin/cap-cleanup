@@ -15,23 +15,31 @@ task_lock "$slug"
 # on committed work, and the pass that fixes them has to be reachable then.
 base=$(git -C "$CAP_TREE" merge-base "$CAP_BASE" HEAD 2>/dev/null || printf '%s' "$CAP_BASE")
 reviewable=$(git -C "$CAP_TREE" diff --name-only "$base" | wc -l)
-reviewable=$((reviewable + $(git -C "$CAP_TREE" status --porcelain | wc -l)))
+reviewable=$((reviewable + $(git -C "$CAP_TREE" ls-files --others --exclude-standard | wc -l)))
+reviewable=$((reviewable + $(git -C "$CAP_TREE" diff --name-only | wc -l)))
 [ "$reviewable" != 0 ] || die "$slug's worktree has no changes against $CAP_BASE; nothing to clean up"
 
-# Name the two commands rather than the idea of "changed files". Left to its
-# own reading, a cleanup pass ran git status on a committed worktree, saw a
-# clean tree and reported nothing to do. An earlier one read only the tracked
-# diff and skipped local-env's seventeen new files, which were the bulk of the
-# change. Both shapes are normal: work is usually committed before the gate,
-# and a task whose deliverable is a new directory is not the exception.
+# Name the commands, and specifically never git status. Two cleanup passes have
+# now skipped local-env's .devstack/, which is seventeen files and the bulk of
+# that task's change, because `git status --porcelain` collapses an untracked
+# directory into the single line `?? .devstack/`. The pass was reading the
+# command it was given and the command was hiding the files. ls-files lists
+# them, which is why cap check has always used it. A third pass on a committed
+# worktree found the tree clean and stopped, so the diff is named against the
+# merge base rather than left to the reader.
 prompt="Read $CAP_HOME/rules/comments.md and the Readability section of
 $CAP_HOME/rules/code.md, then apply them to every file this worktree changes
 against $CAP_BASE.
 
-Those files are what 'git diff --name-only $base' lists, plus every untracked
-file 'git status --porcelain' reports. Run both. A clean git status does not
-mean there is nothing to do, because the work is usually already committed on
-this branch.
+Those files are what these two commands list together. Run both:
+
+  git diff --name-only $base
+  git ls-files --others --exclude-standard
+
+Do not use git status to find them. It collapses an untracked directory into a
+single entry, so a task that delivers a new directory looks like one file. And
+a clean tree does not mean there is nothing to review, because the work is
+usually committed on this branch already.
 
 Only clean up comments and readability. Remove comments that repeat the code.
 Shorten comments that stay. Rename only misleading names. Remove obvious dead
