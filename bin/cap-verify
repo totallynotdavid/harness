@@ -146,6 +146,9 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# A mise.toml that only pins tools is not a task runner. Aula uses one to fix
+# the `typst` version and keeps its commands as package scripts, so an empty
+# task list here falls through to package.json rather than failing the gate.
 if [ -f mise.toml ] && have mise; then
   tasks=$(
     {
@@ -155,17 +158,18 @@ if [ -f mise.toml ] && have mise; then
     } | sort -u
   )
   matched=$(printf '%s\n' "$tasks" | grep -E '^(test|lint|typecheck|check|format-check)([:.-].*)?$' || true)
-  [ -n "$matched" ] || die "$slug: no test/lint/typecheck mise tasks found in $CAP_TREE/mise.toml"
   # Read the list into an array first, so the loop body never has the list
   # itself as its stdin.
-  mapfile -t list <<<"$matched"
-  for t in "${list[@]}"; do
-    [ -n "$t" ] || continue
-    run mise run "$t"
-  done
-  ran=1
-  report_result "${#list[@]}" task
-  exit $status
+  if [ -n "$matched" ]; then
+    mapfile -t list <<<"$matched"
+    for t in "${list[@]}"; do
+      [ -n "$t" ] || continue
+      run mise run "$t"
+    done
+    ran=1
+    report_result "${#list[@]}" task
+    exit $status
+  fi
 fi
 
 if [ -f package.json ]; then
