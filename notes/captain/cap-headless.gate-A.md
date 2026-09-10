@@ -1,57 +1,46 @@
-I'll start by reading the code rules, then examine the diff.
+I'll start by reading the code rules, then survey the diff.
+Reviewed `git diff master` (4 files, no uncommitted changes) plus a live smoke test of the new headless path (`./bin/cap-ask haiku ... --dir /tmp` → returned `OK`, exit 0, wrote a correct `state/usage` record: `pct 69`, matching the status line's own 69).
+
 ## Defects
 
-**1. `ctx_pct` is measured from the turn that was refused, so the resume policy inverts its own fail-safe — `bin/cap-ask:177-182`**
+**1. `ctx_pct` can never fall under 30, so the whole resume-after-session-limit path is dead code.** `bin/cap-ask:188-195`, read back at `:84`.
 
-The 30% branch at `bin/cap-ask:81` decides whether to resume a rejected session directly or compact it first. The number it branches on is computed from the rejected turn's own token accounting. A turn stopped by a 429 never replays the session prefix, so `cache_read_input_tokens` is absent and the sum is just the new prompt.
+Two independent reasons, both confirmed against transcripts on this box:
 
-Against the repo's own captured rejection, `state/ask/a7195ba1-ca4a-4351-aba7-8a11e86540f5.jsonl`:
-
-```
-{"type":"result","subtype":"error","is_error":true,"api_error_status":429,
- "terminal_reason":"blocking_limit","usage":{"input_tokens":100},
- "modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,...}}}
-```
-
-Running the shipped expression over it:
+- The guard `if .usage.cache_read_input_tokens == null then 100` fires on every real rejection. The one captured 429 in this worktree, `state/ask/723a6856-9552-4e44-98b0-b2820e4e2a10.jsonl`, has `usage` = `{"input_tokens":100}` — no `cache_read_input_tokens` at all. So `ctx_pct` is 100.
+- When `cache_read_input_tokens` *is* present, the sum is cumulative session spend, not live context occupancy. `cache_read_input_tokens` accumulates over every API call in the session. Measured on two real review-shaped sessions:
 
 ```
-$ jq -r '((.usage.input_tokens // 0) + ... ) as $used | ... | ($used / $win * 100 | floor)'
-0
+0b3a2786…jsonl  turns=55  win=1000000  cap-ask_ctx_pct=274%   actual_last_turn_ctx=10%
+d8c952c7…jsonl  turns=49  win=1000000  cap-ask_ctx_pct=267%   actual_last_turn_ctx=10%
 ```
 
-Failure: a session rejected at 90% context is recorded as `ctx_pct: 0`, takes the `-lt 30` branch, and is resumed uncompacted — the case `bin/cap-ask:65-66` says must never happen. The `CAP_ASK_RESUME=force` compact-first branch (`:83-85`) becomes unreachable, since it is only reached when the recorded value is ≥30. It is not always zero — a turn that made several successful tool round trips before the 429 accumulates real `cache_read` — but it is zero in exactly the case the change captured and documented.
+  It crosses 30 at about three turns (`5b9c32b1…jsonl turns=3 ctx_pct=35%`). A gate review is 40-60 turns.
 
-The replaced code read `ctx N% used` off the pane, which was the session's real usage, and defaulted to `100` when it could not find it. The new code defaults to `100` only if `jq` itself errors; a computed `0` is trusted. The fail-safe direction flipped from "start fresh when unsure" to "resume when unsure".
+Failure: every `cap gate` retry after a reset takes the `else` branch at `:89`, prints `starting fresh instead of resuming`, deletes the record, and pays for a cold session — the exact cost the mechanism exists to avoid. The `<30%` branch, the `CAP_ASK_RESUME=force` compact branch, `continue_prompt`, the two-turn compact loop, and ~35 lines of `docs/pipeline-notes.md` describing all of it are unreachable. The quantity that would work is the last `usage.iterations[]` entry (`input + cache_read + cache_creation + output`), which gives 10% for the same 55-turn session.
 
-**2. `state/usage` has no pruner on the headless path — `bin/lib.sh:1046-1089`**
+**2. `modelUsage | to_entries[0]` assumes one model per result; sessions carry several.** `bin/cap-ask:192`, `bin/lib.sh:1068`, `bin/lib.sh:1078`.
 
-`usage_write` adds one file per headless call. The only code that deletes from that directory is `bin/cap-statusline:110-118`, and the diff's own doc change (`docs/pipeline-notes.md:264-268`) states a headless call never renders a status line. `usage_read` (`bin/lib.sh:983`) and `bin/cap-models:54` both slurp `"$CAP_USAGE_DIR"/*.json` on every sizing decision.
+`state/ask/0b3a2786-…jsonl`'s result carries two entries: `claude-sonnet-5` (`contextWindow` 1000000) and `claude-haiku-4-5-20251001` (`contextWindow` 200000). Order is JSON insertion order — the order models were first used — not the profile's model.
 
-Failure: on a box running Captain headless — the case this branch exists for — the directory grows one file per `cap ask`/`cap gate` round with nothing reclaiming it, and every dispatch-sizing read parses all of them. `cap-ask:56-57` prunes `state/ask` and `state/ask-resume` on a 7-day sweep and skips this one.
+Failure, when the first-used model is the small one: `usage_write` records `model_id`/`model` for a model the profile never ran, so `cap models`' "seen as" column reports the wrong model; and `ctx_pct` divides by 200000 instead of 1000000, inflating the reading fivefold. Pick the entry matching the profile's model, or the largest `contextWindow`, not entry zero.
 
-**3. `diff_base` extracted, two of its copies left behind — `bin/lib.sh:537`, `bin/cap-check:45-46`, `bin/cap-cleanup:16`**
+**3. `find "$CAP_HOME/state/usage" … -mtime +7 -delete` is dead, and the comment above it states a false premise.** `bin/cap-ask:55-60`.
 
-The new helper's comment says `bin/cap-check` "computes the same thing for the same reason", and both `cap-check:45-46` and `cap-cleanup:16` still hand-roll `git merge-base "$base" HEAD` with the same fallback. Three definitions of where a branch left base. No runtime failure today; the failure mode is drift, and `rules/code.md` calls for one consistent term per concept across modules.
+`bin/cap-statusline:114-122` sweeps the entire `state/usage` directory by file mtime against a 24-hour cutoff, for every `.json` in it, regardless of which process wrote each one. Any wired status line removes cap-ask's records six days before this `find` could. The comment's claim, "bin/cap-statusline's own pruning never runs for one", is true of the *write* and false of the *prune*. `usage_read`'s TTL is 900s anyway, so nothing older than 15 minutes is read. Per `rules/code.md`: remove dead code and ceremony without active value. The two `state/ask*` prunes are genuine and should stay.
 
-**4. `"${result_json:-{}}"` is not the guard it looks like — `bin/lib.sh:1069`**
+**4. `usage_write` publishes a fabricated 0% reading when a rate-limit event lacks `unifiedWindows`.** `bin/cap-ask:167`, `bin/lib.sh:1083-1086`.
 
-Bash closes the expansion at the first `}`, so this is `${result_json:-{}` plus a literal `}`:
+The call sits before the session-limit check, so it also runs on the rejection turn. If that event omits `unifiedWindows`, the `// 0` defaults write `pct: 0, resets_at: 0` for both windows. `usage_read` (`bin/lib.sh:976`) takes `max_by(.at)`, so this record — the newest — becomes the fleet's reading and reports `0 0 snapshot`: the account reads as empty at the moment it is exhausted. Every captured event here is `status: "allowed"` and does carry `unifiedWindows`, so the trigger shape is unverified; the structure is not. It is also the inverse of the fail-safe the same diff argues for in `ctx_pct` ("unsure reads as full"). Write nothing rather than zeros when the windows are absent.
 
-```
-$ bash -c 'y=A; echo "[${y:-{}}]"'
-[A}]
-```
+**5. `docs/pipeline-notes.md:88-89` and `bin/cap-ask:173-175` both state `blocking_limit` was never observed directly. It was.** `state/ask/723a6856-9552-4e44-98b0-b2820e4e2a10.jsonl` in this worktree is a real rejection carrying `terminal_reason: "blocking_limit"` **and** `api_error_status: 429` together — the same class of on-box evidence the note cites two sentences earlier for the other two fields. Failure: a reader weights the signal as speculative, and the next person re-derives evidence already on disk.
 
-The here-string carries the JSON with a trailing `}`. `jq` prints the first value and then exits 5 on the junk; `2>/dev/null || true` swallows both, and the empty case happens to expand to `{}` anyway. No failure — it works by accident on both paths.
+## Minor
 
-**5. Two comments do not describe their code**
-
-- `bin/cap-ask:55` — the pruning comment ends with an aside about `dispatch_log`, which neither `find` touches.
-- `bin/cap-ask:120-122` — "Each turn writes to its own file first so a death without a result leaves nothing to fall back to" states the opposite of the reason. The per-turn file exists so `result_json` reflects the current turn instead of matching an earlier turn's result already appended to `$jsonl`.
+A few of the new comments restate the code they sit on, which `rules/comments.md` forbids: `bin/cap-ask:124` ("Working directory set via cd, not a flag.") and `:160-161`.
 
 ## Verified working
 
-`mise run lint`, `check:andlist`, `check:syntax` pass. Live end-to-end: `cap ask haiku` returned in 2.8s, wrote `state/usage/8ed5a015-….json`, and `cap budget` read it back as `claude 60% (5h 60%, 7d 39%, read 4s ago)` — so `utilization × 100` and `resetsAt` are the right shapes. Confirmed against a live session that headless `--resume` preserves the session id and that `/compact` executes as a real slash command in `-p` mode ("Not enough messages to compact."), so the two-turn compact path is sound. `codex exec` accepts `--json`, `-C`, `-o/--output-last-message`. `limit_reset_epoch` has no remaining callers; `require_herdr` is still used by `cap-send`/`cap-spawn`. The error-shaped result the resume-clearing logic targets is real and matches (`errors: ["No conversation found with session ID: …"]`, `is_error: true`, no `api_error_status`).
+`api_error_status` and `terminal_reason` are real result-event field names (confirmed against captured `result` keys), so the 429 detection at `:177` is sound. `usage_write`'s `utilization * 100` matches the status line's `used_percentage` scale (both produced 69 within the same minute). The `-p --output-format stream-json --verbose` plumbing, per-turn temp files, `errors` extraction, and the codex `exec --output-last-message` path all behave as described. Dropping `tail -15` from `gate_verdict` is justified now that the report holds only the model's answer.
 
 GATE: FAIL
