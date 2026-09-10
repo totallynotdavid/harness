@@ -64,16 +64,28 @@ obvious from the code itself.
    or labels obvious structure).
 5. Check placement before wording - move a misplaced comment next to the thing it
    explains before rewriting it.
-6. A file header is acceptable only when it states the file's durable responsibility. One
+6. Before deleting a comment on a function, read the function. A comment that repeats
+   the name goes; a comment that states something the body does not show stays, even
+   when it opens with the name. The three that matter most are a return convention (what
+   a 0 or an empty string means to the caller), a rejected alternative and why it was
+   rejected, and an external quirk. Expect most deletions to be right and a minority to
+   be wrong: a cleanup pass here removed nine function comments and three of them held a
+   return convention or a rejected alternative.
+7. Deleting is the asymmetric move. A redundant comment left in place costs a reader one
+   second. A deleted comment that held the only record of why the code is shaped that way
+   is gone, because the reviewer reading the diff sees a deletion and no reason to doubt
+   it. When a comment is genuinely borderline, shorten it instead of removing it.
+8. A file header is acceptable only when it states the file's durable responsibility. One
    explaining several unrelated details should split into local comments.
-7. For any comment with a count, batch size, or limit: verify the number is a real
+9. For any comment with a count, batch size, or limit: verify the number is a real
    constraint. If it is only the current implementation, remove it.
-8. For any comment naming another file or module: check whether the relationship is
-   enforced. If not, rewrite to the local responsibility or add enforcement.
+10. For any comment naming another file or module: check whether the relationship is
+    enforced. If not, rewrite to the local responsibility or add enforcement.
 
 ## Before finishing
 
 - No comment only repeats the code or labels markup.
+- Every deleted comment was checked against the code it sat on, not just its first line.
 - No comment depends on another file staying synchronized without enforcement.
 - No sentence needed an em dash to hold itself together.
 - Long comments are split by idea and placed near the relevant code.
