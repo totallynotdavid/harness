@@ -599,7 +599,11 @@ gate_verdict() {
   # have to be exactly "GATE: PASS"/"GATE: FAIL" (plus trailing whitespace)
   # to count - never a substring match, which is what the echoed prompt
   # sentence ("...exactly: GATE: PASS or GATE: FAIL.") would give.
-  tail -15 "$1" | sed -E 's/^[^A-Za-z]*//' |
+  # Drop blank lines before taking the window. A pane capture can end with a
+  # dozen empty lines below the verdict, which pushed "GATE: PASS" out of a
+  # fixed tail and lost a review that had actually completed: gate B passed
+  # local-env and was recorded UNKNOWN.
+  grep -v '^[[:space:]]*$' "$1" | tail -15 | sed -E 's/^[^A-Za-z]*//' |
     grep -E '^GATE: (PASS|FAIL)[[:space:]]*$' | tail -1 |
     grep -oE 'PASS|FAIL' || printf 'UNKNOWN'
 }
