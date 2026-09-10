@@ -32,6 +32,13 @@ esac
 dir=$(cd "$(dirname "$abs")" 2>/dev/null && pwd) || dir=$(dirname "$abs")
 resolved="$dir/$(basename "$abs")"
 
+# The captain's own memory store is harness state, not project source. This
+# guard exists to stop source being hand-edited outside an agent worktree, and
+# blocking the memory directory only stopped the memory system from working.
+case "$resolved" in
+"$HOME"/.claude/projects/*/memory/*) exit 0 ;;
+esac
+
 case "$resolved" in
 "$hub"/*) exit 0 ;;
 "$work_root"/*)
