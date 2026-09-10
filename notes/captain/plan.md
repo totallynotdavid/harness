@@ -47,7 +47,35 @@ It also turned up a bug nobody was looking for: neither harness invocation had
 ever set its working directory to `--dir`'s target. The old pane transport hid
 it, because herdr opened the pane in the right place.
 
-## Stage 2: cap spawn goes headless
+## Stage 2: the gate emits findings, not prose
+
+Moved ahead of the spawn rewrite on 2026-09-10. It depends only on stage 1,
+it is much the smaller change, and a day of gate rounds on cap-headless
+showed what prose costs. One `find` line was added in round five, deleted in
+round six, restored in round seven and challenged again in round eight,
+because a prose report carries no memory of what the last three rounds
+established. In the same stretch a finding the captain owns and had deferred
+was re-reported at full reviewer cost every round, with no way to mark it
+taken. Both are addressability problems, not review-quality problems.
+
+`cap gate` currently asks for a review and parses `GATE: PASS` out of the
+answer. It should ask for structured findings, each with a file, a line, a
+claim and a severity, and compute the verdict from them. codex has `--output-schema` for exactly this.
+
+What it unlocks is not tidiness. A finding becomes addressable on its own, so a
+fix round can be sent one finding at a time instead of resending a whole
+review. Findings become comparable across rounds, so a defect the agent claims
+to have fixed and has not is detectable rather than a thing the captain has to
+notice. And `cases/<project>/conventions.md`'s gate-miss ledger can be written
+by `cap land` instead of by a skill asking an agent to remember.
+
+local-env is the argument. Its dev stack landed on classroom master by hand,
+and the Gate A run that followed found six real defects in code that was
+already shipped. Those findings had to be copied into
+`notes/classroom/defects.md` by hand to survive at all, because a gate report
+describes a branch and that branch had nothing left to land.
+
+## Stage 3: cap spawn goes headless
 
 The larger half. `cap spawn`'s agents are long-running, and `cap crew`,
 `cap watch`, `cap send` and `cap peek` all currently guess at them from pixels.
@@ -72,23 +100,6 @@ That affordance is worth keeping, so `cap attach <slug>` should resume the
 session interactively in a pane on demand. Both harnesses support it. The
 difference is that watching becomes a thing the captain asks for, not the
 channel the pipeline depends on.
-
-## Stage 3: the gate emits findings, not prose
-
-Depends on stage 1, which is done. `cap gate` currently asks for a review and
-parses `GATE: PASS` out of the answer. It should ask for structured findings,
-each with a file, a line, a claim and a severity, and compute the verdict from
-them. codex has `--output-schema` for exactly this.
-
-What it unlocks is not tidiness. A finding becomes addressable on its own, so a
-fix round can be sent one finding at a time instead of resending a whole
-review. Findings become comparable across rounds, so a defect the agent claims
-to have fixed and has not is detectable rather than a thing the captain has to
-notice. And `cases/<project>/conventions.md`'s gate-miss ledger can be written
-by `cap land` instead of by a skill asking an agent to remember.
-
-Today's local-env Gate A is the argument. Ten findings, in prose, in a file
-nothing reads back, on a task that has been stalled for twenty-one hours.
 
 ## Stage 4: cap step
 
