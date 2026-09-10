@@ -262,7 +262,17 @@ owns_overlap() {
 
 # A glob as an anchored regex, following git's :(glob) pathspec rules: **
 # crosses directory separators, * does not.
+# A glob with no wildcard is a directory claim, matching everything under it,
+# because that is what `git ls-files -- ":(glob)layers/catalog"` already means
+# and owns_files is built on it. Without this the planner and the runtime guard
+# disagreed: `cap wave check` counted 32 files under `layers/catalog` as
+# claimed, then the guard blocked the very first write to one of them, because
+# `^layers/catalog$` matches the directory and no file inside it.
 owns_regex() {
+  case $1 in
+  *[*?]*) ;;
+  *) printf '^%s(/.*)?$' "$(printf '%s' "$1" | sed 's/[].^$+(){}|\[]/\\&/g')"; return ;;
+  esac
   printf '%s' "$1" | awk '{
     out = ""
     for (i = 1; i <= length($0); i++) {

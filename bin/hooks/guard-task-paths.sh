@@ -38,6 +38,20 @@ case $path in
 *) path=$(printf '%s' "$input" | jq -r '.cwd // empty')/$path ;;
 esac
 
+# An agent must not be able to edit the declaration that constrains it.
+# state/ holds every task's `owns`, and this hook used to wave through
+# anything outside the worktree, so the first agent to hit a false block
+# rewrote its own glob to widen it and carried on. A guard a subject can
+# rewrite is not a guard. notes/ stays writable: a scout report lands there.
+case $path in
+"$CAP_HOME"/state/*)
+	printf 'BLOCKED: %s cannot write to Captain state. %s constrains this task.\n' \
+		"$slug" "${path#"$CAP_HOME"/}" >&2
+	printf 'Need it changed? Say so in your report; the captain changes it.\n' >&2
+	exit 2
+	;;
+esac
+
 case $path in
 "$tree"/*) rel=${path#"$tree"/} ;;
 *) exit 0 ;;
