@@ -63,12 +63,31 @@ note() {
 }
 
 # Find matches outside changed files.
+#
+# The second argument caps how many matching files still count as a lead, and 0
+# means no cap. A basename is a signal only while it is distinctive: on a
+# repository that vendors a framework, keys like "moodle" and "README" match
+# thousands of files, and printing the first five of them with no count buried
+# the real hits. A removed symbol has no such cap, because one referenced
+# everywhere is the most serious version of that finding, not the least.
 outside() {
-	{
+	local hits n max=${2:-0}
+	hits=$({
 		git -C "$repo" grep -lE "\\b$1" -- . 2>/dev/null || true
 	} | {
 		grep -vxF "$changed" || true
-	} | head -5
+	})
+
+	[ -n "$hits" ] || return 0
+	n=$(printf '%s\n' "$hits" | wc -l)
+	if [ "$max" != 0 ] && [ "$n" -gt "$max" ]; then
+		return 0
+	fi
+
+	printf '%s\n' "$hits" | head -5
+	if [ "$n" -gt 5 ]; then
+		printf 'and %s more\n' "$((n - 5))"
+	fi
 }
 
 # `git diff` only sees tracked files, so a new file, which is most of what an
@@ -227,7 +246,7 @@ for f in $changed; do
 	key=$(basename "$f" | sed 's/\.[^.]*$//')
 	[ ${#key} -ge 5 ] || continue
 
-	hits=$(outside "$key")
+	hits=$(outside "$key" "$CAP_CHECK_SIBLING_MAX")
 	[ -n "$hits" ] && {
 		printf '  ? %s mentioned in:\n' "$key"
 		printf '%s\n' "$hits" | sed 's/^/      /'
