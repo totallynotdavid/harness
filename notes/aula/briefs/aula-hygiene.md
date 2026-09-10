@@ -22,27 +22,34 @@ run.
 Move the file to `layers/catalog/test/`, matching where every other layer keeps
 its tests, and confirm `pnpm dev` then serves.
 
-Then make it unrepeatable. A test file under any `server/api/` tree must fail a
-check, not wait to be discovered by someone running the dev server. Add that as
-a lint rule (`files`/`ignores` in `eslint.config.mjs` can express "no
-`*.test.ts` under `layers/*/server/api/**`"), so `pnpm lint` refuses it.
+Then make it unrepeatable, structurally rather than with a rule. This repo has
+three competing test conventions: 18 files in `layers/*/test/`, 8 in
+`layers/*/shared/`, 5 under `layers/*/server/`. The file that landed inside
+`server/api/` was the inevitable consequence, not bad luck.
+`npmx-dev/npmx.dev` keeps every test in one place and has zero under `server/`,
+which is why this cannot happen there.
 
-## Deliverable 2: a smoke check, because "builds" is not "runs"
+Consolidate on `layers/<name>/test/`, already the majority. Move every
+colocated `*.test.ts` there and narrow the vitest `include` to
+`layers/*/test/**`. A test then cannot sit in a directory a framework scans,
+and no lint rule is needed.
 
-The gap above is the real finding. Add a `smoke` script that boots the built
-application, requests a small set of routes, asserts each returns the status it
-should, and shuts down cleanly with a non-zero exit on any failure.
+## Deliverable 2: finish the end-to-end setup that already exists
 
-Cover at least: `/` (200), `/cursos` (200), `/verificar/<a code that does not
-exist>` (404, and it must be the designed not-found page rather than a crash),
-and one authenticated route returning 401 when called with no session.
+The gap above is the real finding: nothing in CI ever starts the server.
 
-Wire it into `.github/workflows/ci.yml` as a step after the build. Keep it fast
-and dependency-free: `node`, and the `playwright` already installed, are
-available; do not add a package.
+Do not add a new script. `package.json` already has `test:e2e` and
+`@playwright/test` is already installed, but there is no `playwright.config.ts`
+and no specs, so that script is currently dead. Finish it instead of building a
+parallel one.
 
-Expose it the way every other command in this repo is exposed, as a `package.json`
-script alongside `dev`, `test`, `lint`, `typecheck` and `build`.
+Add `playwright.config.ts` with a `webServer` block that boots the built app,
+modelled on npmx's (`testDir: './test/e2e'`, `reuseExistingServer` when not CI).
+Then write the specs: `/` and `/cursos` return 200, `/verificar/<code that does
+not exist>` renders the designed not-found page rather than crashing, and one
+authenticated route returns 401 with no session.
+
+Wire `pnpm test:e2e` into `.github/workflows/ci.yml` after the build.
 
 ## Deliverable 3: remove the em dashes
 
@@ -73,10 +80,23 @@ it, including its em dashes.** They will be caught on that branch. Scope your
 ESLint rule so `pnpm lint` stays green on master when you land, and say in your
 report that fulfilment still needs the pass.
 
+## Deliverable 4: let the standalone scripts see `.env`
+
+`dev`, `build` and `test` get `.env` from Nuxt automatically. `db:seed` and
+`db:migrate` run outside Nuxt and never see it, so they depend on whatever
+happens to be exported in the shell.
+
+Add `--env-file-if-exists=.env` to those two scripts; node is v26 and supports
+it. That is the whole change, one flag each, no loader and no new dependency.
+
+While there, `drizzle.config.ts` falls back to `process.env.DATABASE_URL ?? ''`.
+An empty connection string fails confusingly later instead of loudly now. Make a
+missing `DATABASE_URL` an immediate, named error.
+
 ## Verification
 
-`pnpm test` (165 now, must not shrink), `pnpm lint`, `pnpm typecheck`,
-`pnpm build`, and your new `pnpm smoke`.
+`pnpm test` (165 now, must not shrink after the moves), `pnpm lint`,
+`pnpm typecheck`, `pnpm build`, and `pnpm test:e2e`.
 
 Then the check that started all this: run `pnpm dev`, and `curl` `/`, `/cursos`
 and `/api/cursos`. Report the actual status codes. A green test suite is not
