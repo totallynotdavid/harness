@@ -446,7 +446,7 @@ pane_send() {
 pane_enter() {
   local p
   p=$(task_pane "$1")
-  [ -n "$p" ] && herdr pane send-keys "$p" enter >/dev/null 2>&1
+  [ -n "$p" ] && herdr pane send-keys "$p" enter >/dev/null 2>&1 || true
 }
 
 # herdr's own reported status ("working"/"idle"/"unknown"), not a guess from

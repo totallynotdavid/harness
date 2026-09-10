@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# lint-andlist - find a bare `[ cond ] && cmd` whose false status escapes into set -e.
+#
+# Bash exempts the test in `a && b` from set -e, but not the list itself. So the
+# shape is harmless mid-body and fatal in tail position: as a script's last
+# statement it becomes the exit status, and as a function's last statement it
+# becomes the return value, which kills the caller the moment that function is
+# invoked bare. shellcheck has no diagnostic for either.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+mapfile -t files < <(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/hooks/*.sh)
+
+# A candidate is in tail position when every significant line after it, out to
+# the end of its function or the end of the file, is a block closer.
+scan() {
+	awk -v file="$1" '
+	{
+		t = $0
+		sub(/^[ \t]+/, "", t)
+		sub(/[ \t]+$/, "", t)
+		if (t == "" || t ~ /^#/) next
+		k++; ln[k] = FNR; tx[k] = t; raw[k] = $0
+	}
+	END {
+		for (i = 1; i <= k; i++) {
+			if (raw[i] ~ /^[A-Za-z_][A-Za-z0-9_]*[ \t]*\([ \t]*\)/) {
+				fn = tx[i]; sub(/[ \t]*\(.*/, "", fn)
+			} else if (raw[i] ~ /^\}/) fn = ""
+			owner[i] = fn
+
+			if (tx[i] !~ /^\[+ .* \]+ &&/ || tx[i] ~ /\|\|/) continue
+
+			res = ""; j = i + 1
+			while (j <= k) {
+				s = tx[j]
+				if (s == "else" || s ~ /^elif[ \t]/) {
+					d = 1; j++
+					while (j <= k && d > 0) {
+						if (tx[j] ~ /^if[ \t]/) d++
+						else if (tx[j] ~ /^fi([ \t;]|$)/) d--
+						j++
+					}
+					continue
+				}
+				if (s ~ /^(done|fi|esac)([ \t;<>&]|$)/ || s == ";;") { j++; continue }
+				if (s ~ /^\}([ \t;]|$)/) {
+					if (raw[j] ~ /^\}/) { res = "function"; break }
+					j++; continue
+				}
+				res = "safe"; break
+			}
+			if (res == "") res = "script"
+			if (res != "safe") printf "%s\037%s\037%s\037%s\037%s\n", file, ln[i], res, owner[i], tx[i]
+		}
+	}
+	' "$1"
+}
+
+# A function that ends in an and-list is only a defect if something calls it as
+# a bare statement. The same shape is the correct way to write a predicate that
+# is always asked inside a condition.
+bare_callers() {
+	local fn=$1 f n line
+	grep -rn -- "$fn" "${files[@]}" | while IFS=: read -r f n line; do
+		line=${line#"${line%%[![:space:]]*}"}
+		case $line in
+		"$fn"'()'* | *"#"*"$fn"*) continue ;;
+		esac
+		case $line in
+		"$fn" | "$fn "*)
+			case $line in *'&&'* | *'||'*) continue ;; esac
+			printf '%s:%s\n' "$f" "$n"
+			;;
+		esac
+	done
+}
+
+status=0
+for f in "${files[@]}"; do
+	while IFS=$'\037' read -r file line kind fn text; do
+		[ -n "${file:-}" ] || continue
+		if [ "$kind" = script ]; then
+			printf '%s:%s: exit status of the script is this test, not success\n' "$file" "$line" >&2
+			printf '    %s\n' "$text" >&2
+			status=1
+			continue
+		fi
+		callers=$(bare_callers "$fn")
+		if [ -n "$callers" ]; then
+			printf '%s:%s: return value of %s() is this test, and it is called bare\n' "$file" "$line" "$fn" >&2
+			printf '    %s\n' "$text" >&2
+			printf '    called bare at: %s\n' "$(printf '%s' "$callers" | tr '\n' ' ')" >&2
+			status=1
+		fi
+	done < <(scan "$f")
+done
+
+[ "$status" = 0 ] && printf 'lint-andlist: no escaping and-list\n'
+exit "$status"

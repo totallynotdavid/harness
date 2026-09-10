@@ -49,4 +49,6 @@ Record missed review findings, why they were missed, and how to prevent them.
 EOF
 
 printf 'wrote %s\n' "$out"
-[ -n "$srcs" ] && printf 'read these project instructions:%s\n' "$srcs"
+if [ -n "$srcs" ]; then
+	printf 'read these project instructions:%s\n' "$srcs"
+fi
