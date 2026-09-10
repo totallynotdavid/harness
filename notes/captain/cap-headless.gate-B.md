@@ -1,50 +1,58 @@
 
+ ▐▛███▛█   Claude Code v2.1.267
+▝▜██████▀  Sonnet 5 · Claude Max
+  ▝▝ ▝▝    ~/.cap-work/cap-headless
 
-● Clean. Shellcheck finds nothing beyond an info-level unresolved source path. Let me check a couple more targeted things: whether codex_limit_reached still works given
-  jsonl now stores raw output the way it expects, and confirm CAP_USAGE_DIR and mkdir -p etc. are all defined.
 
-  Searched for 3 patterns, ran 4 shell commands
 
-● Good, flags confirmed. Now a live smoke test of cap-ask's claude path with a trivial prompt to validate the stream-json parsing actually works end to end.
 
-  Listed 1 directory, ran 2 shell commands
+❯ Read /home/dubu/git/captain/rules/code.md, then review every change in this
+  worktree against master (git diff master, plus any uncommitted change).
+  Report concrete defects: what is wrong, where, and the failure it causes. Do
+  not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL.
 
-● Live smoke test confirms the headless claude path works end to end and writes a transcript. Now let me quickly test cap-gate's diff_base logic and
-  gate_verdict/gate_fingerprint for real bugs by simulating them directly.
+  Searched for 3 patterns, read 2 files, ran 7 shell commands
 
-  Ran 3 shell commands
+● Web Search("claude code CLI "-p" print mode slash command "/compact" headless works")
+  ⎿  Did 1 search in 6s
 
-● I read rules/code.md and reviewed the full diff against master (bin/cap-ask, bin/cap-gate, bin/lib.sh, docs/pipeline-notes.md, and two notes/classroom/local-env.gate-*.md
-  report files). Working tree is clean, so the committed state is the whole change.
+  Searched for 7 patterns, read 1 file, ran 12 shell commands
 
-  Methodology: read every hunk, cross-referenced every helper (profile_block, profile_block_until, diff_base, gate_fingerprint, gate_verdict, usage_write, new_uuid,
-  harness_trust) to confirm nothing was left dangling by the herdr→headless rewrite, ran shellcheck -x on the three changed scripts (clean), verified the claude/codex exec
-  CLI flags this code relies on (--session-id, -r/--resume, -p --output-format stream-json --verbose, codex exec --json -o/--output-last-message
-  --dangerously-bypass-approvals-and-sandbox -C) actually exist via --help, live-ran bin/cap-ask sonnet 'Reply with exactly: OK' --dir /tmp end to end (succeeded, wrote a
-  transcript to state/ask/), and exercised gate_verdict/diff_base/new_uuid directly in a shell to confirm their edge-case handling (stray "GATE: PASS" substrings inside
-  prose, leading bullet clutter, missing uuidgen, merge-base divergence).
+● Review
 
-  No functional defects found. Two minor, non-blocking observations:
+  I read rules/code.md and reviewed the full diff (bin/cap-ask, bin/cap-gate, bin/lib.sh, docs/pipeline-notes.md) against master; working tree is clean, so this is the
+  complete change. This is a substantial rewrite of cap-ask's claude/codex execution from interactive herdr panes to headless -p/exec --json calls, plus a diff_base() helper
+  shared by cap-gate's fingerprint and prompt.
 
-  1. bin/cap-gate:28 extracts a new shared diff_base() into lib.sh and its own comment says this is "the same distinction cap-check's diff_from makes," but
-     bin/cap-check:45-46 still carries its own separate inline copy of that same logic rather than calling the new helper. Functionally identical, just an un-converted
-     duplication the refactor left behind — not a bug.
-  2. notes/classroom/local-env.gate-A.md and local-env.gate-B.md were updated with content that still bears the old pane-capture mechanism's artifacts (❯ prompt lines, "⏵⏵
-     bypass permissions on", a live status line with ctx/5h/7d percentages, "Baked for Xm"). Those only come from an interactive herdr pane read, which this branch's whole
-     point is to stop using for cap-ask. They're unrelated to this branch's subject (a different project's dev-stack review) and, going forward, don't represent what a
-     cap-gate report will actually look like once this lands (plain answer text, no chrome). Harmless, but stale/misleading if kept as reference material.
+  I checked the higher-risk spots concretely rather than just reading:
 
-  Everything else checks out: the headless cap-ask rewrite correctly handles turn-by-turn resume/compact, distinguishes a session-limit rejection from other errors via
-  structured JSON fields (not string-matching), cleans up its own temp files on every exit path, prunes its own state directories, and the set -euo pipefail idioms used
-  throughout (A && B, A || B, if !) are all safe against premature exit. cap-gate's new diff_from/fingerprint fix is a real, verified improvement (a sibling landing into
-  base no longer poisons the reviewed diff). Documentation in docs/pipeline-notes.md accurately describes the code as written.
+  - sed -euo pipefail / $() semantics: verified empirically that sid=$(new_uuid) correctly propagates new_uuid's internal die/exit 1 to kill the whole script (tested the
+    exact construct in isolation) — this is not the same subshell-swallow problem the ask_profile comment warns about elsewhere.
+  - /compact under -p --resume: confirmed via search that Claude Code slash commands, including /compact, work when passed as the print-mode prompt on a resumed session —
+    the "Compact-then-continue is two turns" design is valid.
+  - diff_base() vs bin/cap-check's diff_from: identical merge-base "$base" HEAD logic; cap-gate calls sync_base before computing it, so it lines up with the post-sync
+    fingerprint.
+  - usage_write shape vs bin/cap-statusline: usage_write omits spend_limit, but usage_read's jq reads it with // 0, so the omission degrades gracefully rather than breaking.
+    Not a functional defect, just an inexact "same shape" claim in the code comment.
+  - Ordering fix: the new codex path checks codex_limit_reached before ever printing anything, whereas master's version printed the (possibly truncated) pane output before
+    checking, risking a bad verdict reaching gate_verdict on a rate-limited round. This diff removes that risk rather than introducing one.
+  - Ran shellcheck -x -S style over all three shell files: clean, no warnings.
+  - No dangling references to the removed limit_reset_epoch; both call sites now read back profile_block_until instead, which can't disagree with what was just recorded.
+
+  Nothing here rises to a concrete defect with a traceable failure. Two non-blocking notes for a future pass, not failures:
+
+  1. bin/cap-ask's claude branch (bin/cap-ask:64-218) is now one ~155-line block mixing resume-key resolution, turn looping, result parsing, session-limit detection, and
+     usage recording, with no function decomposition — code.md asks for small, single-purpose functions. It reads linearly today, but it's grown well past what a flat script
+     comfortably holds.
+  2. The comment on usage_write (bin/lib.sh:1074) says it writes "the shape bin/cap-statusline writes," but it doesn't include spend_limit. Harmless in practice (// 0 covers
+     it), just slightly imprecise.
 
   GATE: PASS
 
-✻ Churned for 5m 18s · done 9:13 AM
-
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ 
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Sonnet 5  |  ctx 12% used  88% left  |  in:120270 out:5  |  5h:86% 7d:42%                                                                                            /rc
+✻ Sautéed for 7m 33s · done 9:35 AM
+                                                                 You've used 94% of your session limit · resets 11:20am (America/Lima) · /upgrade to keep using Claude Code
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Sonnet 5  |  ctx 14% used  86% left  |  in:139203 out:2505  |  5h:94% 7d:43%                                                                                          /rc
   ⏵⏵ bypass permissions on (shift+tab to cycle) · 4 memories recalled · ← for agents
