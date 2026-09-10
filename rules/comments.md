@@ -1,11 +1,13 @@
 # Comment rules
 
-When a comment earns its place, and how to write the ones that do. Applies to every
-agent brief and every review gate; `rules/code.md`'s one-liner is the summary this
-file backs up for a full audit pass.
+This is the last line of defense, not the standard. The standard is the "Write plainly"
+section of `AGENTS.md`, which every agent reads at the start of every session: an agent
+implementing a change is expected to write clean comments the first time, not to leave
+them for a cleanup pass. This file is the checklist `cap cleanup` works from when review
+finds something that got through.
 
-A comment should earn its place by preserving intent, constraints, or tradeoffs that are
-not obvious from the code itself.
+A comment earns its place by preserving intent, constraints, or tradeoffs that are not
+obvious from the code itself.
 
 ## Writing a comment
 
@@ -22,7 +24,8 @@ not obvious from the code itself.
 5. Keep each comment to one idea. Split a comment that explains ownership, performance,
    and UI behavior at once.
 6. Use short sentences. A maintainer should understand the comment on one read.
-7. Use plain punctuation. No em dashes; a period, comma, colon, or parentheses instead.
+7. Read an em dash as a signal that the sentence carries two ideas. Split it rather than
+   swapping in different punctuation.
 8. Remove drift-prone execution details unless they are the point. Avoid "one query" or
    "two reads" unless the code depends on that exact constraint - if the detail matters,
    name the constraint it protects.
@@ -55,8 +58,7 @@ not obvious from the code itself.
    snippets, deleted/renamed replacements, tests.
 2. Scan every comment form: `//`, block comments, template comments, doc comments, shell
    comments, SQL comments, and comment-shaped user-facing text.
-3. Search for em dashes; replace each with a period, comma, colon, or parentheses, then
-   re-read the sentence.
+3. Search for em dashes. Each one marks a sentence to re-read and usually to split.
 4. Mark each comment: **keep** (non-obvious intent or constraint), **rewrite** (useful but
    unclear or drift-prone), **move** (useful, wrong location), **delete** (restates code
    or labels obvious structure).
@@ -73,7 +75,7 @@ not obvious from the code itself.
 
 - No comment only repeats the code or labels markup.
 - No comment depends on another file staying synchronized without enforcement.
-- No comment contains an em dash.
+- No sentence needed an em dash to hold itself together.
 - Long comments are split by idea and placed near the relevant code.
 - Comments use the same domain terms as the code around them.
 - Comments are still accurate after the formatting or refactor pass that follows.
