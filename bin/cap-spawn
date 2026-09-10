@@ -261,7 +261,7 @@ cat > "$dir/contract.md" <<EOF
 
 - $deliverable
 - Report failures plainly, with the output that shows them.
-- Found a second problem? Report it; it becomes its own task.
+- Found a second problem inside the ground you own? Fix it and say what you fixed. A brief is what the captain could see; you can see more. Outside your ground, report it instead, because a write there lands on another task's work.
 - A tool you need is missing? Install it from its official instructions and carry on. Add it to \`config/tools/$project\` in Captain so the next worktree has it.
 ${owns:+- You own \`$owns\` and nothing else. Writes outside it are blocked. Need a change elsewhere? Say so in your report.
 }${preflight_note:+
