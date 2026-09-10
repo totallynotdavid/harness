@@ -26,4 +26,9 @@ code. Do not change behavior, run tests, or commit. Leave all edits unstaged.
 
 If a section does not need changes, leave it alone."
 
-exec "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
+"$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
+
+# Record what this pass saw. cap land refuses to deliver content that no
+# cleanup pass has read, so rules/comments.md gets applied to every task
+# instead of only the ones the captain remembers to clean.
+printf '%s\n' "$(tree_content_hash "$CAP_TREE" "$CAP_BASE")" >"$TASKS/$slug/cleaned"

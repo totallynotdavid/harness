@@ -39,6 +39,24 @@ bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" \
 	die "strip them, then land again"
 }
 
+# rules/comments.md, enforced rather than described, for the same reason as
+# the trailers above. It was the only rule file nothing in the pipeline ran:
+# cap cleanup was the sole reader and it was optional, so ten aula tasks
+# landed without a comment pass and arrived carrying paragraphs that narrated
+# prior incidents. AGENTS.md was not the missing piece; every AGENTS.md in
+# this fleet already bans the em dash and one repository still collected 38.
+cleaned=$(cat "$TASKS/$slug/cleaned" 2>/dev/null || true)
+now=$(tree_content_hash "$CAP_TREE" "$CAP_BASE")
+if [ "$cleaned" != "$now" ]; then
+	if [ -z "$cleaned" ]; then
+		printf 'cap: %s has never had a comment pass.\n' "$slug" >&2
+	else
+		printf 'cap: %s changed since its comment pass.\n' "$slug" >&2
+	fi
+	printf 'Run: cap cleanup %s\n' "$slug" >&2
+	die "then cap commit and land again"
+fi
+
 long_summaries=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='%h %s' |
 	awk '{ s = substr($0, index($0, " ") + 1); if (length(s) > 50) printf "%s (%d chars)\n", $0, length(s) }')
 [ -z "$long_summaries" ] || {
