@@ -1,0 +1,8 @@
+# Tools used for the aula-render-alternatives scout task (candidate PDF
+# render engines evaluated against Chromium/Playwright). Not required for
+# the current codebase to build or test; kept here so a future worktree
+# doesn't have to rediscover them if this work continues.
+
+mise typst
+mise python@3.14
+sh   pip install weasyprint
