@@ -8,6 +8,9 @@
 # Two subjects, one procedure. A task is verified in its worktree; a project is
 # verified in its own checkout, which is how a base earns the right to be
 # forked more than once.
+again=0
+if [ "${1:-}" = --again ]; then again=1; shift; fi
+
 if [ "${1:-}" = --repo ]; then
   CAP_PROJECT=${2:?usage: cap verify --repo <project>}
   CAP_TREE=$(proj_path "$CAP_PROJECT")
@@ -23,6 +26,28 @@ cd "$CAP_TREE" || die "$slug: no worktree at $CAP_TREE"
 sha=$(git -C "$CAP_TREE" rev-parse HEAD 2>/dev/null || true)
 dirty=$(git_dirty "$CAP_TREE")
 
+# Which scripts already passed at this commit, so a run that dies partway
+# through resumes instead of starting over. The build is both the most
+# expensive script and the first thing a constrained box kills, which is the
+# combination that keeps a run from ever reaching the end. Only a clean tree
+# earns an entry: a pass with uncommitted changes says nothing about the
+# commit.
+progress=""
+if [ -n "$sha" ] && [ "$dirty" = 0 ]; then
+  mkdir -p "$VERIFIED/$CAP_PROJECT"
+  progress=$VERIFIED/$CAP_PROJECT/$sha.scripts
+  [ "$again" = 0 ] || rm -f "$progress"
+fi
+
+already_passed() {
+  [ -n "$progress" ] && grep -qxF "$1" "$progress" 2>/dev/null
+}
+
+mark_passed() {
+  [ -n "$progress" ] || return 0
+  already_passed "$1" || printf '%s\n' "$1" >>"$progress"
+}
+
 status=0
 failed=()
 # A die before any check leaves status at 0, so the trap needs to know whether
@@ -37,18 +62,61 @@ ran=0
 # only place the harness watches a real build, so it is the only place a
 # capacity number can come from that is not a guess.
 peak_kb=0
+# A script that finishes its work and then refuses to exit looks exactly like
+# one still working, so the gate needs a ceiling to call it failed. `nuxt
+# build` does this whenever the dev database directory already exists, which
+# is why the ceiling is not theoretical.
+CAP_VERIFY_MAX=${CAP_VERIFY_MAX:-900}
+capped() {
+  local pid rc
+  # Job control gives the background job its own process group, so the kill
+  # below reaches pnpm's node grandchild too. Without it the signal lands on
+  # the direct child alone and the grandchild keeps the memory.
+  set -m
+  "$@" </dev/null &
+  pid=$!
+  set +m
+  (
+    sleep "$CAP_VERIFY_MAX"
+    kill -0 "$pid" 2>/dev/null || exit 0
+    kill -TERM -- "-$pid" 2>/dev/null
+    sleep 5
+    kill -KILL -- "-$pid" 2>/dev/null
+  ) &
+  local watcher=$!
+  rc=0
+  wait "$pid" || rc=$?
+  kill "$watcher" 2>/dev/null || true
+  wait "$watcher" 2>/dev/null || true
+  if [ "$rc" -gt 128 ]; then
+    # The child dying on the watcher's TERM ends the wait above, which stops
+    # the watcher before it can escalate. Sweep the group here so a grandchild
+    # that ignored TERM cannot outlive the run.
+    kill -KILL -- "-$pid" 2>/dev/null || true
+    printf 'no exit within %ss, killed the process tree\n' "$CAP_VERIFY_MAX" >&2
+  fi
+  return "$rc"
+}
+
 run() {
-  printf '=== %s ===\n' "$*"
-  local m rss
+  local key=$*
+  if already_passed "$key"; then
+    printf '=== %s === (passed earlier at this commit)\n' "$key"
+    return 0
+  fi
+  printf '=== %s ===\n' "$key"
+  local m rss rc
   if [ -x /usr/bin/time ]; then
     m=$(mktemp)
-    /usr/bin/time -f '%M' -o "$m" "$@" </dev/null || { status=1; failed+=("$*"); }
+    capped /usr/bin/time -f '%M' -o "$m" "$@"; rc=$?
+    if [ "$rc" = 0 ]; then mark_passed "$key"; else status=1; failed+=("$key"); fi
     rss=$(tail -1 "$m" 2>/dev/null || echo 0)
     rm -f "$m"
     case $rss in '' | *[!0-9]*) rss=0 ;; esac
     [ "$rss" -le "$peak_kb" ] || peak_kb=$rss
   else
-    "$@" </dev/null || { status=1; failed+=("$*"); }
+    capped "$@"; rc=$?
+    if [ "$rc" = 0 ]; then mark_passed "$key"; else status=1; failed+=("$key"); fi
   fi
 }
 
@@ -72,6 +140,7 @@ on_exit() {
   # nothing about the commit anyone else would fork from.
   if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$dirty" = 0 ]; then
     verified_record "$CAP_PROJECT" "$sha"
+    [ -z "$progress" ] || rm -f "$progress"
     printf '%s verified at %s\n' "$CAP_PROJECT" "${sha:0:12}"
   fi
 }
@@ -107,7 +176,11 @@ if [ -f package.json ]; then
   scripts=$(jq -r '.scripts // {} | keys[]' package.json 2>/dev/null || true)
   # `build` belongs here: a project whose tests pass but which does not
   # compile is not verified.
-  matched=$(printf '%s\n' "$scripts" | grep -E '^(test|lint|typecheck|check|build)$' || true)
+  # build runs last, not alphabetically. It is the script that exhausts memory
+  # on a constrained box, so everything cheaper banks a pass before the run is
+  # at risk.
+  matched=$(printf '%s\n' "$scripts" | grep -E '^(test|lint|typecheck|check|build)$' |
+    sort -k1,1 | awk '$0 == "build" { b = $0; next } { print } END { if (b) print b }' || true)
   [ -n "$matched" ] || die "$slug: no test/lint/typecheck scripts found in $CAP_TREE/package.json"
   mapfile -t list <<<"$matched"
   for s in "${list[@]}"; do
