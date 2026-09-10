@@ -134,6 +134,14 @@ fi
 
 [ "$started" = 1 ] || die "$slug: sent twice but the agent never started a turn - check by hand: cap peek $slug"
 
+# A turn has started, so the task is not done, and cap send is the one place
+# that knows this for certain. The verb used to depend on the agent choosing
+# to log `working:` itself, so cap crew reported done for a task mid-round and
+# the reminder hook listed it as waiting to land. Record the fact here instead
+# of inferring it from the screen.
+printf 'working: sent by the captain: %s\n' "$(printf '%s' "${text%%$'\n'*}" | cut -c1-120)" \
+	>>"$TASKS/$slug/status.log"
+
 if [ "$force" = 1 ] && [ -n "$ctx" ]; then
 	printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"
 else
