@@ -104,6 +104,23 @@ if [ -n "$project" ]; then
 fi
 [ "$collide" = 0 ] && echo "  ok"
 
+# House style, enforced rather than described. Every AGENTS.md in this fleet
+# says to use a period, comma, colon or parentheses instead of an em dash, and
+# the rule was still ignored 38 times in one repository, in comments, page
+# titles and UI strings alike. Only added lines are examined, so a task is
+# never failed for em dashes it inherited.
+printf '\n## em dashes\n'
+# Every grep here exits 1 on no match, which `set -euo pipefail` turns into a
+# silent death of the whole check, so the status is swallowed deliberately.
+dashes=$({ printf '%s\n' "$diff_text" |
+	grep -nE '^\+' | grep -v '^[0-9]*:+++' | grep -F '—' | head -10; } || true)
+if [ -n "$dashes" ]; then
+	printf '%s\n' "$dashes" | sed 's/^/      /'
+	note "added lines use an em dash; AGENTS.md calls for a period, comma, colon or parentheses"
+else
+	echo "  ok"
+fi
+
 # Check related files that should change together.
 printf '\n## surfaces\n'
 if [ -f "$conv" ] && grep -q '^```surfaces' "$conv"; then

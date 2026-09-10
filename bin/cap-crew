@@ -46,6 +46,14 @@ for s in $(task_slugs); do
 	commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
 	age=$((($(now) - CAP_STARTED) / 60))
 
+	# Shown because the ceiling cap-send enforces is otherwise invisible until
+	# it refuses. A task drifting past 40% needs finishing or restarting, and
+	# the captain can only plan that if the number is on the board.
+	# No % sign: the rows are replayed through `printf "$rows"`, which would
+	# read one as a format specifier.
+	ctx=$(pane_context_pct "$s" 2>/dev/null || true)
+	[ -n "$ctx" ] || ctx="-"
+
 	# Mark a stale parent tip with *.
 	parent_display=$(task_field "$s" CAP_PARENT)
 	if [ -n "$parent_display" ]; then
@@ -53,12 +61,12 @@ for s in $(task_slugs); do
 		[ "$tip" = "$(task_field "$s" CAP_PARENT_TIP)" ] || parent_display="$parent_display*"
 	fi
 
-	rows="$rows$CAP_SLUG\t$CAP_PROJECT\t$CAP_KIND\t$CAP_MODEL\t$st\t${commits}c/${dirty}d\t${age}m\t$parent_display\n"
+	rows="$rows$CAP_SLUG\t$CAP_PROJECT\t$CAP_KIND\t$CAP_MODEL\t$st\t${commits}c/${dirty}d\t${age}m\t$ctx\t$parent_display\n"
 done
 
 if [ "$json" = 1 ]; then
 	printf "$rows" |
-		awk -F'\t' 'NF{printf "{\"task\":\"%s\",\"project\":\"%s\",\"kind\":\"%s\",\"model\":\"%s\",\"status\":\"%s\",\"work\":\"%s\",\"age\":\"%s\",\"stack\":\"%s\"}\n",$1,$2,$3,$4,$5,$6,$7,$8}'
+		awk -F'\t' 'NF{printf "{\"task\":\"%s\",\"project\":\"%s\",\"kind\":\"%s\",\"model\":\"%s\",\"status\":\"%s\",\"work\":\"%s\",\"age\":\"%s\",\"ctx\":\"%s\",\"stack\":\"%s\"}\n",$1,$2,$3,$4,$5,$6,$7,$8,$9}'
 	exit 0
 fi
 
@@ -68,6 +76,6 @@ fi
 }
 
 {
-	printf 'TASK\tPROJECT\tKIND\tMODEL\tSTATUS\tWORK\tAGE\tSTACK\n'
+	printf 'TASK\tPROJECT\tKIND\tMODEL\tSTATUS\tWORK\tAGE\tCTX\tSTACK\n'
 	printf "$rows"
 } | column -t -s"$(printf '\t')"

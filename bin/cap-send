@@ -2,8 +2,11 @@
 # cap-send - send a message to a running agent.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap send <slug> "<text>"}
+slug=${1:?usage: cap send <slug> [--force] "<text>"}
 shift
+
+force=0
+[ "${1:-}" = --force ] && { force=1; shift; }
 
 text=$*
 [ -n "$text" ] || die "nothing to send"
@@ -96,7 +99,23 @@ if ! pane_live "$slug"; then
 	exit 0
 fi
 
+# Refuse before delivering, not after. This check used to print an advisory
+# *below* the `deliver` call, so the message was already in the agent's input
+# box by the time the captain read the warning, and the threshold was 50% so
+# local-env at 47% never tripped it at all. A session near its limit is the
+# failure that made aula-integrate report tests passing while seven files
+# errored: it ran out of context mid-verification and summarised optimistically.
+# Continuing to fill a large session is a decision, so it is the captain's to
+# make explicitly rather than a hint printed after the fact.
 ctx=$(pane_context_pct "$slug")
+if [ "$force" = 0 ] && [ -n "$ctx" ] && [ "$ctx" -ge "${CAP_SEND_CTX_MAX:-40}" ] 2>/dev/null; then
+	printf 'cap: %s is at %s%% context, at or over the %s%% ceiling.\n' \
+		"$slug" "$ctx" "${CAP_SEND_CTX_MAX:-40}" >&2
+	printf 'A session this full is the one that reports done without finishing.\n' >&2
+	printf 'Either finish it (cap check / cap commit / cap land), restart it clean\n' >&2
+	printf '(cap drop %s then cap spawn with an updated brief), or send anyway:\n' "$slug" >&2
+	die "cap send $slug --force \"...\""
+fi
 
 deliver
 started=0
@@ -115,8 +134,8 @@ fi
 
 [ "$started" = 1 ] || die "$slug: sent twice but the agent never started a turn - check by hand: cap peek $slug"
 
-if [ -n "$ctx" ] && [ "$ctx" -ge 50 ] 2>/dev/null; then
-	printf 'sent to %s (working, ctx %s%% used - getting large, consider whether this round should be the last)\n' "$slug" "$ctx"
+if [ "$force" = 1 ] && [ -n "$ctx" ]; then
+	printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"
 else
 	printf 'sent to %s (working, ctx %s%% used)\n' "$slug" "${ctx:-?}"
 fi
