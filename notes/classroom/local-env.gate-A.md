@@ -1,80 +1,50 @@
-▝▜██████▀  Opus 5 · Claude Max
-  ▝▝ ▝▝    ~/.cap-work/local-env/.devstack
 
+  Defects:
 
-❯ Read /home/dubu/git/captain/rules/code.md, then review every change in this
-  worktree against master (git diff master, plus any uncommitted change).
-  Report concrete defects: what is wrong, where, and the failure it causes. Do
-  not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL.
+  1. README.md:67 documents the exact action the new stack is hard-coded to refuse.
+  cp .cicat/config.php.example config.php produces $CFG->wwwroot = 'https://aulavirtual.cicat.edu.pe'. config_is_ours() (.devstack/lib.sh) greps for 'http://localhost, so a
+  developer who follows the README and then runs mise run dev hits generate-config.sh:25 and stops dead:
 
-● I'll start by reading the rules file and getting an overview of the changes.
+  config.php already exists but its $CFG->wwwroot is not http://localhost. This does not look like a config.php this dev stack generated (it may be a real deployment
+  config). Refusing to touch it: move it aside yourself if you want the dev stack to generate its own.
 
-  Searched for 12 patterns, read 5 files, listed 2 directories, ran 37 shell commands
+  .cicat/LOCAL-ENV.md names this scenario verbatim ("most likely .cicat/config.php.example copied in for a real deployment"), so the collision was known and the README was
+  left pointing at it. README.md:69-70 also still recommends moodlehq/moodle-docker, which this change replaces.
 
-● Findings, worst first.
+  2. README.md:15-17 is the repo's stated map of .cicat/ and omits the new entry point. LOCAL-ENV.md, mise.toml and .devstack/ appear nowhere in it, so the only
+  documentation for the dev stack is reachable only by ls.
 
+  3. .devstack/dev-reset.sh:12 destroys the volumes before the guard at line 21 decides it must refuse. compose down -v runs first; only then does the script check whether
+  config.php is one it generated, and exit 1 without deleting it. A developer who reaches for dev:reset to escape defect 1 (a reflex dev-install.sh:63 itself recommends —
+  "run 'mise run dev:reset' and 'mise run dev' to start clean") loses db-data and moodledata and still gets the refusal. The guard is pure inspection and belongs before the
+  destructive step.
 
-  1. .devstack/dev-install.sh:31-45 — exit code 1 does not mean "schema stale"; a database it cannot reach also exits 1, and the script then runs upgrade.php against it.
+  4. The one-time deploy warning is filed where the deployer will not read it. .github/workflows/deploy.yml:66 says "See .cicat/LOCAL-ENV.md for what the first real deploy
+  after this fix will do", and LOCAL-ENV.md carries a section saying "Whoever runs that deploy should know this beforehand, not discover it after." But .cicat/DEPLOY.md is
+  the deploy document per README.md:17, and it says nothing about the six newly-transferred files. Someone running the first real deploy reads DEPLOY.md, not the
+  local-dev-stack doc.
 
-  The comment claims check_database_schema.php returns "anything else for a real problem, e.g. a database it could not reach at all", and the else branch at :73-76 is built
-  on that. It is false: lib/setuplib.php:203 ends default_exception_handler() with exit(1); // General error code, and lib/clilib.php:215 cli_error($text, $errorcode=1) also
-  defaults to 1. An uncaught dml_connection_exception at bootstrap therefore exits 1 — identical to "installed but stale".
+  5. .github/workflows/deploy.yml:62-65 makes a false claim. "the same exclude shielded whatever stale copies already existed on the server from being removed by --delete" —
+  those six paths exist in the source tree, so --delete was never going to remove them, exclude or not. Only the first half of the sentence (never transferred) describes a
+  real effect.
 
-❯ Read /home/dubu/git/captain/rules/code.md, then review every change in this worktree against master (git diff master, plus any uncommitted change). Report concrete defec…
-  Failure: edit DB_PASSWORD in .devstack/.env without dev:reset (the exact case .env.example:8-12 warns about — the MariaDB volume already exists so the user is never
-  re-created), then mise run dev. check_database_schema.php exits 1, the real error is discarded by >/dev/null 2>&1 at :37, and the script prints "Installed schema does not
-  match install.xml (a plugin or core upgrade is pending). Running admin/cli/upgrade.php…" and calls dev-upgrade.sh. The guard at :73-76 that exists to avoid touching "a
-  database in an unknown state" never fires for the one case it names.
+  6. .devstack/generate-config.sh:63 writes $REPO_ROOT/config.php.tmp.$$, which .gitignore does not cover. /config.php does not match config.php.tmp.1234. The EXIT trap
+  handles normal failure, but a SIGKILL or a killed container leaves an untracked file in the repo root that is also not excluded by deploy.yml's --exclude='/config.php'.
 
+  7. .devstack/dev-seed.sh:14 SIZE="${1:-${GENERATOR_SIZE}}" under set -u. docker-compose.yml deliberately writes every required variable as ${VAR:?Set VAR in
+  .devstack/.env} so a deleted line fails with a named message; GENERATOR_SIZE gets none, so deleting it from .devstack/.env fails with a bare GENERATOR_SIZE: unbound
+  variable and no mention of which file to fix.
 
-
-  2. .devstack/generate-config.sh:35-45 — check_safe_value rejects sed/regex metacharacters but not the single quote, which is the character that actually breaks the output.
-
-  The rejected set is [][\|&.*^$(){}+?]. ' passes. With DB_PASSWORD="abc'def" in .env, sed produces $CFG->dbpass    = 'abc'def'; — a PHP parse error. The verification grep
-  at :83-97 builds its pattern from the same raw value, so it matches that broken line literally and the script reports success and mvs the file into place (:106). Moodle
-  then fails to parse config.php, and because the "already exists" check at :20-27 short-circuits, every later dev:install silently accepts the broken file — exactly the
-  failure mode the temp-file comment at :47-51 was written to prevent.
-
-  3. .devstack/lib.sh:28 + docker-compose.yml:39-42 — per-worktree isolation is only half true; the second stack fails on the published port.
-
-  .cicat/LOCAL-ENV.md:115 states "Every clone and worktree of this repository gets its own stack". COMPOSE_PROJECT_NAME does isolate containers, volumes and networks, but
-  every checkout copies the same .env.example with HTTP_PORT=8080 (.env.example:15) and nginx publishes 127.0.0.1:8080:8080. With one worktree's stack running, mise run dev
-  in a second worktree dies at compose up with port is already allocated. The doc never says to change HTTP_PORT; that instruction only appears under "Switching PHP version,
-  or anything else in .env", unconnected to the isolation claim.
-
-  4. .github/workflows/deploy.yml:57-60 — the comment states rsync's --delete/--exclude interaction backwards.
-
-  The code change (anchoring the patterns) is right. The justification is not: rsync protects excluded files from --delete — that is precisely why --delete-excluded exists.
-  The unanchored config.php never caused --delete to remove anything. It caused the six tracked files (theme/boost/config.php, theme/classic/config.php,
-  theme/adaptable/config.php, cache/classes/config.php, mod/bigbluebuttonbn/classes/local/config.php, mod/quiz/accessrule/seb/config.php) never to be transferred, and
-  shielded any stale server copies from removal. A maintainer reading "--delete stranded every one" will draw the opposite conclusion about what an exclude does.
-
-  Related, not a defect but worth knowing before the next run: this change means the first non-dry-run deploy after it will push those six files to the server for the first
-  time, overwriting whatever is there.
-
-  5. .devstack/render-test-certificate.php:98,209-211 — the cetext assertion is coupled to where TCPDF wraps the line.
-
-  pdftotext emits a newline at every rendered line break, so a two-word fragment only matches while both words land on the same line. The cell is writeHTMLCell(0, …) at
-  posx=10 on customcert's default 210mm page with rightmargin=0 → 200mm usable; at 20pt Helvetica the seeded body reaches 180.4mm at the end of "por haber" and 227.1mm at
-  the end of the next word. It passes today with ~10% headroom, and fails — reporting "cetext may be silently rendering nothing" — on any change that widens the prefix (a
-  longer admin name, $CFG->fullnamedisplay, a populated titulo field). A single-word fragment, or collapsing whitespace before strpos, removes the coupling.
-
-  6. .devstack/lib.sh:28 — stray double dash in the project name.
-
-  basename emits a trailing newline and tr -c 'a-z0-9_-' '-' converts it, so the name is devstack-local-env--1711220984, not devstack-local-env-1711220984. Cosmetic only —
-  the result is still a valid compose project name.
-
-  Verified as correct and not re-reported: the .gitignore claims (38 tracked .zip fixtures, theme/boost/scss/bootstrap/vendor, six config.php), the sed patterns against
-  .cicat/config.php.example's current shape, the four custom TCPDF font files and element_helper::get_font()'s b-stripping round-trip, emission_context's digital default
-  matching the seeded mode=digital slot, the local_certengine_asset/_slot column sets, maketestsite.php's --size option and its $CFG->debugdeveloper requirement (met by the
-  injected $CFG->debug = 32767), get_last_testcourse_id() making repeat seeds additive as documented, and PHP 8.2 satisfying Moodle 5.0's minimum.
+  8. Comment volume is well past what rules/code.md allows ("only for non-obvious intent or external API quirks"). deploy.yml:53-67 is 15 lines of comment for 4 added
+  excludes; lib.sh:29-36 is 8 lines on basename/tr newline handling; docker-compose.yml:26-35 is 10 lines on the cron sidecar; dev-install.sh:109-125 is 17 lines restating
+  what the sidecar comment already said. .cicat/LOCAL-ENV.md then restates all three a third time. The reasoning is correct — it is the same reasoning three times.
 
   GATE: FAIL
 
-✻ Baked for 10m 48s · done 7:53 PM
+✻ Baked for 12m 13s · done 9:22 PM
 
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯
+❯ 
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Opus 5  |  ctx 14% used  86% left  |  in:141693 out:1633  |  5h:49% 7d:22%                                                                                            /rc
+  Opus 5  |  ctx 17% used  83% left  |  in:166278 out:1306  |  5h:24% 7d:25%                                                                                            /rc
   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
