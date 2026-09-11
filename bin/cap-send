@@ -19,7 +19,12 @@ text=$*
 [ -n "$text" ] || die "nothing to send"
 
 task_load "$slug"
-task_lock "$slug"
+# Waits rather than refusing at once: a review or commit run holds this
+# lock for minutes, and the captain should type a correction once and have
+# it arrive when safe, not be sent to retry by hand. Costs wall-clock time
+# up to the wait; the default comfortably outlasts a cap-verify run
+# (CAP_VERIFY_MAX, 900s by default).
+task_lock "$slug" "${CAP_SEND_LOCK_WAIT:-900}"
 task_owner_claim "$slug" "$take"
 
 # A dead pane used to end the command here, which left the captain holding
@@ -34,6 +39,7 @@ task_owner_claim "$slug" "$take"
 # exactly when the message arrived.
 revive() {
   local dir=$TASKS/$slug kick margs=() scrub cmd
+  local -a es
   task_load "$slug"
   [ -f "$dir/contract.md" ] || die "$slug: pane is not live and there is no contract to restart it from"
 
@@ -48,7 +54,10 @@ Then carry out this instruction from the captain:
 $text"
 
   if [ "$CAP_MODEL" != '-' ]; then margs=(--model "$CAP_MODEL"); fi
-  scrub=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
+  # Fresh, not the CAP_ENV_SCRUB global: task_lock and task_owner_claim above
+  # both exported a CAP_* variable in this same process, after it froze.
+  mapfile -t es < <(cap_env_scrub)
+  scrub=(env "${es[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
   case $CAP_HARNESS in
     claude)
       if [ -n "${CAP_EFFORT:-}" ]; then margs+=(--effort "$CAP_EFFORT"); fi

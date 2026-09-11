@@ -9,21 +9,25 @@
 # verified in its own checkout, which is how a base earns the right to be
 # forked more than once.
 again=0
-take=0
-while :; do
-  case ${1:-} in
-  --again) again=1; shift ;;
-  --take) take=1; shift ;;
-  *) break ;;
-  esac
-done
+if [ "${1:-}" = --again ]; then again=1; shift; fi
 
+# --take only means anything once a task is known to exist, so it is parsed
+# below rather than here, where --repo has not yet been told apart from a
+# slug - the earlier version accepted it ahead of that check and silently
+# dropped it in the --repo branch, which took a task nobody was going to own.
 if [ "${1:-}" = --repo ]; then
-  CAP_PROJECT=${2:?usage: cap verify --repo <project>}
+  CAP_PROJECT=${2:?usage: cap verify --repo <project> [--again]}
   CAP_TREE=$(proj_path "$CAP_PROJECT")
   slug=$CAP_PROJECT
   [ -d "$CAP_TREE/.git" ] || die "$CAP_TREE is not a git repo"
 else
+  take=0
+  args=()
+  for a in "$@"; do
+    if [ "$a" = --take ]; then take=1; else args+=("$a"); fi
+  done
+  set -- "${args[@]}"
+
   slug=${1:?usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]}
   task_load "$slug"
   task_lock "$slug"
