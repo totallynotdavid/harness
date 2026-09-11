@@ -1,37 +1,50 @@
-I'll start by reading the code rules, then examine the diff.
-Verified live against the installed harnesses (`claude` 2.1.267, `codex` 0.153.4): both `cap-ask` paths run end to end (`./bin/cap-ask haiku` and `./bin/cap-ask rival` both returned their answer, rc=0), the stream-json result schema the rewrite depends on is correct (`usage.iterations[]` snake_case, `modelUsage.<key>.{contextWindow,canonicalModel}` camelCase, `api_error_status`, `rate_limit_info.resetsAt` and `.unifiedWindows.*`), `--session-id`/`--resume` round-trip the same id, headless `/compact` is really executed, and the written usage record matches `cap-statusline`'s shape.
 
-## Defects
+ ▐▛███▛█   Claude Code v2.1.268
+▝▜██████▀  Opus 5 · Claude Max
+  ▝▝ ▝▝    ~/.cap-work/cap-headless · /rc
 
-**1. `gate_verdict` can record PASS for a report whose verdict is FAIL — `bin/lib.sh:581`**
 
-Dropping `tail -15` means any exactly-matching line anywhere in the report is eligible. The gate prompt (`bin/cap-gate:33`) tells the reviewer to end with `GATE: PASS or GATE: FAIL`, so a report that restates that requirement on its own line puts a bare `GATE: PASS` in the file. If the real verdict is then written in a form the strict regex misses (`**GATE: FAIL**`, `GATE: FAIL.`, a fenced block), the quoted line wins.
+❯ Read /home/dubu/git/captain/rules/code.md, then review every change in this
+  worktree against master (git diff master, plus any uncommitted change).
+  Report concrete defects: what is wrong, where, and the failure it causes. Do
+  not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL.
 
-Reproduced with both implementations on a 36-line report that quotes `GATE: PASS` at line 5 and ends with `**GATE: FAIL**`:
+● I'll start by reading the code rules, then examine the diff.
 
-```
-master gate_verdict : UNKNOWN
-branch gate_verdict : PASS
-```
+  Searched for 6 patterns, read 8 files, listed 1 directory, ran 41 shell commands
 
-Failure: `bin/cap-gate:93` writes `{"A":{"verdict":"PASS","fingerprint":<current>}}`; if B also passes, `gate_ready` (`bin/lib.sh:617`) returns 0 and `cap gate` prints `READY TO LAND`. A rejected review lands. On master the same report returned UNKNOWN, which `bin/cap-gate:86-91` handles safely — keep the previous report, record nothing, exit 2. The change removed the only way UNKNOWN can still be reached for a long report.
+● Review
 
-The comment at `bin/lib.sh:572-579` justifies the change with "any line matching exactly ... is a real verdict, not a substring match against instruction text the answer happens to quote". That is the inverted claim: an exact-line match is precisely what a quoting answer produces. The old defence was the window, not the anchoring.
+  Worktree is clean; the diff is 14 files against master. Baseline: mise run lint, check:syntax, check:andlist, check:verdict, check:usage-shape all pass. shellcheck -S
+  style on every changed script reports only SC2016 informationals inside single-quoted fixture strings.
 
-**2. `bin/cap-check:45-46` still inlines the rule that is now `diff_base()` — `bin/lib.sh:548`**
+  Direct checks beyond the suite:
 
-`bin/lib.sh:544-545` says "bin/cap-check computes the same thing for the same reason", but `cap-check` sources `lib.sh` and re-derives `git merge-base "$base" HEAD` by hand. Failure: a later fix to `diff_base` (a base that only resolves as `origin/<name>`, a detached HEAD) reaches `cap gate` and not `cap check`, so the two commands report different change sets for the same task — the exact disagreement `diff_base` was added to remove.
+  - Live ./bin/cap-ask haiku and ./bin/cap-ask rival both returned their answer, rc=0. The claude call wrote a real quota record (state/usage/*.json, five_hour.pct 42,
+    seven_day.pct 56, model_id claude-haiku-4-5-20251001), and usage_read claude read it back as 56 … snapshot.
+  - Every codex exec flag the rewrite uses (--json, -o/--output-last-message, -C, -m, -c, --dangerously-bypass-approvals-and-sandbox) is in the installed codex's --help;
+    --session-id, -r/--resume, --output-format, --verbose are in claude's.
+  - Drove the whole claude resume state machine against a stubbed harness in a scratch CAP_HOME: fresh success; rejection writes the record and blocks the profile;
+    retry-while-rejected leaves the pending record and its session id untouched; retry-that-succeeds clears it; <30% auto-resumes with a single continue turn;
+    CAP_ASK_RESUME=force sends /compact then the continuation; a declining compact dies before the continuation turn; "no conversation found" and no-result-on-resume both
+    clear the record. Each matched what docs/pipeline-notes.md now promises.
+  - env -u CAP_TASK CAP_TASK=slug applies the unset before the assignment, so cap-spawn/cap-send re-adding CAP_TASK after CAP_ENV_SCRUB works. compgen -e CAP_ returns
+    exported-only. Scrubbing CAP_HOME breaks nothing: bin/hooks/*.sh and bin/cap-statusline each re-derive it from their own path, and .claude/settings.json uses
+    $CLAUDE_PROJECT_DIR.
+  - limit_reset_epoch and require_herdr-in-cap-ask have no remaining callers. diff_base's comment names four users and all four use it. VERIFIED/PEAKS comments name
+    cap-spawn:84 and cap-verify:136, both real.
+  - Em dashes in added lines appear only inside tests/gate-reports/, which are verbatim frozen reports and must not be reworded.
+  - diff_base is not dead in cap-gate: sync_base returns 0 without merging on a conflicting merge and on a failed stash, and gate_ready is called from cap-land/cap-crew
+    without any sync at all.
 
-**3. `bin/cap-ask:62` prunes a directory it does not own, at a second retention**
+  No concrete defect found.
 
-`cap-statusline:114-124` already sweeps `state/usage` at 1 day; this adds a 7-day sweep of the same directory, so in a normal install the effective retention is whichever ran last and the 7-day rule is dead. The glob also matches `codex_cached`'s caches, which live in `CAP_USAGE_DIR` (`bin/lib.sh:882`, `949`: `codex-models.json`, `codex-limits.json`) — harmless, since they are caches, but not what the comment describes.
+  GATE: PASS
 
-**4. Compact-then-continue never checks that the compact happened — `bin/cap-ask:107`**
+✻ Cogitated for 10m 56s · done 9:19 PM
 
-`/compact` is queued as turn 1 and turn 2 runs regardless of its answer. Confirmed live that headless `/compact` can return `is_error:false` with `result:"Not enough messages to compact."`; the code then resumes an uncompacted session, which the policy at `bin/cap-ask:69-71` says must never happen. Only reachable via `CAP_ASK_RESUME=force`, which no caller sets, so the cost today is latent.
-
-**5. `docs/pipeline-notes.md:103-124` overstates how often direct resume fires**
-
-The result event's `usage` is per-turn, not cumulative: a resumed turn that made no API call reported `iterations: []` and all-zero usage on a session already holding 13,607 tokens. So `.usage.iterations[-1]` is null for any turn rejected before its first iteration, `ctx_pct` is 100, and `cap gate` — which never sets `CAP_ASK_RESUME=force` — always takes the "starting fresh" branch with a warning. The code is behaving as `bin/cap-ask:182-186` intends; the doc reads as if under-30% resume is the ordinary path.
-
-GATE: FAIL
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5  |  ctx 19% used  81% left  |  in:185081 out:1794  |  5h:43% 7d:56%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · 4 memories recalled · ← for agents
