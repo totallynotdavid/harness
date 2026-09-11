@@ -808,10 +808,18 @@ stack_cascade_landed() {
   done
 }
 
-# Remove inherited model and session settings before starting an agent.
+# Remove inherited model and session settings, plus every CAP_* variable
+# exported at this point (CAP_LOCKS, CAP_ASK_KEY, CAP_TASK, any future one) -
+# computed here rather than a maintained list, so a dispatched harness
+# inherits none of what cap commands use to coordinate with each other. A
+# call site that needs one back (cap-spawn, cap-send: CAP_TASK) re-adds it
+# after this array.
 CAP_ENV_SCRUB=(-u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL
   -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL -u CLAUDE_CODE_SUBAGENT_MODEL
   -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SSE_PORT -u CODEX_SANDBOX)
+while IFS= read -r cap_var; do
+  CAP_ENV_SCRUB+=(-u "$cap_var")
+done < <(compgen -e CAP_ || true)
 
 # Point common package-manager caches at a shared location so a fresh
 # worktree's install is not stuck starting cold, and a project's own relative
