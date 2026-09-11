@@ -107,19 +107,29 @@ pr)
 	# Longer backoff, and the real stderr surfaced on failure instead of
 	# discarded, so a future failure states its actual cause instead of
 	# just "could not open a PR".
+	# Two commands, two error files. Sharing one meant the `pr view` probe
+	# overwrote whatever `pr create` had just said, so every failure was
+	# reported as view's "no pull requests found for branch" - true, and
+	# never the reason. local-env's branch pushed fine and the die message
+	# named the probe instead of the create that actually failed.
 	url=""
-	err_file=$(mktemp)
+	create_err=$(mktemp)
+	view_err=$(mktemp)
+	# Both gh calls run from the task's worktree. --repo picks the API target,
+	# but --fill still reads the commit range with local git, and the captain
+	# repo this script runs in has no cap/<slug> branch to read.
 	for i in 1 2 3 4 5 6 7 8; do
-		url=$(gh pr create --repo "$repo_url" --head "$CAP_BRANCH" --base "$CAP_BASE" --fill 2>"$err_file") && break
-		url=$(gh pr view "$CAP_BRANCH" --repo "$repo_url" --json url -q .url 2>"$err_file") && break
+		url=$(cd "$CAP_TREE" && gh pr create --repo "$repo_url" --head "$CAP_BRANCH" --base "$CAP_BASE" --fill 2>"$create_err") && break
+		url=$(cd "$CAP_TREE" && gh pr view "$CAP_BRANCH" --repo "$repo_url" --json url -q .url 2>"$view_err") && break
 		sleep "$((i * 2))"
 	done
 	if [ -z "$url" ]; then
-		err=$(cat "$err_file" 2>/dev/null)
-		rm -f "$err_file"
-		die "could not open a PR for $CAP_BRANCH after 8 retries: ${err:-no error output captured}"
+		err=$(cat "$create_err" 2>/dev/null)
+		probe=$(cat "$view_err" 2>/dev/null)
+		rm -f "$create_err" "$view_err"
+		die "could not open a PR for $CAP_BRANCH after 8 retries. gh pr create said: ${err:-nothing}. The follow-up gh pr view said: ${probe:-nothing}."
 	fi
-	rm -f "$err_file"
+	rm -f "$create_err" "$view_err"
 
 	task_env_set "$slug" CAP_PR "$url"
 	printf 'PR: %s\n' "$url"
