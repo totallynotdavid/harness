@@ -284,18 +284,31 @@ it, stays in the queue instead of being logged as sent and lost. Queued text is 
 base64-encoded rather than flattened with `tr '\n' ' '`, so a multi-line message arrives
 exactly as typed whether the lock happened to be free or not.
 
-## Orphaned panes and processes from killed background calls
+## Every agent session runs in a pane, never as a bare background child
 
-When the harness kills a `run_in_background` Bash call (e.g. for memory pressure), the
-process it started is not always killed with it. It can keep running as an orphan. This
-has been observed as duplicate leftover `claude --model sonnet` processes still consuming
-memory well after the call that started them was reported killed - a `cap gate`/`cap ask`
-review runs headless now, so this is a bare process with no pane to notice it is gone;
-periodically check `ps aux --sort=-%mem | grep -E "claude|codex"` for duplicates and
-`kill -9` genuine orphans. A `cap spawn` agent is the other shape this takes: its process
-lives inside a herdr pane, so `herdr pane list` also needs checking for panes with
-`"agent_status":"unknown"` (a leftover shell with no tracked agent, from a call that
-crashed or never got its `herdr pane close`); `herdr pane close <pane_id>` clears those.
+`bin/cap-spawn` opened a herdr pane for a crewmate from the start; `bin/cap-ask` did not -
+it ran `claude -p --output-format stream-json` (or `codex exec --json`) as a plain child
+process with no terminal, and `cap-gate`, `cap-commit`, `cap-cleanup`, and `cap-send`'s
+`revive` all dispatch through it, so roughly half of Captain's agent sessions were invisible
+by construction. A three-captain hub made a shared "watcher pane that follows the newest
+`state/ask` file" the wrong fix even as a stopgap: it showed one captain another captain's
+review.
+
+`pane_dispatch` (`bin/lib.sh`) is the one dispatch path now: it opens a herdr pane the same
+way `cap-spawn` does, runs the harness inside it with stdout `tee`'d to both the pane and a
+file, and blocks on a done-file the wrapper script touches last. Structured output and
+visibility were never actually a trade - `cap-ask` still parses the exact same captured
+file it always did; the pane is what a human sees while that capture happens, and it closes
+once the call finishes (or stays open, unclosed, if `CAP_ASK_MAX_WAIT` is exceeded, so a
+stuck call is somewhere to go look rather than something silently killed).
+
+This closes the specific orphan class observed before: a `cap gate`/`cap ask` review killed
+mid-run (e.g. for memory pressure) used to leave a bare `claude`/`codex` process with no
+pane to notice it was gone, discoverable only via `ps aux --sort=-%mem | grep -E
+"claude|codex"`. A pane-dispatched call still shows up in `herdr pane list`, the same as a
+`cap spawn` agent, so a leftover with `"agent_status":"unknown"` (a call that crashed or
+never reached its own `herdr pane close`) is found and cleared the same way:
+`herdr pane close <pane_id>`.
 
 ## Dispatch sizing: quota routes work, it does not cheapen it
 
