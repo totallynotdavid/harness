@@ -2,14 +2,21 @@
 # cap-drop - remove a task without losing work.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap drop <slug> [--force]}
+slug=${1:?usage: cap drop <slug> [--force] [--take]}
 shift || true
 
 force=0
-[ "${1:-}" = --force ] && force=1
+take=0
+for a in "$@"; do
+	case $a in
+	--force) force=1 ;;
+	--take) take=1 ;;
+	esac
+done
 
 task_load "$slug"
 task_lock "$slug"
+task_owner_claim "$slug" "$take"
 
 if [ "$force" = 0 ]; then
 	dirty=$(git_dirty "$CAP_TREE")

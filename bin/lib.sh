@@ -339,6 +339,60 @@ task_env_set() {
   mv "$tmp" "$f"
 }
 
+# The identity of the session that ran this cap command: walk the process
+# tree from $$ to the first claude or codex ancestor, the one /proc walk
+# every mutating cap-* command and bin/hooks/crew-status.sh now share.
+# Prints "<pid>@<start-time>" (proc(5) field 22) so a reused pid is never
+# mistaken for the same incarnation. A plain shell has none of that
+# ancestry; identity then falls back to $$'s own parent, the shell itself.
+session_identity() {
+  local pid=$$ parent stamp comm
+  parent=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || true)
+  [ -n "$parent" ] || parent=1
+
+  while [ "$pid" -gt 1 ] 2>/dev/null; do
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+    if [ "$comm" = claude ] || [ "$comm" = codex ]; then
+      stamp=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
+      if [ -n "$stamp" ]; then
+        printf '%s@%s' "$pid" "$stamp"
+        return 0
+      fi
+    fi
+    pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || true)
+    [ -n "$pid" ] || pid=1
+  done
+
+  stamp=$(awk '{print $22}' "/proc/$parent/stat" 2>/dev/null || true)
+  printf '%s@%s' "$parent" "${stamp:-0}"
+}
+
+# Whether an id from session_identity still names a running process. pids
+# get reused, so this also checks the recorded start time, not just pid
+# occupancy.
+session_alive() {
+  local id=$1 pid=${1%@*} stamp=${1#*@} live
+  [ -n "$id" ] && [ "$pid" != "$id" ] && [ -n "$stamp" ] || return 1
+  live=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
+  [ -n "$live" ] && [ "$live" = "$stamp" ]
+}
+
+# Refuses a mutating command when the task is owned by a live session other
+# than the caller, naming the pid so the captain can look. Says nothing
+# about --take: a refusal that advertises its own override stops being one.
+# A dead owner is not an owner, so this claims an unowned or dead-owned task
+# the same way, right here - no stale lock to clear. Call after task_lock:
+# claiming first lets two sessions each write themselves in as owner first.
+task_owner_claim() {
+  local slug=$1 take=${2:-0} owner me
+  owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
+  me=$(session_identity)
+  if [ -n "$owner" ] && [ "$owner" != "$me" ] && session_alive "$owner"; then
+    [ "$take" = 1 ] || die "$slug is owned by pid ${owner%@*}"
+  fi
+  task_env_set "$slug" CAP_OWNER "$me"
+}
+
 task_children() {
   local s
   [ -n "${1:-}" ] || return 0

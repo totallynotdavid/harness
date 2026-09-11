@@ -144,6 +144,10 @@ dir=$(task_dir "$slug")
 [ -e "$dir" ] && die "task '$slug' already exists (cap drop $slug first)"
 pane_live "$slug" && die "a pane named '$slug' is already live"
 
+# Locked before the directory is written, not after: two spawns racing the
+# same new slug must not both pass the checks above and both write task.env.
+task_lock "$slug"
+
 mkdir -p "$dir"
 dir=$(cd "$dir" && pwd)
 status=$dir/status.log
@@ -197,6 +201,7 @@ CAP_MODEL=$model
 CAP_EFFORT=$effort
 CAP_HARNESS=$harness
 CAP_STARTED=$(now)
+CAP_OWNER=$(session_identity)
 EOF
 
 # The ownership guard travels on the session's command line, not in the

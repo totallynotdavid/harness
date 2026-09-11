@@ -2,10 +2,11 @@
 # cap-restack - move the tasks stacked on a task onto its current tip.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap restack <slug> [--undo [SNAPSHOT]]}
+slug=${1:?usage: cap restack <slug> [--undo [SNAPSHOT]] [--take]}
 shift || true
 
 undo=0
+take=0
 snapshot=""
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -20,12 +21,17 @@ while [ $# -gt 0 ]; do
 			;;
 		esac
 		;;
-	*) die "usage: cap restack <slug> [--undo [SNAPSHOT]]" ;;
+	--take)
+		take=1
+		shift
+		;;
+	*) die "usage: cap restack <slug> [--undo [SNAPSHOT]] [--take]" ;;
 	esac
 done
 
 task_load "$slug"
 task_lock "$slug"
+task_owner_claim "$slug" "$take"
 
 # Find the worktree that checks out a branch.
 tree_of() {

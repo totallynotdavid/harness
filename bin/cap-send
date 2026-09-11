@@ -2,14 +2,25 @@
 # cap-send - send a message to a running agent.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap send <slug> [--force] "<text>"}
+slug=${1:?usage: cap send <slug> [--force] [--take] "<text>"}
 shift
 
 force=0
-[ "${1:-}" = --force ] && { force=1; shift; }
+take=0
+while :; do
+	case ${1:-} in
+	--force) force=1; shift ;;
+	--take) take=1; shift ;;
+	*) break ;;
+	esac
+done
 
 text=$*
 [ -n "$text" ] || die "nothing to send"
+
+task_load "$slug"
+task_lock "$slug"
+task_owner_claim "$slug" "$take"
 
 # A dead pane used to end the command here, which left the captain holding
 # work the agent should be doing: local-env's pane died mid-round and the
@@ -169,8 +180,14 @@ fi
 # to log `working:` itself, so cap crew reported done for a task mid-round and
 # the reminder hook listed it as waiting to land. Record the fact here instead
 # of inferring it from the screen.
-printf 'working: sent by the captain: %s\n' "$(printf '%s' "${text%%$'\n'*}" | cut -c1-120)" \
-	>>"$TASKS/$slug/status.log"
+#
+# Named by pid, not "the captain": with more than one captain, only the pid
+# tells them apart. Kept in full rather than truncated to a prefix, and
+# flattened to one line, since task_status_verb and task_status_latest each
+# treat one line as one event.
+sent_by=$(session_identity)
+sent=$(printf '%s' "$text" | tr '\n' ' ')
+printf 'working: sent by pid %s: %s\n' "${sent_by%@*}" "$sent" >>"$TASKS/$slug/status.log"
 
 if [ "$force" = 1 ] && [ -n "$ctx" ]; then
 	printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"

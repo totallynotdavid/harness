@@ -2,11 +2,19 @@
 # cap-cleanup - clean up comments and readability with a separate model.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap cleanup <slug> [profile]}
+take=0
+args=()
+for a in "$@"; do
+  if [ "$a" = --take ]; then take=1; else args+=("$a"); fi
+done
+set -- "${args[@]}"
+
+slug=${1:?usage: cap cleanup <slug> [profile] [--take]}
 profile=${2:-@chore}
 
 task_load "$slug"
 task_lock "$slug"
+task_owner_claim "$slug" "$take"
 
 # Refuse on a worktree with nothing to review, not on one with nothing
 # uncommitted. The prompt below works against $CAP_BASE, which is well defined

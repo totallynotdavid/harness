@@ -2,10 +2,18 @@
 # cap-commit - commit a task with a separate agent.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap commit <slug> [profile]}
+take=0
+args=()
+for a in "$@"; do
+  if [ "$a" = --take ]; then take=1; else args+=("$a"); fi
+done
+set -- "${args[@]}"
+
+slug=${1:?usage: cap commit <slug> [profile] [--take]}
 profile=${2:-@chore}
 task_load "$slug"
 task_lock "$slug"
+task_owner_claim "$slug" "$take"
 
 [ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to commit"
 
