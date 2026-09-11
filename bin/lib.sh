@@ -313,7 +313,7 @@ proc_stat_field() {
   raw=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
   rest=${raw##*)}
   read -r -a fields <<<"$rest"
-  printf '%s' "${fields[$((n - 1))]}"
+  printf '%s' "${fields[$((n - 1))]:-}"
 }
 
 # `trap CMD EXIT` composes here instead of overwriting, so task_try_lock's
@@ -424,29 +424,43 @@ task_env_set() {
   mv "$tmp" "$f"
 }
 
+# The pid of the nearest claude or codex ancestor of $1 (default: this
+# process), found by walking proc(5) field 2 (ppid) up from there. Empty
+# with no such ancestor - a plain shell can live for days and is never an
+# agent. Factored out of session_identity so cwd-based agent detection
+# below can use the raw pid without going through CAP_SESSION's cache.
+harness_ancestor_pid() {
+  local pid=${1:-$$} comm
+  while [ "$pid" -gt 1 ] 2>/dev/null; do
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+    if [ "$comm" = claude ] || [ "$comm" = codex ]; then
+      printf '%s' "$pid"
+      return 0
+    fi
+    pid=$(proc_stat_field "$pid" 2 2>/dev/null || true)
+    [ -n "$pid" ] || break
+  done
+  return 1
+}
+
 # The identity of the session that ran this cap command: CAP_SESSION if
-# task_lock already pinned one, else a walk from $$ to the first claude or
-# codex ancestor, as "<pid>@<start-time>" (proc(5) field 20). Empty with no
-# such ancestor - a plain shell can live for days, and treating it as owner
-# would block every later harness session from the task indefinitely.
-# Every caller here reads a missing owner as safe, not as a shell's.
+# task_lock already pinned one, else harness_ancestor_pid's find, as
+# "<pid>@<start-time>" (proc(5) field 20). Empty with no such ancestor - a
+# plain shell can live for days, and treating it as owner would block every
+# later harness session from the task indefinitely. Every caller here reads
+# a missing owner as safe, not as a shell's.
 session_identity() {
   if [ -n "${CAP_SESSION:-}" ]; then
     printf '%s' "$CAP_SESSION"
     return 0
   fi
 
-  local pid=$$ stamp comm id=""
-  while [ "$pid" -gt 1 ] 2>/dev/null; do
-    comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
-    if [ "$comm" = claude ] || [ "$comm" = codex ]; then
-      stamp=$(proc_stat_field "$pid" 20 2>/dev/null || true)
-      [ -n "$stamp" ] && id="$pid@$stamp"
-      break
-    fi
-    pid=$(proc_stat_field "$pid" 2 2>/dev/null || true)
-    [ -n "$pid" ] || break
-  done
+  local pid stamp id=""
+  pid=$(harness_ancestor_pid) || true
+  if [ -n "$pid" ]; then
+    stamp=$(proc_stat_field "$pid" 20 2>/dev/null || true)
+    [ -n "$stamp" ] && id="$pid@$stamp"
+  fi
 
   printf '%s' "$id"
 }
@@ -466,25 +480,31 @@ session_alive() {
   [ "$live" = "$stamp" ]
 }
 
-# Whether this process is the agent cap-spawn dispatched into slug: its
-# dispatch environment sets CAP_TASK to the task's own slug (see
-# cap_env_scrub's callers), and every cap-* command an agent runs inside
-# its own worktree inherits it. A captain's shell never has it set.
+# Whether harness pid $2 (or $1's own, if omitted) has slug's worktree as
+# its cwd. cap spawn always launches there, and unlike CAP_TASK - set only
+# at first launch, so it does not survive `claude --resume` - cwd is read
+# fresh from /proc every time, from outside the process too: a captain or
+# a different agent checking a stored owner pid, since session_identity
+# alone cannot tell those claude processes apart. Unreadable answers no.
+agent_cwd_matches() {
+  local slug=$1 pid=$2 tree cwd
+  tree=$(task_field "$slug" CAP_TREE 2>/dev/null) || return 1
+  [ -n "$tree" ] && [ -n "$pid" ] && [ -r "/proc/$pid/cwd" ] || return 1
+  cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null) || return 1
+  [ "$cwd" = "$(readlink -f "$tree" 2>/dev/null)" ]
+}
+
+# Whether this process is the agent cap-spawn dispatched into slug.
 task_dispatched_here() {
-  [ -n "${CAP_TASK:-}" ] && [ "$CAP_TASK" = "$1" ]
+  local pid
+  pid=$(harness_ancestor_pid) || return 1
+  agent_cwd_matches "$1" "$pid"
 }
 
 # Whether a stored owner pid is itself the dispatched agent of the task
-# it is recorded as owning, read from that pid's own environment via
-# /proc since this is also checked from outside it (a captain, or a
-# different agent) - session_identity alone cannot tell a captain's
-# claude process from its own crewmate's. Unreadable (wrong user, pid
-# gone) answers no, not yes.
+# it is recorded as owning.
 owner_is_task_agent() {
-  local slug=$1 pid=$2 task
-  [ -n "$pid" ] && [ -r "/proc/$pid/environ" ] || return 1
-  task=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^CAP_TASK=//p')
-  [ -n "$task" ] && [ "$task" = "$slug" ]
+  agent_cwd_matches "$1" "$2"
 }
 
 # True when the task is free for this caller to touch: unowned, dead-owned,
@@ -566,14 +586,39 @@ queue_send() {
   queue_append "$slug" "${id%@*}" "$text"
 }
 
-# Delivers what queue_send queued into the task's live pane, in order,
-# then clears the queue. Called only by cap-send, once it already holds
-# the task lock and is about to deliver its own message - so a review
-# or a rebase taking the same lock is never the one handing it over.
-# Uses pane_deliver, the same submit-confirm-and-retry the direct path
-# uses, since a queued message is the only copy and deserves it equally.
+# Ground truth for whether cap-send left a message queued for a task that
+# has not gone in yet - a file's non-emptiness, not a word anyone chose.
+queue_pending() { [ -s "$TASKS/$1/send-queue" ]; }
+
+# Prepends a file's lines onto a task's live spool, under queue_send's own
+# lock, so nothing appended concurrently is lost or reordered behind
+# content that was already there. On success the caller's file is spent
+# and safe to remove; on failure (the swap itself could not be made) it
+# returns 1 and leaves the file alone, so nothing is ever lost.
+queue_prepend() {
+  local slug=$1 f=$2 fd spool=$TASKS/$1/send-queue
+  exec {fd}>>"$TASKS/$slug/.send-queue.lock"
+  flock "$fd"
+  { cat "$f" "$spool" 2>/dev/null || true; } >"$spool.recovering"
+  if mv "$spool.recovering" "$spool" 2>/dev/null; then
+    flock -u "$fd"
+    exec {fd}>&-
+    return 0
+  fi
+  rm -f "$spool.recovering"
+  flock -u "$fd"
+  exec {fd}>&-
+  return 1
+}
+
+# Delivers what queue_send queued into a live pane, in order, then clears
+# the queue - called explicitly by cap-send before its own message (so an
+# older correction lands first), and automatically from every locking
+# command's EXIT trap on release (task_flush_locks_on_exit), so a review
+# or a rebase that only happens to acquire the lock, and never explicitly
+# calls this, still delivers what was waiting once its own work is done.
 queue_flush() {
-  local slug=$1 dir=$TASKS/$1 fd claimed pid b64 text
+  local slug=$1 dir=$TASKS/$1 fd claimed pid b64 text line
   local spool=$dir/send-queue
   claimed="$spool.flushing"
 
@@ -583,12 +628,7 @@ queue_flush() {
   # message - only cap-send/task_try_lock ever call this for a given
   # slug's lock, so nothing else can be claiming the same file right now.
   if [ -f "$claimed" ]; then
-    { cat "$claimed" "$spool" 2>/dev/null || true; } >"$spool.recovering"
-    if mv "$spool.recovering" "$spool" 2>/dev/null; then
-      rm -f "$claimed"
-    else
-      rm -f "$spool.recovering"
-    fi
+    queue_prepend "$slug" "$claimed" && rm -f "$claimed"
   fi
 
   [ -s "$spool" ] || return 0
@@ -613,11 +653,15 @@ queue_flush() {
       # This message and anything queued after it stay queued, unread,
       # rather than being lost or logged as sent - the pane is not
       # accepting input right now, so trying the rest in order would
-      # only fail the same way. tail, not a lock: nothing else can be
-      # claiming $spool right now, only appending to it.
+      # only fail the same way. Prepended, not appended: anything already
+      # in $spool arrived after the claim, so it is newer than this.
       warn "$slug: a queued message from pid $pid did not deliver; left queued"
-      tail -n "+$n" "$claimed" >>"$spool"
-      rm -f "$claimed"
+      tail -n "+$n" "$claimed" >"$claimed.tail"
+      if queue_prepend "$slug" "$claimed.tail"; then
+        rm -f "$claimed" "$claimed.tail"
+      else
+        rm -f "$claimed.tail"
+      fi
       return 0
     fi
   done <"$claimed"
@@ -658,6 +702,53 @@ pane_launch() {
   script=$(mktemp)
   { printf '#!/usr/bin/env bash\n'; printf 'exec %s\n' "$(printf '%q ' "$@")"; } > "$script"
   herdr pane run "$pane" "bash $script" >/dev/null 2>&1 || die "herdr pane run failed"
+}
+
+# No agent session runs as a bare background child - it always runs in
+# its own pane, opened and closed just for this call, never a shared
+# watcher pane (rejected: with more than one caller dispatching at once,
+# it shows whoever is newest, not the one being watched). Structured
+# output is not traded away for that: stdout is teed to a file to parse
+# and shown live too. Blocks until the command exits, then returns its rc.
+pane_dispatch() {
+  local tree=$1 label=$2 out=$3 err=$4
+  shift 4
+  require_herdr
+  local pane tabid script rc_file done_file waited=0
+  local max=${CAP_ASK_MAX_WAIT:-3600}
+  read -r pane tabid <<<"$(herdr_open "$tree" "$label")"
+  rc_file=$(mktemp)
+  done_file=$(mktemp)
+  rm -f "$done_file"
+  script=$(mktemp)
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -o pipefail\n'
+    printf '%s </dev/null 2>%q | tee %q >/dev/null\n' "$(printf '%q ' "$@")" "$err" "$out"
+    printf 'echo $? >%q\n' "$rc_file"
+    printf 'touch %q\n' "$done_file"
+  } >"$script"
+  herdr pane run "$pane" "bash $script" >/dev/null 2>&1 || die "herdr pane run failed"
+
+  local timed_out=0
+  while [ ! -f "$done_file" ]; do
+    sleep 1
+    waited=$((waited + 1))
+    if [ "$waited" -ge "$max" ]; then
+      warn "$label: still running after ${max}s; leaving its pane open rather than killing it blind"
+      timed_out=1
+      break
+    fi
+  done
+
+  local rc=1
+  if [ -f "$rc_file" ]; then
+    rc=$(cat "$rc_file" 2>/dev/null || echo 1)
+    case $rc in '' | *[!0-9]*) rc=1 ;; esac
+  fi
+  rm -f "$rc_file" "$done_file" "$script"
+  [ "$timed_out" = 1 ] || herdr pane close "$pane" >/dev/null 2>&1 || true
+  return "$rc"
 }
 
 pane_live() {
@@ -702,18 +793,14 @@ pane_enter() {
   [ -n "$p" ] && herdr pane send-keys "$p" enter >/dev/null 2>&1 || true
 }
 
-# Send text, press Enter, and confirm with retries: returns 0 if the
-# message was accepted, 1 if it was not. Stops retrying once the message
-# has left the input box. Check the END of the text, not the start:
-# pane_tail returns the last N lines of the pane, which for an
-# unsubmitted multi-line message is its tail, not its head. Anchoring on
-# the first 40 chars made this check pass (falsely, "it's gone") for any
-# message longer than the tail window, because the start had simply
-# scrolled out of view while the message sat there unsubmitted.
-pane_deliver() {
-  local slug=$1 text=$2
-  pane_send "$slug" "$text"
+# Types text in and submits it, confirming it left the input box - checked
+# against the END of the text, not the start: pane_tail returns the pane's
+# last lines, which for an unsubmitted multi-line message is its tail, not
+# its head. Retries the type-and-enter itself up to 3 times before giving up.
+pane_submit() {
+  local slug=$1 text=$2 _
   for _ in 1 2 3; do
+    pane_send "$slug" "$text"
     sleep 0.4
     pane_enter "$slug"
     sleep 0.6
@@ -722,13 +809,28 @@ pane_deliver() {
   return 1
 }
 
-# Wait for the agent to start a turn, with retries.
+# Whether a turn actually began, not just whether text left the input box -
+# that alone has been trusted before and been wrong: the text sat in the
+# pane with no response and the agent read idle minutes later.
 pane_wait_working() {
   local slug=$1 i
   for i in 1 2 3 4 5 6; do
     sleep 1
     [ "$(pane_agent_status "$slug")" = working ] && return 0
   done
+  return 1
+}
+
+# The full verified send both cap-send's direct delivery and queue_flush's
+# backlog delivery need: submit, confirm a turn began, and retry the whole
+# thing once before reporting failure - the compensating control exists
+# because a silent non-delivery happened for real, and both delivery paths
+# need it equally, not just the one that was written first.
+pane_deliver() {
+  local slug=$1 text=$2
+  pane_submit "$slug" "$text" && pane_wait_working "$slug" && return 0
+  warn "$slug: no turn started after the first send; retrying once"
+  pane_submit "$slug" "$text" && pane_wait_working "$slug" && return 0
   return 1
 }
 
@@ -813,40 +915,45 @@ task_status_latest() {
   fi
 }
 
-# The actual state of a task, not a logged word that might be stale: ground
-# truth whether the pane is running, whether the work passes all gates, and
-# what to report when both are false.
+# One helper answers "what state is this task in," so herdr - never a word
+# an agent chose - decides whether it is working, git and gate.json decide
+# what is ready, and the log is consulted only to name why it stopped. See
+# docs/pipeline-notes.md, "Task state is not a log word".
 task_state() {
-  local slug=$1 status age
-  status=$(task_status_latest "$slug")
-  case $status in
-    done)
-      if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
-        printf 'ready'
-      else
-        printf 'done'
-      fi
-      return
-      ;;
-    blocked|needs-input|failed)
-      printf '%s' "$status"
-      return
-      ;;
+  local slug=$1 agent age tree base verb
+
+  if ! pane_live "$slug"; then
+    agent=exited
+  else
+    agent=$(pane_agent_status "$slug")
+    # herdr's own status can itself come back as neither: a harness it does
+    # not instrument, or a transient read failure. Falls back to whether
+    # the pane's visible output has changed recently - the same signal
+    # cap-send already trusts for this exact question.
+    if [ "$agent" != working ] && [ "$agent" != idle ]; then
+      age=$(task_idle_age "$slug" | cut -d' ' -f1)
+      [ "$age" -ge "$CAP_IDLE_SECS" ] && agent=idle || agent=working
+    fi
+    [ "$agent" = working ] && { printf working; return; }
+  fi
+
+  # herdr has now settled *whether* it stopped; the log is read only for
+  # *why*, and only for the three verbs that carry one - a bare "done" or
+  # nothing logged at all is not a reason, so it falls through to ready
+  # (git/gate.json) or the bare stopped state below.
+  verb=$(task_status_latest "$slug" 2>/dev/null || true)
+  case $verb in
+    blocked | needs-input | failed) printf '%s' "$verb"; return ;;
   esac
 
-  pane_live "$slug" || {
-    printf 'exited'
+  tree=$(task_field "$slug" CAP_TREE 2>/dev/null || true)
+  base=$(task_field "$slug" CAP_BASE 2>/dev/null || true)
+  if [ -n "$tree" ] && gate_ready "$slug" "$tree" "$base"; then
+    printf ready
     return
-  }
+  fi
 
-  case $(pane_agent_status "$slug") in
-    working) printf 'working'; return ;;
-    idle)    printf 'idle'; return ;;
-  esac
-
-  age=$(task_idle_age "$slug" | cut -d' ' -f1)
-
-  [ "$age" -ge "$CAP_IDLE_SECS" ] && printf 'idle' || printf 'working'
+  printf '%s' "$agent"
 }
 
 git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
@@ -1098,8 +1205,20 @@ stack_sync_task() {
   local task=$1 new_tip=$2 snap=$3
   local tree branch old_tip
 
-  task_lock "$task"
-  task_owner_claim "$task" 0
+  # Degrades the same way the rebase conflict below does, instead of
+  # dying: a contended descendant must not take cap-land's or cap-restack's
+  # whole run down with it, especially after cap-land has already merged
+  # the parent PR by the time it reaches this call.
+  if ! task_try_lock "$task"; then
+    STACK_CONFLICT=$task
+    warn "$task is locked by another cap command; its branch was left where it was"
+    return 1
+  fi
+  if ! task_owner_try_claim "$task" 0; then
+    STACK_CONFLICT=$task
+    warn "$task is owned by pid $(task_field "$task" CAP_OWNER 2>/dev/null | cut -d@ -f1); its branch was left where it was"
+    return 1
+  fi
 
   tree=$(task_field "$task" CAP_TREE)
   branch=$(task_field "$task" CAP_BRANCH)
