@@ -141,14 +141,15 @@ if [ "$avail" -lt "$need" ]; then
 fi
 
 dir=$(task_dir "$slug")
-[ -e "$dir" ] && die "task '$slug' already exists (cap drop $slug first)"
-pane_live "$slug" && die "a pane named '$slug' is already live"
 
-# Locked before the directory is written: two spawns racing the same new
-# slug both pass the checks above (neither's directory exists yet), so it
-# is the flock here that serializes them - the loser dies inside
-# task_lock, naming the winner's pid, not with "already exists".
+# Locked before checking existence, not after: a check made first can go
+# stale if the winner of a race finishes and releases before the loser
+# even looks, and the loser would then overwrite task.env and open a
+# second pane. task.env, not the directory, is the check: task_lock's own
+# mkdir makes the directory exist regardless of who has spawned here.
 task_lock "$slug"
+[ -f "$dir/task.env" ] && die "task '$slug' already exists (cap drop $slug first)"
+pane_live "$slug" && die "a pane named '$slug' is already live"
 
 mkdir -p "$dir"
 dir=$(cd "$dir" && pwd)
@@ -293,9 +294,6 @@ EOF
 
 harness_trust "$harness" "$tree"
 
-# Fresh, not the CAP_ENV_SCRUB global: task_lock and session_identity above
-# both exported a CAP_* variable in this same process, after that global was
-# already frozen at source time.
 mapfile -t env_scrub < <(cap_env_scrub)
 scrub=(env "${env_scrub[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
 kick="Read $dir/contract.md and carry it out."

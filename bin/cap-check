@@ -2,13 +2,27 @@
 # cap-check - run checks for a task or project.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
+# --take pulled out before the slug-vs-repo detection below, since "--take"
+# is never a task directory name and would otherwise be read as one.
+take=0
+args=()
+for a in "$@"; do
+	if [ "$a" = --take ]; then take=1; else args+=("$a"); fi
+done
+set -- "${args[@]}"
+
 repo=""
 base=""
 project=""
 
+# Joins its REVIEW AND DELIVERY neighbours rather than cap crew/watch/
+# sessions: those exist to show every task regardless of who owns it, but
+# this reads one task's diff, the same ground gate and verify read, so it
+# is gated the same way.
 if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
 	task_load "$1"
 	task_lock "$1"
+	task_owner_claim "$1" "$take"
 	repo=$CAP_TREE
 	base=$CAP_BASE
 	project=$CAP_PROJECT
@@ -25,20 +39,18 @@ else
 			base=${2:?}
 			shift 2
 			;;
-		*) die "usage: cap check <slug> | cap check --repo <project> [--base REF]" ;;
+		*) die "usage: cap check <slug> [--take] | cap check --repo <project> [--base REF]" ;;
 		esac
 	done
 fi
 
-[ -n "$repo" ] || die "usage: cap check <slug> | cap check --repo <project> [--base REF]"
+[ -n "$repo" ] || die "usage: cap check <slug> [--take] | cap check --repo <project> [--base REF]"
 : "${base:=$(git_base "$repo")}"
 
 git -C "$repo" rev-parse --verify -q "$base" >/dev/null || die "no base ref '$base'"
 
 conv=$CAP_HOME/cases/$project/conventions.md
 
-# diff_base: where this branch left base, not base's current tip. See its
-# own comment in bin/lib.sh for why.
 diff_from=$(diff_base "$repo" "$base")
 
 changed=$({

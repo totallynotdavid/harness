@@ -8,27 +8,32 @@
 # Two subjects, one procedure. A task is verified in its worktree; a project is
 # verified in its own checkout, which is how a base earns the right to be
 # forked more than once.
+#
+# Every flag is scanned across all of "$@" rather than read positionally,
+# so its place relative to the slug or --repo never changes what it does.
 again=0
-if [ "${1:-}" = --again ]; then again=1; shift; fi
+take=0
+repo=0
+project=""
+slug=""
+while [ $# -gt 0 ]; do
+  case $1 in
+  --again) again=1; shift ;;
+  --take) take=1; shift ;;
+  --repo) repo=1; project=${2:?usage: cap verify --repo <project> [--again]}; shift 2 ;;
+  *) slug=$1; shift ;;
+  esac
+done
 
-# --take only means anything once a task is known to exist, so it is parsed
-# below rather than here, where --repo has not yet been told apart from a
-# slug - the earlier version accepted it ahead of that check and silently
-# dropped it in the --repo branch, which took a task nobody was going to own.
-if [ "${1:-}" = --repo ]; then
-  CAP_PROJECT=${2:?usage: cap verify --repo <project> [--again]}
+# --take names a task to own, which --repo mode has none of, so it is only
+# ever applied below, in the branch that has one.
+if [ "$repo" = 1 ]; then
+  CAP_PROJECT=$project
   CAP_TREE=$(proj_path "$CAP_PROJECT")
   slug=$CAP_PROJECT
   [ -d "$CAP_TREE/.git" ] || die "$CAP_TREE is not a git repo"
 else
-  take=0
-  args=()
-  for a in "$@"; do
-    if [ "$a" = --take ]; then take=1; else args+=("$a"); fi
-  done
-  set -- "${args[@]}"
-
-  slug=${1:?usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]}
+  [ -n "$slug" ] || die "usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]"
   task_load "$slug"
   task_lock "$slug"
   task_owner_claim "$slug" "$take"

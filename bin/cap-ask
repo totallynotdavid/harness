@@ -109,8 +109,9 @@ if [ "$harness" = claude ]; then
   stderr_text=""
   any_result=0
   for turn_prompt in "${turns[@]}"; do
+    mapfile -t es < <(cap_env_scrub)
     # shellcheck disable=SC2206 # CAP_AGENT_FLAGS is a flag string, split on purpose
-    cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" claude -p --output-format stream-json --verbose \
+    cmd=(env "${es[@]}" "${CAP_CACHE_ENV[@]}" claude -p --output-format stream-json --verbose \
       "${session_args[@]}" "${margs[@]}" $CAP_AGENT_FLAGS "$turn_prompt")
     turn_out=$(mktemp)
     turn_err=$(mktemp)
@@ -284,7 +285,8 @@ if [ "$harness" = codex ]; then
   jsonl="$CAP_HOME/state/ask/$sid.jsonl"
   last_msg=$(mktemp)
 
-  cmd=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" codex exec --json --output-last-message "$last_msg" \
+  mapfile -t es < <(cap_env_scrub)
+  cmd=(env "${es[@]}" "${CAP_CACHE_ENV[@]}" codex exec --json --output-last-message "$last_msg" \
     -C "$dir" "${margs[@]}" --dangerously-bypass-approvals-and-sandbox "$prompt")
   rc=0
   codex_err=$(mktemp)
