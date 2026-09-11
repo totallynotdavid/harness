@@ -47,3 +47,45 @@ if [ "$final_tree" = "$snap_tree" ]; then
 else
   die "$slug's history no longer matches its code: HEAD's tree differs from the snapshot at $snap_ref. Compare with: git -C $CAP_TREE diff $snap_ref HEAD"
 fi
+
+# rules/commits.md, enforced here rather than left for cap-land to catch -
+# an agent told to read a rule still writes the trailer, and stripping it
+# is mechanical. git filter-branch's default commit-filter drops GPG
+# signatures (commit-tree with no -S), so this rebuilds each commit with
+# commit-tree -S instead, keeping its tree, parent, and author/committer
+# identity and dates - only the message changes.
+bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='%h %s%n%b' |
+  grep -inE '^(co-authored-by|claude-session):|generated with \[claude code\]' || true)
+if [ -n "$bad_trailers" ]; then
+  warn "$slug: stripping AI attribution rules/commits.md forbids:"
+  printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
+  parent=$(git -C "$CAP_TREE" rev-parse "$CAP_BASE")
+  while IFS= read -r old; do
+    tree=$(git -C "$CAP_TREE" rev-parse "$old^{tree}")
+    msg=$(git -C "$CAP_TREE" log -1 --format='%B' "$old" |
+      grep -viE '^(co-authored-by|claude-session):|generated with \[claude code\]')
+    parent=$(
+      GIT_AUTHOR_NAME=$(git -C "$CAP_TREE" log -1 --format='%an' "$old") \
+        GIT_AUTHOR_EMAIL=$(git -C "$CAP_TREE" log -1 --format='%ae' "$old") \
+        GIT_AUTHOR_DATE=$(git -C "$CAP_TREE" log -1 --format='%aI' "$old") \
+        GIT_COMMITTER_NAME=$(git -C "$CAP_TREE" log -1 --format='%cn' "$old") \
+        GIT_COMMITTER_EMAIL=$(git -C "$CAP_TREE" log -1 --format='%ce' "$old") \
+        GIT_COMMITTER_DATE=$(git -C "$CAP_TREE" log -1 --format='%cI' "$old") \
+        git -C "$CAP_TREE" commit-tree -S -p "$parent" "$tree" -m "$msg"
+    ) || die "$slug: could not strip AI attribution automatically; fix it by hand"
+  done < <(git -C "$CAP_TREE" rev-list --reverse "$CAP_BASE..HEAD")
+  git -C "$CAP_TREE" update-ref HEAD "$parent"
+fi
+
+# A summary over the limit has no safe automatic fix - truncating it can
+# produce a summary that reads as something the author never wrote - so
+# this refuses instead, naming every offender at once. rebase -i is not
+# available in this environment (no interactive terminal), so the way
+# back is to uncommit and let the commit agent try again.
+long_summaries=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='%h %s' |
+  awk '{ s = substr($0, index($0, " ") + 1); if (length(s) > 50) printf "%s (%d chars)\n", $0, length(s) }')
+[ -z "$long_summaries" ] || {
+  printf 'cap: %s has summaries over the 50-character limit:\n' "$slug" >&2
+  printf '%s\n' "$long_summaries" | sed 's/^/  /' >&2
+  die "reword them: git -C $CAP_TREE reset --soft $CAP_BASE, then cap commit $slug again"
+}
