@@ -118,10 +118,9 @@ if [ "$harness" = claude ]; then
     # Each turn's own file, read below rather than appended to $jsonl first,
     # so a turn that dies without a result reads as exactly that instead of
     # matching an earlier turn's result still sitting in the transcript.
-    # claude has no flag to set its working directory, hence the cd. Its exit
-    # code is discarded: is_error in the result event below is what decides
-    # whether the turn actually failed.
-    (cd "$dir" && "${cmd[@]}" </dev/null >"$turn_out" 2>"$turn_err") || true
+    # pane_dispatch's own exit code is discarded: is_error in the result
+    # event below is what decides whether the turn actually failed.
+    pane_dispatch "$dir" "ask-$(basename "$dir")-$profile" "$turn_out" "$turn_err" "${cmd[@]}" || true
     cat "$turn_out" >>"$jsonl"
     result_json=$(jq -c 'select(.type == "result")' "$turn_out" 2>/dev/null | tail -1) || true
     [ -n "$result_json" ] && any_result=1
@@ -288,9 +287,9 @@ if [ "$harness" = codex ]; then
   mapfile -t es < <(cap_env_scrub)
   cmd=(env "${es[@]}" "${CAP_CACHE_ENV[@]}" codex exec --json --output-last-message "$last_msg" \
     -C "$dir" "${margs[@]}" --dangerously-bypass-approvals-and-sandbox "$prompt")
-  rc=0
   codex_err=$(mktemp)
-  "${cmd[@]}" </dev/null >"$jsonl" 2>"$codex_err" || rc=$?
+  rc=0
+  pane_dispatch "$dir" "ask-$(basename "$dir")-$profile" "$jsonl" "$codex_err" "${cmd[@]}" || rc=$?
   stderr_text=$(cat "$codex_err" 2>/dev/null || true)
   rm -f "$codex_err"
 
