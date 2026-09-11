@@ -13,7 +13,7 @@ slug=${1:?usage: cap commit <slug> [profile] [--take]}
 profile=${2:-@chore}
 task_load "$slug"
 task_lock "$slug"
-task_owner_claim "$slug" "$take"
+if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 [ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to commit"
 
@@ -49,32 +49,54 @@ else
 fi
 
 # rules/commits.md, enforced here rather than left for cap-land to catch -
-# an agent told to read a rule still writes the trailer, and stripping it
-# is mechanical. git filter-branch's default commit-filter drops GPG
-# signatures (commit-tree with no -S), so this rebuilds each commit with
-# commit-tree -S instead, keeping its tree, parent, and author/committer
-# identity and dates - only the message changes.
-bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='%h %s%n%b' |
+# an agent told to read a rule still writes the trailer. git filter-branch's
+# commit-filter passes no -S and drops GPG signatures, so this rebuilds
+# each commit with commit-tree instead, keeping tree, parent(s), identity,
+# dates, and signed-ness. %h on its own line, not %h %s, keeps a trailer
+# folded into %s (no blank line before it) visible to the anchored regex.
+bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='commit %h:%n%B' |
   grep -inE '^(co-authored-by|claude-session):|generated with \[claude code\]' || true)
 if [ -n "$bad_trailers" ]; then
   warn "$slug: stripping AI attribution rules/commits.md forbids:"
   printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
-  parent=$(git -C "$CAP_TREE" rev-parse "$CAP_BASE")
+  declare -A remap
+  new=$(git -C "$CAP_TREE" rev-parse "$CAP_BASE")
   while IFS= read -r old; do
     tree=$(git -C "$CAP_TREE" rev-parse "$old^{tree}")
     msg=$(git -C "$CAP_TREE" log -1 --format='%B' "$old" |
-      grep -viE '^(co-authored-by|claude-session):|generated with \[claude code\]')
-    parent=$(
+      grep -viE '^(co-authored-by|claude-session):|generated with \[claude code\]' || true)
+    [ -n "$msg" ] ||
+      die "$slug: $old's message is nothing but AI attribution; fix it by hand"
+
+    # Every parent is looked up in remap, not assumed to be whatever was
+    # last rebuilt: a merge commit's second (and any later) parent is
+    # base-side history outside this range, so it has no remap entry and
+    # is kept as-is - rebuilding it with only the first parent would
+    # silently flatten the merge into a regular commit that quietly
+    # absorbs the base side's changes under its own message.
+    parent_args=()
+    read -ra orig_parents <<<"$(git -C "$CAP_TREE" log -1 --format='%P' "$old")"
+    for p in "${orig_parents[@]}"; do parent_args+=(-p "${remap[$p]:-$p}"); done
+
+    # Signs the rebuilt commit only if the one it replaces was itself
+    # signed (%G? is anything but N, "no signature") - mirroring rather
+    # than always passing -S, so this neither force-signs a repo that
+    # never signs nor hard-fails one where the key just isn't loaded.
+    sign_flag=()
+    [ "$(git -C "$CAP_TREE" log -1 --format='%G?' "$old")" = N ] || sign_flag=(-S)
+
+    new=$(
       GIT_AUTHOR_NAME=$(git -C "$CAP_TREE" log -1 --format='%an' "$old") \
         GIT_AUTHOR_EMAIL=$(git -C "$CAP_TREE" log -1 --format='%ae' "$old") \
         GIT_AUTHOR_DATE=$(git -C "$CAP_TREE" log -1 --format='%aI' "$old") \
         GIT_COMMITTER_NAME=$(git -C "$CAP_TREE" log -1 --format='%cn' "$old") \
         GIT_COMMITTER_EMAIL=$(git -C "$CAP_TREE" log -1 --format='%ce' "$old") \
         GIT_COMMITTER_DATE=$(git -C "$CAP_TREE" log -1 --format='%cI' "$old") \
-        git -C "$CAP_TREE" commit-tree -S -p "$parent" "$tree" -m "$msg"
+        git -C "$CAP_TREE" commit-tree "${sign_flag[@]}" "${parent_args[@]}" "$tree" -m "$msg"
     ) || die "$slug: could not strip AI attribution automatically; fix it by hand"
+    remap[$old]=$new
   done < <(git -C "$CAP_TREE" rev-list --reverse "$CAP_BASE..HEAD")
-  git -C "$CAP_TREE" update-ref HEAD "$parent"
+  git -C "$CAP_TREE" update-ref HEAD "$new"
 fi
 
 # A summary over the limit has no safe automatic fix - truncating it can
