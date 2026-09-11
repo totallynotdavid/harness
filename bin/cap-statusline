@@ -17,7 +17,7 @@ CAP_HOME=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 export CAP_HOME
 
 exec python3 -c '
-import json, os, sys, time
+import json, math, os, sys, time
 
 home = os.environ["CAP_HOME"]
 
@@ -40,7 +40,12 @@ def window(name):
     w = get("rate_limits", name)
     if not isinstance(w, dict):
         return None
-    return {"pct": w.get("used_percentage"), "resets_at": w.get("resets_at")}
+    pct = w.get("used_percentage")
+    # Explicit half-away-from-zero, matching usage_write in bin/lib.sh.
+    # mise run check:usage-shape asserts they agree.
+    if isinstance(pct, (int, float)):
+        pct = math.floor(pct + 0.5)
+    return {"pct": pct, "resets_at": w.get("resets_at")}
 
 
 # --- the status line itself -------------------------------------------------

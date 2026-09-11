@@ -58,6 +58,16 @@ HEAD` (after confirming the stash still holds the real work via `git stash list`
 worktree back to the clean merge commit. Then send the task's agent the conflict location
 and let it run `git stash pop` and resolve it itself.
 
+`sync_base()`'s merge is a point-in-time fix: it clears the drift that exists the moment
+`cap gate` runs, but a sibling landing into base afterward reopens the same gap before the
+next round. A gate reviewing `git diff <base's current tip>` directly can still show a
+change nobody on this branch made. `gate_fingerprint` and the reviewer's own `git diff`
+command both go through `diff_base()` (`bin/lib.sh`) instead, which diffs against
+`merge-base(base, HEAD)` - the point where this branch actually left base - the same fix
+`bin/cap-check` already applies as `diff_from`. Confirmed live: a `paper-cuts.md` entry
+added to master after a branch was cut showed as that branch deleting it under
+`git diff master`, and was empty under `git diff $(git merge-base master HEAD)`.
+
 ## Recognizing the Claude Pro session limit (auto-detected)
 
 A claude-harness (sonnet Gate A, or any opus/`--heavy` spawn) call can silently produce
@@ -69,10 +79,18 @@ recorded this project so far: none had reached a real conclusion before the reje
 each was still mid-investigation. Don't assume that generalizes forever, but it means
 discarding rather than trying to salvage the truncated turn has been the right call so far.
 
-`cap ask`/`cap gate`'s Gate A now detect this directly: look for `hit your session limit`
-in the raw output rather than eyeballing it. When detected, `cap-ask` fails loudly with a
-distinct message instead of returning the truncated text as if it were a real result. See
-the next section for what it also does with the interrupted session.
+`cap-ask` runs the claude harness headless (`claude -p --output-format stream-json`) and
+detects a session limit from the turn's own structured result, not from its text: the
+result event's `is_error` is `true` together with either its `api_error_status` (`429`) or
+the accompanying `rate_limit_event`'s `rate_limit_info.status` (`"rejected"`). Verified
+against a real rejection captured on this box, in the same stream-json field names the code
+reads: `api_error_status 429`, `rate_limit_info.status "rejected"`, against a turn whose own
+text read "You've hit your session limit". `terminal_reason` plays no part in this check:
+`"blocking_limit"` is the installed harness's own name for overrunning the auto-compact
+window, a context failure with nothing to do with account quota; `cap-ask` gives that its
+own message instead. When either of the two quota fields fire, `cap-ask` fails loudly with a
+distinct message instead of returning truncated or partial text as if it were a real result.
+See the next section for what it also does with the interrupted session.
 
 This is a real, separate constraint from system memory pressure. Don't misdiagnose it as
 an OOM/race issue (both can produce similarly confusing partial output). It affects only
@@ -81,30 +99,62 @@ keep working normally while claude-harness work is blocked.
 
 ## Resuming a `cap-ask` call after it hits the session limit
 
-`cap-ask` (claude harness only) records the session id and the pane's reported
-context-usage percentage to `state/ask-resume/<hash of profile+dir+prompt>.json` when it
-detects the rejection above. The **next** `cap-ask` call with the identical (profile, dir,
-prompt), i.e. a genuine retry of the same review, which is exactly what re-running
-`cap gate <slug>` after the reset time produces, picks this up automatically:
+`cap-ask` (claude harness only) records the session id and a context-usage percentage to
+`state/ask-resume/<key>.json` when it detects the rejection above, where `<key>` hashes the
+profile, worktree, prompt, and `CAP_ASK_KEY` (cap-gate passes its diff fingerprint here; see
+below). The percentage comes from the rejected turn's last `usage.iterations[]` entry
+against the profile's own model's `modelUsage.<model>.contextWindow` - the top-level `usage`
+totals are cumulative session spend, not live context occupancy, and grow past 30% within
+the first few turns of any real review (measured on two real 55/49-turn sessions: cumulative
+usage read back as 274%/267% where the actual last-turn occupancy was 10%/10%). A turn a 429
+stopped never reaches an iteration at all, so that reading is treated as 100% (full), never
+as empty, since it is exactly the reading a false-empty value would send down the
+resume-uncompacted path below. In practice this is the common case, not an edge case: a
+session-limit rejection is usually the account rejecting the turn before it makes an API
+call at all, so `usage.iterations` comes back empty (confirmed live: `[]` and all-zero
+top-level `usage` on a session already holding five figures of real tokens) and `ctx_pct`
+reads 100 regardless of how large the session actually is. So the **at or above 30%** branch
+below is the one a real session-limit rejection ordinarily takes; the **under 30%** branch
+stays correct for whatever turn does report a real reading, but is not the common path. The
+**next** `cap-ask` call hashes
+the same four inputs and stats that one file directly - a genuine retry of the same review,
+which is exactly what re-running `cap gate <slug>` after the reset time produces - and picks
+it up automatically:
 
 - Recorded context usage **under 30%**: resumes the session directly
   (`claude --resume <id>` with a generic "continue where you left off" prompt). Cheap
   enough that no special handling is needed.
 - Recorded context usage **at or above 30%**: does **not** auto-resume by default (a large
   session costs more per turn to continue than a fresh one costs to re-derive). Starts
-  fresh instead, and clears the stale record. Set `CAP_ASK_RESUME=force` to resume it
-  anyway. When forced, it *always* sends `/compact` as a first turn before the real
-  continuation prompt, never resumes a large session uncompacted. This is a deliberate,
-  explicit captain-level override, not a heuristic the script guesses at: use it when the
-  interrupted work was itself substantial (e.g. a long implementation review) and
-  re-deriving that understanding from scratch would cost more than compacting it once.
+  fresh instead, and leaves the record in place so `CAP_ASK_RESUME=force` on a later call
+  still resumes the pending session. When forced, it sends `/compact` as a first turn
+  before the real continuation prompt, and checks that turn's own result before trusting
+  it: a session too large by token count is not always "enough messages" for the compactor
+  to act on, and running the continuation turn against a session that came back uncompacted
+  would be the exact failure this whole mechanism exists to prevent, so that case dies
+  instead of continuing.
+  `cap-gate` never sets `CAP_ASK_RESUME=force`, so a session limit hit during `cap gate`
+  always starts fresh; force is a deliberate, explicit captain-level override for a plain
+  `cap ask` call whose interrupted work was itself substantial enough that re-deriving it
+  from scratch would cost more than compacting it once.
 
 This only applies to `cap-ask` (i.e. `cap gate`, and any other one-shot `cap ask` call),
-because those calls always close their pane afterward. There is no live process left to
-just wait on. It does not apply to `cap spawn`/`cap send` ship-task agents: their pane
-stays open across a limit hit, so sending a message after the reset time continues the
-same still-running process with zero context loss, which is already the right behavior
-and needs no special handling.
+because those calls run one headless turn and exit. There is no live process left to just
+wait on. It does not apply to `cap spawn`/`cap send` ship-task agents: their pane stays
+open across a limit hit, so sending a message after the reset time continues the same
+still-running process with zero context loss, which is already the right behavior and
+needs no special handling.
+
+A record is cleared on a clean answer, resumed or fresh, and also the moment a resume
+attempt proves its session is not resumable: no result at all (a dropped worktree, a
+pruned transcript), or an error naming the session gone ("no conversation found"). It
+survives any other failure, including a session-limit rejection, because the session
+behind it might still be there. Without that distinction, a single unresumable session
+would wedge every later call with the same key into resuming it and failing the same way
+forever. Changing the reviewed code changes `CAP_ASK_KEY`'s fingerprint, which changes the
+key, which orphans the old record under its old filename; nothing revisits that key again,
+so `cap-ask` sweeps `state/ask-resume/` on the same 7-day schedule it already prunes
+`state/ask/`'s transcripts.
 
 ## Gate A frequency: cheap by default, expensive only when it matters
 
@@ -153,12 +203,14 @@ Only `cap drop` + fresh `cap spawn` when the task's direction has fundamentally 
 
 When the harness kills a `run_in_background` Bash call (e.g. for memory pressure), the
 process it started is not always killed with it. It can keep running as an orphan. This
-has been observed as duplicate leftover `claude --model sonnet` review processes still
-consuming memory well after the call that started them was reported killed. Periodically
-check `ps aux --sort=-%mem | grep -E "claude|codex"` for duplicates and `herdr pane list`
-for panes with `"agent_status":"unknown"` sitting in a task's worktree (a leftover shell
-with no tracked agent, from a call that crashed or never got its `herdr pane close`).
-`kill -9` genuine orphaned processes; `herdr pane close <pane_id>` empty leftover panes.
+has been observed as duplicate leftover `claude --model sonnet` processes still consuming
+memory well after the call that started them was reported killed - a `cap gate`/`cap ask`
+review runs headless now, so this is a bare process with no pane to notice it is gone;
+periodically check `ps aux --sort=-%mem | grep -E "claude|codex"` for duplicates and
+`kill -9` genuine orphans. A `cap spawn` agent is the other shape this takes: its process
+lives inside a herdr pane, so `herdr pane list` also needs checking for panes with
+`"agent_status":"unknown"` (a leftover shell with no tracked agent, from a call that
+crashed or never got its `herdr pane close`); `herdr pane close <pane_id>` clears those.
 
 ## Dispatch sizing: quota routes work, it does not cheapen it
 
@@ -230,9 +282,13 @@ usually cheaper.
 Two measurements, no settings that describe the account:
 
 - The rate-limit windows the harness reports. `bin/cap-statusline` prints Claude Code's
-  status line and records the reading; every session Captain starts renders it, so the
-  fleet keeps it fresh for free. Wire it up once in `~/.claude/settings.json`:
-  `"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }`.
+  status line and records the reading for every *interactive* session Captain starts, so
+  the fleet keeps it fresh for free. Wire it up once in `~/.claude/settings.json`:
+  `"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }`. A
+  headless `cap-ask` call never renders a status line, so it writes the same shape of
+  reading itself, from its own turn's `rate_limit_event` (`usage_write` in `bin/lib.sh`) -
+  this makes the status line hook redundant for `cap ask`/`cap gate`, not unnecessary: it
+  is still the only source of a live reading for `cap spawn`'s long-running agents.
 - Session-limit rejections. `cap ask` writes the profile to
   `state/usage/blocked/<profile>` until the reported reset, which takes it out of its tier.
 

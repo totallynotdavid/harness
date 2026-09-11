@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# lint-usage-shape - assert usage_write and bin/cap-statusline agree on the
+# state/usage record shape and rounding for the same account reading.
+#
+# A key rename or a rounding drift on either side degrades usage_read to
+# reporting 0%, which reads as "no reason to hold back" rather than a fault.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+# shellcheck source=/dev/null
+. bin/lib.sh
+
+# bin/cap-statusline resolves its own CAP_HOME from its script's directory,
+# so it cannot be redirected in place. A scratch CAP_HOME with its own copy
+# of the script makes that same resolution put its output there instead -
+# nothing lands in the real state/usage that gate reviewers read as
+# evidence, so no cleanup of that directory is needed to keep it that way.
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/bin"
+cp bin/cap-statusline "$scratch/bin/cap-statusline"
+CAP_USAGE_DIR=$scratch/state/usage
+mkdir -p "$CAP_USAGE_DIR"
+
+status=0
+n=0
+
+# One account reading, expressed as each writer actually receives it:
+# usage_write's harness event carries a 0-1 utilization fraction,
+# cap-statusline's status payload carries an already-0-100 used_percentage.
+# 46.5 and 57.5 are the half-boundary values that flip sign between
+# half-away-from-zero and half-to-even rounding.
+check_reading() {
+	local util=$1 sid_w sid_s pct_w pct_s keys_w keys_s
+	n=$((n + 1))
+	sid_w="w-$n" sid_s="s-$n"
+
+	usage_write "$sid_w" "" \
+		"$(jq -nc --argjson u "$util" '{rate_limit_info: {unifiedWindows: {
+			five_hour: {utilization: $u, resetsAt: 1700000000},
+			seven_day: {utilization: $u, resetsAt: 1700003600}}}}')" \
+		'{}' '-'
+
+	printf '%s' "$(jq -nc --argjson p "$(jq -n --argjson u "$util" '$u * 100')" --arg sid "$sid_s" '{
+		session_id: $sid, model: {}, workspace: {},
+		rate_limits: {
+			five_hour: {used_percentage: $p, resets_at: 1700000000},
+			seven_day: {used_percentage: $p, resets_at: 1700003600}}}')" |
+		"$scratch/bin/cap-statusline" >/dev/null
+
+	# Every scalar's key path, not just the top level, so a rename nested
+	# inside five_hour/seven_day is as visible as one at the top. spend_limit
+	# is excluded: usage_write can never observe one at all (only an
+	# interactive bin/cap-statusline reading does), so the two writers are
+	# not comparable on that one field by design, not by omission here.
+	keys_w=$(jq -Sc 'del(.spend_limit) | [paths(scalars) | join(".")] | sort' "$CAP_USAGE_DIR/$sid_w.json")
+	keys_s=$(jq -Sc 'del(.spend_limit) | [paths(scalars) | join(".")] | sort' "$CAP_USAGE_DIR/$sid_s.json")
+	if [ "$keys_w" != "$keys_s" ]; then
+		printf 'lint-usage-shape: key set differs at utilization %s: usage_write %s vs cap-statusline %s\n' \
+			"$util" "$keys_w" "$keys_s" >&2
+		status=1
+	fi
+
+	for window in five_hour seven_day; do
+		pct_w=$(jq ".$window.pct" "$CAP_USAGE_DIR/$sid_w.json")
+		pct_s=$(jq ".$window.pct" "$CAP_USAGE_DIR/$sid_s.json")
+		if [ "$pct_w" != "$pct_s" ]; then
+			printf 'lint-usage-shape: %s.pct differs at utilization %s: usage_write %s vs cap-statusline %s\n' \
+				"$window" "$util" "$pct_w" "$pct_s" >&2
+			status=1
+		fi
+	done
+}
+
+check_reading 0
+check_reading 0.29
+check_reading 0.465
+check_reading 0.575
+check_reading 0.999
+
+# spend_limit has been wrong three times: a headless usage_write used to
+# carry the newest spend_limit forward under this call's own fresh at, which
+# never aged out under CAP_USAGE_TTL no matter how old the real reading was.
+# Its own scratch CAP_USAGE_DIR, so its records can't tie on at with the
+# readings above and shift which one usage_read treats as newest.
+check_spend_limit() {
+	local CAP_USAGE_DIR=$scratch/state/usage-spend ttl=${CAP_USAGE_TTL:-900} pct
+	mkdir -p "$CAP_USAGE_DIR"
+
+	# Older than the cutoff: must not win just for being the only one on file.
+	jq -n --argjson at "$(($(now) - ttl - 100))" '{at: $at, session_id: "stale", harness: "claude",
+		five_hour: {pct: 0, resets_at: 0}, seven_day: {pct: 0, resets_at: 0},
+		spend_limit: {pct: 93, resets_at: null}}' >"$CAP_USAGE_DIR/stale.json"
+	usage_write "fresh-low" "" \
+		"$(jq -nc '{rate_limit_info: {unifiedWindows: {
+			five_hour: {utilization: 0.02, resetsAt: 1900000000},
+			seven_day: {utilization: 0.03, resetsAt: 1900003600}}}}')" \
+		'{}' '-'
+	read -r pct _ _ <<<"$(usage_read claude)"
+	if [ "$pct" = 93 ]; then
+		printf 'lint-usage-shape: a spend_limit older than CAP_USAGE_TTL (%ss) still won usage_read\n' "$ttl" >&2
+		status=1
+	fi
+	rm -f "$CAP_USAGE_DIR"/*.json
+
+	# Within the cutoff: a real spend_limit an older record observed must
+	# still surface past a newer record that observed none.
+	jq -n --argjson at "$(($(now) - 30))" '{at: $at, session_id: "live", harness: "claude",
+		five_hour: {pct: 0, resets_at: 0}, seven_day: {pct: 0, resets_at: 0},
+		spend_limit: {pct: 40, resets_at: 1900000000}}' >"$CAP_USAGE_DIR/live.json"
+	usage_write "fresh-low2" "" \
+		"$(jq -nc '{rate_limit_info: {unifiedWindows: {
+			five_hour: {utilization: 0.02, resetsAt: 1900000000},
+			seven_day: {utilization: 0.03, resetsAt: 1900003600}}}}')" \
+		'{}' '-'
+	read -r pct _ _ <<<"$(usage_read claude)"
+	if [ "$pct" != 40 ]; then
+		printf 'lint-usage-shape: a still-fresh spend_limit (40) did not survive a newer record with none (got %s)\n' "$pct" >&2
+		status=1
+	fi
+}
+check_spend_limit
+
+[ "$status" = 0 ] && printf 'lint-usage-shape: %d readings agree on shape and rounding, spend_limit staleness holds\n' "$n"
+exit "$status"

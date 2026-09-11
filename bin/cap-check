@@ -37,13 +37,9 @@ git -C "$repo" rev-parse --verify -q "$base" >/dev/null || die "no base ref '$ba
 
 conv=$CAP_HOME/cases/$project/conventions.md
 
-# Diff from the merge base, never the base tip. A task forked before other work
-# landed shows every one of those later commits as its own change: aula-fulfilment
-# listed 20 changed files, 19 of which were aula-scope's, landed underneath it.
-# docs/pipeline-notes.md calls this out and the collisions check below already
-# does it; this is the same bug in the other place it mattered.
-diff_from=$(git -C "$repo" merge-base "$base" HEAD 2>/dev/null || true)
-[ -n "$diff_from" ] || diff_from=$base
+# diff_base: where this branch left base, not base's current tip. See its
+# own comment in bin/lib.sh for why.
+diff_from=$(diff_base "$repo" "$base")
 
 changed=$({
 	git -C "$repo" diff --name-only "$diff_from"

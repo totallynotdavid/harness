@@ -21,8 +21,12 @@ commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || e
 dirty=$(git_dirty "$CAP_TREE")
 [ "$commits" -gt 0 ] || [ "$dirty" != 0 ] || die "$slug has no changes against $CAP_BASE"
 
+# diff_base: where this branch left base, not base's current tip. See its
+# own comment in bin/lib.sh for why.
+diff_from=$(diff_base "$CAP_TREE" "$CAP_BASE")
+
 prompt="Read $CAP_HOME/rules/code.md, then review every change in this
-worktree against $CAP_BASE (git diff $CAP_BASE, plus any uncommitted change).
+worktree against $diff_from (git diff $diff_from, plus any uncommitted change).
 Report concrete defects: what is wrong, where, and the failure it causes. Do
 not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL."
 
@@ -30,18 +34,10 @@ out_dir=$CAP_HOME/notes/$CAP_PROJECT
 mkdir -p "$out_dir"
 mkdir -p "$TASKS/$slug"
 
-# Gate B (cheap) runs every round. Gate A (expensive) only runs on --full: the
-# first review and the pass right before landing. Running it every intermediate
-# round paid for a full cold session per round even when B was the only profile
-# still finding anything (see docs/pipeline-notes.md, "Gate A frequency").
-#
-# Both are roles, not models. cap-ask sizes each one against the account's
-# current window, so a gate round late in a heavy day runs a smaller reviewer
-# instead of failing to run at all.
-# Resolve both gates here rather than letting each cap-ask call size itself.
-# Independently sized, both gates land on the same profile whenever they share
-# a tier, and a change reviewed twice by one model is not two opinions. Gate B
-# asks its tier for a different peer instead.
+# Gate B (cheap) runs every round; Gate A (expensive) only on --full (see
+# docs/pipeline-notes.md). Both are roles, not models: cap-ask sizes each
+# against the account's current window. Resolve both here, not per cap-ask call,
+# so Gate B picks a different peer when both would use the same profile.
 profiles=()
 gate_a=""
 if [ "$full" = 1 ]; then
@@ -71,30 +67,19 @@ for pair in "${profiles[@]}"; do
   out=$out_dir/$slug.gate-$label.md
 
   printf '## gate %s (%s)\n\n' "$label" "$profile"
-  # A failing cap-ask must not abort the run. set -e plus pipefail would kill
-  # cap-gate right here, before the verdict check below ever runs, and cap-ask
-  # exits nonzero on precisely the case that check exists for: a session-limit
-  # rejection that leaves an empty report behind.
-  # Write to a temp and promote it only once a verdict is in hand. `tee "$out"`
-  # truncated the report before the review had produced a byte, so a session
-  # that died on a quota rejection destroyed the last good one: local-env's
-  # gate-A.md was found at zero bytes with the previous round's findings gone.
-  # The review prompt is byte-identical every round, so cap-ask's resume key
-  # cannot tell one round from the next on its own. Without the fingerprint it
-  # resumed the previous round's finished review, which restated its old
-  # verdict against code it had never read.
+  # Don't abort on cap-ask failure; session-limit rejection leaves empty report.
+  # Write to temp, promote only after verdict extraction so mid-review death
+  # leaves the last good report intact. Pass CAP_ASK_KEY fingerprint to prevent
+  # a resumed round from restating a stale verdict against changed code.
   tmp=$(mktemp)
   if ! CAP_ASK_KEY=$fp "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$tmp"; then
     warn "gate $label ($profile) did not run to completion"
   fi
   printf '\n'
 
-  # A gate that reached no verdict is a failed gate, not a silent pass. The
-  # review session can die mid-read (session limit, crashed pane) and leave a
-  # zero-byte report: local-env's gate-A.md was 0 bytes and no gate.json was
-  # ever written, yet cap-gate printed its reports line and said nothing else.
-  # Recording UNKNOWN would be worse still, since gate.json would then claim a
-  # result nobody reached.
+  # No verdict means failed gate, not silent pass. Review session can die
+  # mid-read leaving zero-byte report. Recording UNKNOWN would claim a result
+  # nobody reached.
   verdict=$(gate_verdict "$tmp")
   if [ "$verdict" = UNKNOWN ]; then
     warn "gate $label ($profile) reached no verdict for $slug ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"

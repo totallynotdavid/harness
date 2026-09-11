@@ -22,6 +22,19 @@ have() { command -v "$1" >/dev/null 2>&1; }
 now() { date +%s; }
 stamp() { date +%Y-%m-%d; }
 
+# A session id for a headless harness launch. uuidgen is not guaranteed
+# present, so this falls back to the kernel's own generator; die with a
+# reason rather than let a missing fallback exit callers silently under set -e.
+new_uuid() {
+  if have uuidgen; then
+    uuidgen
+  elif [ -r /proc/sys/kernel/random/uuid ]; then
+    cat /proc/sys/kernel/random/uuid
+  else
+    die "no uuid source on this host (need uuidgen or /proc/sys/kernel/random/uuid)"
+  fi
+}
+
 # projects.tsv: name, path, mode, model.
 
 proj_field() {
@@ -46,16 +59,12 @@ task_load() {
 }
 task_slugs() { [ -d "$TASKS" ] && ls -1 "$TASKS" 2>/dev/null || true; }
 
-# Making a worktree usable before an agent is told it is ready.
-#
-# git worktree add checks out tracked files only, and node_modules is ignored,
-# so a fresh worktree has no dependencies at all. Sixteen of sixty-nine failing
-# tool calls across a day were an agent discovering that one failed turn at a
-# time. A warm install takes ten seconds; the turns cost far more.
-#
-# The install command is detected, never assumed. Five checked-out repositories
-# gave five different answers and one of them needs three at once, so every
-# marker that matches runs, not just the first.
+# Make worktree usable before agent starts. Worktrees have no dependencies
+# (node_modules is ignored). Runs every ecosystem's installer whose lockfile
+# is present - JS, Python, Rust, Go, Ruby, PHP can all fire in one call.
+# bun runs independently of the rest of the JS chain, so a repo with both
+# bun.lock and package-lock.json runs both installers. Within pnpm/yarn/npm,
+# and within uv/poetry, only the first matching lockfile runs.
 
 preflight_deps() {
   local tree=$1 ran=0
@@ -89,13 +98,10 @@ preflight_deps() {
   [ "$ran" = 1 ]
 }
 
-# Tools a project needs that nothing in the project declares.
-#
-# No lockfile states that a repository needs pdfinfo, so detection cannot
-# recover it. The list lives here rather than in the project, because Captain
-# is the thing that gets cloned to another machine and because most registered
-# projects are clones nobody should be restructuring.
-#
+# Tools a project needs that nothing in the project declares. Lives in Captain
+# (not the project) because Captain is cloned to other machines and most
+# projects are clones nobody should restructure. One file per project, kind
+# then argument per line:
 #   config/tools/<project>
 #     mise podman
 #     mise php@8.4
@@ -122,11 +128,8 @@ preflight_tools() {
   done <"$f"
 }
 
-# Which commits the project's own tooling has actually passed on.
-#
-# Verification is a fact about a commit, so it is recorded against one. A
-# fan-out from a base nobody has built is how four slices came to invent four
-# different vitest configs.
+# Which commits the project's own tooling has actually passed on. cap-spawn
+# reads this to refuse forking a second task from a base nothing has verified.
 VERIFIED=$CAP_HOME/state/verified
 
 verified_record() {
@@ -141,13 +144,10 @@ verified_is() {
   [ -n "$sha" ] && [ -f "$VERIFIED/$project/$sha" ]
 }
 
-# What one task of a project actually costs in memory.
-#
-# CAP_MIN_FREE_MB was a guess. The harness runs these builds, so it can measure
-# instead: a nuxt build that takes seventeen seconds with memory free ran for
-# three hours and eighteen minutes under swap exhaustion, holding 772 MB the
-# whole time and deepening the pressure that caused it. Parallelism is faster
-# only while the working set fits.
+# What one task of a project actually costs in memory, measured from a real
+# cap-verify run (project_peak_record below) rather than guessed, so the
+# CAP_MIN_FREE_MB default only ever covers a project that hasn't run yet.
+# Parallelism is faster only while every task's working set fits at once.
 PEAKS=$CAP_HOME/state/peaks
 
 project_peak_mb() {
@@ -187,20 +187,9 @@ wave_project() {
   sed -n 's/^#[[:space:]]*project:[[:space:]]*//p' "$1" 2>/dev/null | head -1
 }
 
-# Path ownership.
-#
-# A collision is a property of a set of tasks, not of any one of them, so
-# nothing that looks at a single task can see one coming. Four agents each
-# wrote their own package.json, vitest.config.ts, .env.example and lockfile
-# because the repository root belonged to nobody. A task now declares the paths
-# it owns and the harness refuses a second claim on the same ground.
-#
-# Globs use git's :(glob) pathspec, so ** crosses directories and * does not.
-#
-# They live in state/tasks/<slug>/owns, one per line, and never in task.env.
-# task.env is sourced, so a multi-glob value there is parsed as an assignment
-# followed by a command: a task owning `package.json pnpm-lock.yaml` made
-# every cap command print `pnpm-lock.yaml: command not found`.
+# Path ownership guard prevents collisions across tasks. Tasks declare paths
+# in state/tasks/<slug>/owns (one per line), never in task.env (which is sourced
+# and would parse multi-glob as shell). Globs use git's :(glob) pathspec.
 
 owns_read() {
   local f=$TASKS/$1/owns
@@ -260,14 +249,9 @@ owns_overlap() {
   return 1
 }
 
-# A glob as an anchored regex, following git's :(glob) pathspec rules: **
-# crosses directory separators, * does not.
-# A glob with no wildcard is a directory claim, matching everything under it,
-# because that is what `git ls-files -- ":(glob)layers/catalog"` already means
-# and owns_files is built on it. Without this the planner and the runtime guard
-# disagreed: `cap wave check` counted 32 files under `layers/catalog` as
-# claimed, then the guard blocked the very first write to one of them, because
-# `^layers/catalog$` matches the directory and no file inside it.
+# Glob to anchored regex per git's :(glob) rules: ** crosses dirs, * does not.
+# No wildcard means directory claim (everything under it) so regex matches both
+# the dir itself and files inside it, not just `^dir$`.
 owns_regex() {
   case $1 in
   *[*?]*) ;;
@@ -317,21 +301,13 @@ owns_taken() {
   return $found
 }
 
-# One cap command per task at a time.
-#
-# state/tasks/<slug>/ is read-modify-written by gate, check, commit and land,
-# and nothing coordinated them. On 2026-09-09 two `cap gate local-env --full`
-# runs were live at once, each with its own Gate A session, both writing the
-# same report and both about to write gate.json, so whichever finished second
-# silently discarded the other's verdict and the account paid twice for one
-# review. The kernel drops the lock when the holding process exits, so a
-# crashed command never leaves a task wedged.
+# One cap command per task at a time. Gate, check, commit, and land all
+# read-modify-write state/tasks/<slug>/. Lock is released on process exit.
 task_lock() {
   local slug=$1
   local dir=$TASKS/$slug
-  # Re-entrant across a process tree, so cap land can release the pane through
-  # cap drop without deadlocking against its own hold. The marker is exported,
-  # so only a child of the holder inherits it.
+  # Re-entrant: cap land can release via cap drop without deadlocking. The
+  # marker is exported, so only the holder's children inherit it.
   case " ${CAP_LOCKS:-} " in *" $slug "*) return 0 ;; esac
   mkdir -p "$dir"
   exec {CAP_LOCK_FD}>>"$dir/.lock"
@@ -389,10 +365,8 @@ herdr_open() {
 
 task_pane() { awk -F= '$1=="CAP_PANE"{print $2}' "$TASKS/$1/task.env" 2>/dev/null; }
 
-# Run a command in a pane via a temp script. herdr pane run types its argument
-# into the pane's cooked-mode pty; a prompt of a few KB overruns the tty's
-# line-length limit and truncates mid-quote, hanging the shell. A short
-# "bash <script>" line never does.
+# Run a command in a pane via temp script. Typing directly overruns tty
+# line-length limit with large prompts; "bash <script>" never does.
 pane_launch() {
   local pane=$1 script
   shift
@@ -417,16 +391,10 @@ pane_kill() {
   [ -n "$p" ] && herdr pane close "$p" >/dev/null 2>&1
 }
 
-# Send text without pressing Enter. Chunked: herdr pane send-text types
-# straight into the pane with no backpressure, and a target TUI's own input
-# handling can't always keep up. Confirmed by hand against a live codex
-# instance: a single send-text call of a normal multi-paragraph message
-# (well under any documented size limit - 1785 chars) silently dropped
-# everything after roughly the first 1000, mid-word, with no error from
-# herdr or codex. Sending in small pieces with a short pause between each
-# reproduced the identical message intact every time; a single un-chunked
-# call reproduced the drop every time. Chunk size and pause are empirical
-# margin below where drops were observed, not a documented limit from herdr.
+# Send text without pressing Enter. Split into chunks because herdr pane
+# send-text has no backpressure and target TUI can drop large messages
+# mid-word. Chunk size and pause are empirically safe margins below observed
+# drop threshold.
 pane_send() {
   local p text chunk_size i n
   p=$(task_pane "$1")
@@ -449,8 +417,7 @@ pane_enter() {
   [ -n "$p" ] && herdr pane send-keys "$p" enter >/dev/null 2>&1 || true
 }
 
-# herdr's own reported status ("working"/"idle"/"unknown"), not a guess from
-# output staleness. The authoritative answer to "did a turn actually start."
+# herdr's reported status, not a guess from output staleness.
 pane_agent_status() {
   local p
   p=$(task_pane "$1")
@@ -575,19 +542,24 @@ sync_base() {
   return 0
 }
 
-# A fingerprint of exactly what a gate call reviews: the full diff against
-# base plus any uncommitted change. Two gate calls with the same fingerprint
-# reviewed the identical code, regardless of how many commits or stash
-# round-trips happened in between.
-#
-# Untracked files are part of that, and used to be missing. A task whose
-# deliverable is new files carries almost no tracked diff: local-env added a
-# 17-file .devstack/ directory against 983 bytes of `git diff`. A diff-only
-# fingerprint stayed constant while the actual work changed underneath it, so
-# gate_ready kept reporting a stale PASS as fresh and cap-crew showed `ready`
-# for a review that never saw the deliverable.
+# The commit to diff a worktree against: where its branch actually left base,
+# not base's current tip. A sibling task landing into base after this branch
+# was cut would otherwise show up as this branch's own change, in a diff, a
+# fingerprint, or a reviewer's own `git diff` command. Used by cap-check,
+# cap-cleanup, cap-gate, and gate_fingerprint below.
+diff_base() {
+  local tree=$1 base=$2 mb
+  mb=$(git -C "$tree" merge-base "$base" HEAD 2>/dev/null) || true
+  printf '%s' "${mb:-$base}"
+}
+
+# Fingerprint of exactly what a gate reviews: full diff plus untracked files.
+# Same fingerprint means identical code reviewed, independent of commits or
+# stash round-trips. Untracked files must be included, since a diff alone
+# says nothing about a new file the deliverable adds.
 gate_fingerprint() {
   local tree=$1 base=$2 f
+  base=$(diff_base "$tree" "$base")
   {
     git -C "$tree" diff "$base" 2>/dev/null || true
     # Hash each path as well as its bytes, so a rename is a new fingerprint.
@@ -598,23 +570,60 @@ gate_fingerprint() {
   } | sha256sum | cut -d' ' -f1
 }
 
-# The exact-line GATE: PASS / GATE: FAIL verdict from a gate report, ignoring
-# any earlier match against the echoed prompt text itself (the prompt
-# contains the literal substrings "GATE: PASS" and "GATE: FAIL" inside the
-# instruction sentence, which is not a verdict).
+# The exact-line GATE: PASS / GATE: FAIL verdict from a gate report. Skips
+# fenced code (``` or ~~~, 3+, matched by character and length per
+# CommonMark - an opener never closed swallows the rest of the report) and
+# four-or-more-space or tab-indented lines, then strips markdown structure -
+# heading (# on both ends), list, blockquote, bold/italic, trailing period -
+# never quote marks or backticks. Last matching line wins.
 gate_verdict() {
   [ -f "$1" ] || { printf 'UNKNOWN'; return; }
-  # Strip each line's leading non-letter clutter first: codex pads with plain
-  # spaces, claude prefixes a "* " bullet marker. Only then does the line
-  # have to be exactly "GATE: PASS"/"GATE: FAIL" (plus trailing whitespace)
-  # to count - never a substring match, which is what the echoed prompt
-  # sentence ("...exactly: GATE: PASS or GATE: FAIL.") would give.
-  # Drop blank lines before taking the window. A pane capture can end with a
-  # dozen empty lines below the verdict, which pushed "GATE: PASS" out of a
-  # fixed tail and lost a review that had actually completed: gate B passed
-  # local-env and was recorded UNKNOWN.
-  grep -v '^[[:space:]]*$' "$1" | tail -15 | sed -E 's/^[^A-Za-z]*//' |
-    grep -E '^GATE: (PASS|FAIL)[[:space:]]*$' | tail -1 |
+  local body
+  # grep -v exits 1, not just prints nothing, on a zero-byte report - what
+  # cap-gate feeds this after a session-limit rejection. Harmless today only
+  # because the caller uses a command substitution, where bash does not
+  # apply set -e to the command inside.
+  body=$(grep -v '^[[:space:]]*$' "$1" || true)
+  printf '%s\n' "$body" |
+    awk '
+      # <=3 leading spaces then a run of ch (backtick or tilde). An opener
+      # may carry an info string after the run (```sh); a closer may not -
+      # only trailing spaces/tabs, checked by the caller when it matters.
+      function fence_run(line, ch,    lead, rest, run) {
+        lead = 0
+        while (lead < 3 && substr(line, lead + 1, 1) == " ") lead++
+        rest = substr(line, lead + 1)
+        run = 0
+        while (substr(rest, run + 1, 1) == ch) run++
+        return run
+      }
+      function only_trailing_space(line, ch, run,    lead, rest, trail) {
+        lead = 0
+        while (lead < 3 && substr(line, lead + 1, 1) == " ") lead++
+        rest = substr(line, lead + 1)
+        trail = substr(rest, run + 1)
+        gsub(/[ \t]/, "", trail)
+        return trail == ""
+      }
+      {
+        if (in_fence) {
+          # A closer must be the same character, at least as long as the
+          # opener, and bare - anything else, including the other fence
+          # character or an info string, is still content.
+          n = fence_run($0, fch)
+          if (n >= flen && only_trailing_space($0, fch, n)) in_fence = 0
+          next
+        }
+        n = fence_run($0, "`")
+        if (n >= 3) { in_fence = 1; fch = "`"; flen = n; next }
+        n = fence_run($0, "~")
+        if (n >= 3) { in_fence = 1; fch = "~"; flen = n; next }
+        if ($0 ~ /^(    |\t)/) next
+        print
+      }
+    ' |
+    sed -E 's/^[[:space:]]*[0-9]+[.)][[:space:]]*//; s/^[[:space:]#>*_-]*//; s/[[:space:]#*_.]*$//' |
+    grep -E '^GATE: (PASS|FAIL)$' | tail -1 |
     grep -oE 'PASS|FAIL' || printf 'UNKNOWN'
 }
 
@@ -799,10 +808,18 @@ stack_cascade_landed() {
   done
 }
 
-# Remove inherited model and session settings before starting an agent.
+# Remove inherited model and session settings, plus every CAP_* variable
+# exported at this point (CAP_LOCKS, CAP_ASK_KEY, CAP_TASK, any future one) -
+# computed here rather than a maintained list, so a dispatched harness
+# inherits none of what cap commands use to coordinate with each other. A
+# call site that needs one back (cap-spawn, cap-send: CAP_TASK) re-adds it
+# after this array.
 CAP_ENV_SCRUB=(-u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL
   -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL -u CLAUDE_CODE_SUBAGENT_MODEL
   -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SSE_PORT -u CODEX_SANDBOX)
+while IFS= read -r cap_var; do
+  CAP_ENV_SCRUB+=(-u "$cap_var")
+done < <(compgen -e CAP_ || true)
 
 # Point common package-manager caches at a shared location so a fresh
 # worktree's install is not stuck starting cold, and a project's own relative
@@ -838,17 +855,11 @@ usage_files() { compgen -G "$CAP_USAGE_DIR/*.json" >/dev/null 2>&1; }
 
 # --- what the harness offers -----------------------------------------------
 #
-# A profile names a model and a reasoning effort. Both are facts about the
-# account rather than settings, and codex will state them on request: its
-# app-server answers model/list with every model the account can reach, each
-# one carrying the efforts it accepts and the effort it defaults to. Captain
-# asks instead of guessing, so a profile naming a retired model or an effort
-# its model does not take fails at cap models, not three minutes into a review.
-#
-# What the catalog does not carry, and never will, is which tier a model
-# belongs to. It says gpt-5.6-terra exists and accepts xhigh. It does not say
-# terra is the right reviewer for work that has to be right the first time.
-# Facts are discovered. That judgment stays in config/captain.conf.
+# Profile names a model and reasoning effort. Codex publishes both; Captain
+# asks instead of guessing so invalid profiles fail early (cap models), not
+# three minutes into a review. The catalog never carries tier assignments
+# (which model is the right reviewer for critical work); that judgment stays
+# in config/captain.conf.
 #
 # The claude harness publishes no equivalent, so its profiles go unchecked.
 # Its aliases (opus, sonnet, haiku, fable) resolve at session start and the
@@ -1007,7 +1018,6 @@ codex_rate_limits() {
   codex_rollout_limits | jq -e '. + {source: "rollout"}' 2>/dev/null
 }
 
-
 # Measured utilization for one harness, as "<percent> <resets_at> <source>". The
 # percent is the fullest window that harness reports, because the tightest
 # window is the one that will stop the next dispatch.
@@ -1025,15 +1035,24 @@ usage_read() {
   cutoff=$(($(now) - ${CAP_USAGE_TTL:-900}))
 
   if usage_files; then
+    # five_hour/seven_day come from the single newest record, same as always.
+    # spend_limit comes from whichever record within the same cutoff last
+    # actually observed one, independently - a headless call's record never
+    # carries one, so it must not shadow an interactive session's still-fresh
+    # reading just for being newer overall.
     out=$(jq -rs --argjson cutoff "$cutoff" --arg h "$harness" '
-      map(select((.at // 0) >= $cutoff and (.harness // "claude") == $h))
-      | if length == 0 then empty else
-          (max_by(.at)
-           | (now) as $n
-           | [(if (.five_hour.resets_at // 0) > $n then (.five_hour.pct // 0) else 0 end),
-              (if (.seven_day.resets_at // 0) > $n then (.seven_day.pct // 0) else 0 end),
-              (.spend_limit.pct // 0)] as $p
-           | "\($p | max | floor) \(.five_hour.resets_at // 0) snapshot")
+      map(select((.at // 0) >= $cutoff and (.harness // "claude") == $h)) as $recent
+      | if ($recent | length) == 0 then empty else
+          ($recent | max_by(.at)) as $latest
+          | (now) as $n
+          | ([$recent[] | select(.spend_limit != null)] | if length == 0 then null
+             else (max_by(.at) | .spend_limit) end) as $sl
+          | [(if ($latest.five_hour.resets_at // 0) > $n then ($latest.five_hour.pct // 0) else 0 end),
+             (if ($latest.seven_day.resets_at // 0) > $n then ($latest.seven_day.pct // 0) else 0 end),
+             (if $sl == null then 0 else
+                (($sl.resets_at // 0) as $sr | if $sr == 0 or $sr > $n then ($sl.pct // 0) else 0 end)
+              end)] as $p
+          | "\($p | max | floor) \($latest.five_hour.resets_at // 0) snapshot"
         end
     ' "$CAP_USAGE_DIR"/*.json 2>/dev/null) || out=""
     if [ -n "$out" ]; then
@@ -1099,6 +1118,80 @@ usage_detail() {
       ' 2>/dev/null || true
       ;;
   esac
+}
+
+# The rule for picking which of a result's modelUsage entries names the
+# model actually asked for: the one whose canonicalModel/key names the
+# profile's model, or the largest context window when nothing matches.
+# usage_write and cap-ask's ctx_pct both interpolate this one definition, so
+# a session with more than one model (a subagent adds its own entry) can
+# never have the two disagree about which one is "the" model.
+read -r -d '' CAP_MODEL_PICK_JQ <<'JQ' || true
+def pick_model($model):
+  (.modelUsage // {}) | to_entries as $entries
+  | (if ($model // "") == "" or $model == "-" then null
+     else ($entries | map(select((.value.canonicalModel // .key // "") | contains($model))) | .[0])
+     end)
+    // ($entries | max_by(.value.contextWindow // 0));
+JQ
+
+# Record a claude quota reading in the shape bin/cap-statusline writes in
+# Python, so usage_read has a fresh number even for a session whose status
+# line never rendered (that hook only fires for an interactive session).
+# mise run check:usage-shape asserts the two writers agree on that shape.
+usage_write() {
+  local session=$1 dir=$2 rl_json=${3:-} result_json=${4:-} model=${5:-}
+  [ -n "$session" ] || return 0
+
+  # A rejection's own rate_limit_event doesn't always carry unifiedWindows
+  # (its own rejection reason lives in api_error_status/terminal_reason
+  # instead). Write nothing rather than let the // 0 defaults below publish
+  # a fabricated 0% that usage_read's max_by(.at) would then prefer over any
+  # real reading.
+  jq -e '(.rate_limit_info.unifiedWindows.five_hour // .rate_limit_info.unifiedWindows.seven_day) != null' \
+    <<<"${rl_json:-null}" >/dev/null 2>&1 || return 0
+
+  mkdir -p "$CAP_USAGE_DIR" 2>/dev/null || return 0
+
+  local model_id="" model_fallback="" display=""
+  IFS=$'\t' read -r model_id model_fallback <<<"$(jq -r --arg model "$model" "$CAP_MODEL_PICK_JQ"'
+    pick_model($model) as $mu | "\($mu.key // "")\t\($mu.value.canonicalModel // $mu.key // "")"
+  ' <<<"${result_json:-null}" 2>/dev/null)" || true
+
+  # Only an interactive status line learns a model's display name
+  # (bin/cap-statusline, keyed by model.id); reuse its last recording for
+  # this model id instead of restating the raw id. The "^claude-" exclusion
+  # skips raw ids and this function's own past placeholder writes.
+  if [ -n "$model_id" ]; then
+    display=$(jq -rs --arg mid "$model_id" '
+      map(select(.model_id == $mid and (.model // "") != "" and (((.model // "") | test("^claude-")) | not)))
+      | sort_by(.at) | last | .model // empty
+    ' "$CAP_USAGE_DIR"/*.json 2>/dev/null) || true
+  fi
+
+  # A headless call's rate_limit_event never carries a spend_limit field;
+  # only bin/cap-statusline's interactive reading ever observes one. Write
+  # null rather than carry an old reading forward under this call's own
+  # fresh at - a carried value stopped aging out under CAP_USAGE_TTL, which
+  # let a stale spend_limit outlive its own record indefinitely. usage_read
+  # finds the newest record that actually observed one instead.
+  jq -n --arg session "$session" --arg dir "$dir" --argjson at "$(now)" \
+    --arg model_id "$model_id" --arg model_fallback "$model_fallback" \
+    --argjson rl "${rl_json:-null}" --arg disp "$display" --argjson spend null '
+    # Explicit half-away-from-zero, the formula bin/cap-statusline also uses
+    # (math.floor(pct + 0.5)). mise run check:usage-shape asserts they agree.
+    def pct_round: (. + 0.5) | floor;
+    {at: $at, session_id: $session, harness: "claude",
+     model_id: $model_id,
+     model: (if $disp != "" then $disp else $model_fallback end),
+     cwd: $dir, project_dir: $dir,
+     five_hour: {pct: (($rl.rate_limit_info.unifiedWindows.five_hour.utilization // 0) * 100 | pct_round),
+                 resets_at: ($rl.rate_limit_info.unifiedWindows.five_hour.resetsAt // 0)},
+     seven_day: {pct: (($rl.rate_limit_info.unifiedWindows.seven_day.utilization // 0) * 100 | pct_round),
+                 resets_at: ($rl.rate_limit_info.unifiedWindows.seven_day.resetsAt // 0)},
+     spend_limit: $spend}' \
+    >"$CAP_USAGE_DIR/$session.json.tmp" 2>/dev/null &&
+    mv "$CAP_USAGE_DIR/$session.json.tmp" "$CAP_USAGE_DIR/$session.json"
 }
 
 # A profile the harness has rejected for a session limit is out of its tier
@@ -1202,23 +1295,6 @@ role_profile() {
   tier=$(role_tier "$role")
   [ -n "$tier" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
   tier_profile "$tier" "$role" "${2:-}"
-}
-
-limit_reset_epoch() {
-  local harness=${1:-claude} human=${2:-} t
-  t=$(usage_read "$harness" | awk '{print $2}')
-  if [ "$t" != '-' ] && [ "${t:-0}" -gt "$(now)" ] 2>/dev/null; then
-    printf '%s' "$t"
-    return 0
-  fi
-  human=${human#resets }
-  human=${human%%(UTC)*}
-  if [ -n "$human" ] && t=$(date -u -d "$human" +%s 2>/dev/null); then
-    [ "$t" -gt "$(now)" ] || t=$((t + 86400))
-    printf '%s' "$t"
-    return 0
-  fi
-  printf '0'
 }
 
 role_profile_or_die() {
