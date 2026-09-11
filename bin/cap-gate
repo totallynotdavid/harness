@@ -15,7 +15,7 @@ done
 [ -n "$slug" ] || die "usage: cap gate <slug> [--full] [--take]"
 task_load "$slug"
 task_lock "$slug"
-task_owner_claim "$slug" "$take"
+if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 sync_base "$CAP_TREE" "$CAP_BASE" ||
   die "$slug: worktree is mid-conflict after syncing onto $CAP_BASE; resolve before gating (see docs/pipeline-notes.md)"

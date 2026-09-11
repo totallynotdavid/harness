@@ -31,7 +31,7 @@ done
 
 task_load "$slug"
 task_lock "$slug"
-task_owner_claim "$slug" "$take"
+if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 # Find the worktree that checks out a branch.
 tree_of() {

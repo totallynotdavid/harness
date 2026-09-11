@@ -508,44 +508,50 @@ owner_is_task_agent() {
 }
 
 # True when the task is free for this caller to touch: unowned, dead-owned,
-# owned by the caller itself or its own dispatched agent, or --take was
-# passed. False otherwise, naming nobody - task_owner_check below wraps
-# this to die with the pid; stack_sync_task uses this directly to degrade
-# on a conflict instead of exiting.
+# or owned by the caller itself or its own dispatched agent. False
+# otherwise, naming nobody - task_owner_check wraps this to die with the
+# pid; stack_sync_task uses this directly to degrade on a conflict instead
+# of exiting. --take carries no mode into this API (rules/code.md): a
+# caller that got it calls task_owner_take directly instead, skipping this.
 task_owner_free() {
-  local slug=$1 take=${2:-0} owner me
+  local slug=$1 owner me
   task_dispatched_here "$slug" && return 0
   owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
   [ -n "$owner" ] && owner_is_task_agent "$slug" "${owner%@*}" && return 0
   me=$(session_identity)
   [ -n "$owner" ] && [ "$owner" != "$me" ] && session_alive "$owner" || return 0
-  [ "$take" = 1 ]
+  return 1
 }
 
 # Refuses a mutating command when the task is owned by a live session other
-# than the caller, naming the pid so the captain can look; says nothing
-# about --take, since a refusal that advertises its own override stops
-# being one. Read-only, unlike task_owner_claim below, so it is safe to
-# call without the lock - cap-send uses it to gate queueing too.
+# than the caller, naming the pid so the captain can look. Read-only,
+# unlike task_owner_claim below, so it is safe to call without the lock -
+# cap-send uses it to gate queueing too.
 task_owner_check() {
-  local slug=$1 take=${2:-0}
-  task_owner_free "$slug" "$take" ||
+  local slug=$1
+  task_owner_free "$slug" ||
     die "$slug is owned by pid $(task_field "$slug" CAP_OWNER 2>/dev/null | cut -d@ -f1)"
 }
 
-# Refuses the same way as task_owner_check, then records the caller as
-# owner - skipped for a plain shell (see session_identity) and for the
-# task's own dispatched agent (task_dispatched_here), since an agent
-# naming itself owner of its own task is exactly what blocked its own
-# captain here. Call after task_lock: claiming first lets two sessions
-# each write themselves in as owner before either has done any work.
-task_owner_claim() {
-  local slug=$1 take=${2:-0} me
-  task_owner_check "$slug" "$take"
+# Records the caller as owner, unconditionally - skipped for a plain shell
+# (see session_identity) and for the task's own dispatched agent
+# (task_dispatched_here), since an agent naming itself owner of its own
+# task is exactly what blocked its own captain here. What a --take caller
+# calls directly, and what task_owner_claim below calls after checking.
+task_owner_take() {
+  local slug=$1 me
   task_dispatched_here "$slug" && return 0
   me=$(session_identity)
   [ -n "$me" ] || return 0
   task_env_set "$slug" CAP_OWNER "$me"
+}
+
+# task_owner_check then task_owner_take. Call after task_lock: checking
+# first lets two sessions each write themselves in as owner before either
+# has done any work.
+task_owner_claim() {
+  task_owner_check "$1"
+  task_owner_take "$1"
 }
 
 # Non-dying counterpart to task_owner_claim: returns 1 on a live conflict
@@ -553,12 +559,8 @@ task_owner_claim() {
 # through STACK_CONFLICT the way it already does a rebase conflict, rather
 # than tearing down cap-land's or cap-restack's whole run.
 task_owner_try_claim() {
-  local slug=$1 take=${2:-0} me
-  task_owner_free "$slug" "$take" || return 1
-  task_dispatched_here "$slug" && return 0
-  me=$(session_identity)
-  [ -n "$me" ] || return 0
-  task_env_set "$slug" CAP_OWNER "$me"
+  task_owner_free "$1" || return 1
+  task_owner_take "$1"
 }
 
 # One line per queued message: pid (possibly empty, see session_identity),

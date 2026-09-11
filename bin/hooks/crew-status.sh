@@ -23,7 +23,7 @@ for slug in $(task_slugs); do
 	# owned by this session or its own dispatched agent, see bin/lib.sh)
 	# is safe to report on; one held by another live session is that
 	# session's to watch, not this one's to nag about.
-	task_owner_free "$slug" 0 || continue
+	task_owner_free "$slug" || continue
 
 	# task_state settles *whether* the task has stopped from herdr and
 	# *whether* it is ready from gate.json - never from a word the agent

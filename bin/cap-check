@@ -22,7 +22,7 @@ project=""
 if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
 	task_load "$1"
 	task_lock "$1"
-	task_owner_claim "$1" "$take"
+	if [ "$take" = 1 ]; then task_owner_take "$1"; else task_owner_claim "$1"; fi
 	repo=$CAP_TREE
 	base=$CAP_BASE
 	project=$CAP_PROJECT

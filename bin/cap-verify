@@ -37,7 +37,7 @@ else
   [ -n "$slug" ] || die "usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]"
   task_load "$slug"
   task_lock "$slug"
-  task_owner_claim "$slug" "$take"
+  if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 fi
 
 cd "$CAP_TREE" || die "$slug: no worktree at $CAP_TREE"

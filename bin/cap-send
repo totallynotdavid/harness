@@ -26,7 +26,7 @@ task_load "$slug"
 # before ownership is confirmed, the way sync_base never runs in cap-gate
 # before its own task_owner_claim. task_owner_claim (the write) still
 # only happens under the lock further down; this is read-only.
-task_owner_check "$slug" "$take"
+[ "$take" = 1 ] || task_owner_check "$slug"
 
 # A dead pane used to end the command here, which left the captain holding
 # work the agent should be doing: local-env's pane died mid-round and the
@@ -89,7 +89,7 @@ if ! pane_live "$slug"; then
 	# queued for the session that just died still goes in once this
 	# process exits below, after the new pane is confirmed working.
 	task_lock "$slug"
-	task_owner_claim "$slug" "$take"
+	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 	revive
 	pane_wait_working "$slug" ||
 		die "$slug: restarted the session but no turn began - check by hand: cap peek $slug"
@@ -152,7 +152,7 @@ fi
 # ownership first, since a session with no right to this task should not
 # be able to queue into it either just because it is momentarily free to.
 if task_try_lock "$slug"; then
-	task_owner_claim "$slug" "$take"
+	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 	# Flushed explicitly here, ahead of this call's own message, so an
 	# older queued correction always lands before a newer one instead of
@@ -180,7 +180,7 @@ if task_try_lock "$slug"; then
 		printf 'sent to %s (working, ctx %s%% used)\n' "$slug" "${ctx:-?}"
 	fi
 else
-	task_owner_check "$slug" "$take"
+	[ "$take" = 1 ] || task_owner_check "$slug"
 	queue_send "$slug" "$text"
 	printf 'queued for %s: busy (%s); delivered once whoever holds it exits cleanly\n' \
 		"$slug" "$(cat "$TASKS/$slug/.lock" 2>/dev/null || echo 'held by another cap command')"
