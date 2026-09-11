@@ -528,51 +528,98 @@ task_owner_claim() {
   task_env_set "$slug" CAP_OWNER "$me"
 }
 
-# Durable queue for a cap-send delivery a busy task could not take. One
-# line per message: pid (possibly empty, see session_identity) and text
-# split on the first tab directly, not via `read`'s own splitting, which
-# treats tab as whitespace and eats a leading empty pid into the text.
-# The append is guarded by its own lock, separate from the task lock,
-# since this runs exactly when the caller could not get that lock.
-queue_send() {
-  local slug=$1 text=$2 id fd
-  id=$(session_identity)
+# Non-dying counterpart to task_owner_claim: returns 1 on a live conflict
+# instead of exiting, so stack_sync_task can report a contended descendant
+# through STACK_CONFLICT the way it already does a rebase conflict, rather
+# than tearing down cap-land's or cap-restack's whole run.
+task_owner_try_claim() {
+  local slug=$1 take=${2:-0} me
+  task_owner_free "$slug" "$take" || return 1
+  task_dispatched_here "$slug" && return 0
+  me=$(session_identity)
+  [ -n "$me" ] || return 0
+  task_env_set "$slug" CAP_OWNER "$me"
+}
+
+# One line per queued message: pid (possibly empty, see session_identity),
+# a tab, then the text base64-encoded - not tr-flattened, so a multi-line
+# message arrives exactly as typed whether the lock was free or not, and
+# not raw, so a tab or newline inside the text itself can never be mistaken
+# for the field separator or a second record. queue_flush splits each line
+# on the first literal tab; base64's own alphabet contains neither.
+queue_append() {
+  local slug=$1 pid=$2 text=$3 fd
   exec {fd}>>"$TASKS/$slug/.send-queue.lock"
   flock "$fd"
-  printf '%s\t%s\n' "${id%@*}" "$(printf '%s' "$text" | tr '\n' ' ')" \
+  printf '%s\t%s\n' "$pid" "$(printf '%s' "$text" | base64 -w0)" \
     >>"$TASKS/$slug/send-queue"
   flock -u "$fd"
   exec {fd}>&-
+}
+
+# Durable queue for a cap-send delivery a busy task could not take. Guarded
+# by its own lock, separate from the task lock, since this runs exactly
+# when the caller could not get that lock.
+queue_send() {
+  local slug=$1 text=$2 id
+  id=$(session_identity)
+  queue_append "$slug" "${id%@*}" "$text"
 }
 
 # Delivers what queue_send queued into the task's live pane, in order,
 # then clears the queue. Called only by cap-send, once it already holds
 # the task lock and is about to deliver its own message - so a review
 # or a rebase taking the same lock is never the one handing it over.
-# Claims the file by renaming it first, under queue_send's own lock, so
-# a message appended mid-flush lands in the fresh file, not the deleted one.
+# Uses pane_deliver, the same submit-confirm-and-retry the direct path
+# uses, since a queued message is the only copy and deserves it equally.
 queue_flush() {
-  local slug=$1 dir=$TASKS/$1 fd claimed pid text
+  local slug=$1 dir=$TASKS/$1 fd claimed pid b64 text
   local spool=$dir/send-queue
+  claimed="$spool.flushing"
+
+  # A holder killed mid-flush leaves its claim behind in *.flushing, which
+  # nothing else ever reads back. Folding it in front of the live spool
+  # before claiming again recovers it exactly like any other queued
+  # message - only cap-send/task_try_lock ever call this for a given
+  # slug's lock, so nothing else can be claiming the same file right now.
+  if [ -f "$claimed" ]; then
+    { cat "$claimed" "$spool" 2>/dev/null || true; } >"$spool.recovering"
+    if mv "$spool.recovering" "$spool" 2>/dev/null; then
+      rm -f "$claimed"
+    else
+      rm -f "$spool.recovering"
+    fi
+  fi
+
   [ -s "$spool" ] || return 0
   pane_live "$slug" || return 0
 
-  claimed="$spool.flushing"
   exec {fd}>>"$dir/.send-queue.lock"
   flock "$fd"
   mv "$spool" "$claimed" 2>/dev/null || { flock -u "$fd"; exec {fd}>&-; return 0; }
   flock -u "$fd"
   exec {fd}>&-
 
+  local n=0
   while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
     [ -n "$line" ] || continue
     pid=${line%%$'\t'*}
-    text=${line#*$'\t'}
-    pane_send "$slug" "$text"
-    sleep 0.4
-    pane_enter "$slug"
-    sleep 0.3
-    printf 'working: sent by pid %s: %s\n' "$pid" "$text" >>"$dir/status.log"
+    b64=${line#*$'\t'}
+    text=$(printf '%s' "$b64" | base64 -d 2>/dev/null || true)
+    if pane_deliver "$slug" "$text"; then
+      printf 'working: sent by pid %s: %s\n' "$pid" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$dir/status.log"
+    else
+      # This message and anything queued after it stay queued, unread,
+      # rather than being lost or logged as sent - the pane is not
+      # accepting input right now, so trying the rest in order would
+      # only fail the same way. tail, not a lock: nothing else can be
+      # claiming $spool right now, only appending to it.
+      warn "$slug: a queued message from pid $pid did not deliver; left queued"
+      tail -n "+$n" "$claimed" >>"$spool"
+      rm -f "$claimed"
+      return 0
+    fi
   done <"$claimed"
   rm -f "$claimed"
 }
@@ -655,6 +702,36 @@ pane_enter() {
   [ -n "$p" ] && herdr pane send-keys "$p" enter >/dev/null 2>&1 || true
 }
 
+# Send text, press Enter, and confirm with retries: returns 0 if the
+# message was accepted, 1 if it was not. Stops retrying once the message
+# has left the input box. Check the END of the text, not the start:
+# pane_tail returns the last N lines of the pane, which for an
+# unsubmitted multi-line message is its tail, not its head. Anchoring on
+# the first 40 chars made this check pass (falsely, "it's gone") for any
+# message longer than the tail window, because the start had simply
+# scrolled out of view while the message sat there unsubmitted.
+pane_deliver() {
+  local slug=$1 text=$2
+  pane_send "$slug" "$text"
+  for _ in 1 2 3; do
+    sleep 0.4
+    pane_enter "$slug"
+    sleep 0.6
+    pane_tail "$slug" 6 | grep -qF "${text: -40}" || return 0
+  done
+  return 1
+}
+
+# Wait for the agent to start a turn, with retries.
+pane_wait_working() {
+  local slug=$1 i
+  for i in 1 2 3 4 5 6; do
+    sleep 1
+    [ "$(pane_agent_status "$slug")" = working ] && return 0
+  done
+  return 1
+}
+
 # herdr's reported status, not a guess from output staleness.
 pane_agent_status() {
   local p
@@ -734,6 +811,42 @@ task_status_latest() {
   if [ -n "$latest" ]; then
     printf '%s' "$latest"
   fi
+}
+
+# The actual state of a task, not a logged word that might be stale: ground
+# truth whether the pane is running, whether the work passes all gates, and
+# what to report when both are false.
+task_state() {
+  local slug=$1 status age
+  status=$(task_status_latest "$slug")
+  case $status in
+    done)
+      if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
+        printf 'ready'
+      else
+        printf 'done'
+      fi
+      return
+      ;;
+    blocked|needs-input|failed)
+      printf '%s' "$status"
+      return
+      ;;
+  esac
+
+  pane_live "$slug" || {
+    printf 'exited'
+    return
+  }
+
+  case $(pane_agent_status "$slug") in
+    working) printf 'working'; return ;;
+    idle)    printf 'idle'; return ;;
+  esac
+
+  age=$(task_idle_age "$slug" | cut -d' ' -f1)
+
+  [ "$age" -ge "$CAP_IDLE_SECS" ] && printf 'idle' || printf 'working'
 }
 
 git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
