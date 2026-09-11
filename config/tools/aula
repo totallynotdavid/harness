@@ -1,8 +1,14 @@
-# Tools used for the aula-render-alternatives scout task (candidate PDF
-# render engines evaluated against Chromium/Playwright). Not required for
-# the current codebase to build or test; kept here so a future worktree
-# doesn't have to rediscover them if this work continues.
+# typst renders every certificate. The repo's mise.toml pins the version, so
+# the line below only makes sure mise installs it in a fresh worktree.
+#
+# python and fonttools are offline tools, not runtime ones.
+# layers/certificates/scripts/convert-fonts.py uses them to regenerate the
+# .ttf files the repo already ships, if the woff2 sources ever change.
+#
+# weasyprint is left over from the aula-render-alternatives scout task and is
+# not used by the codebase.
 
 mise typst
 mise python@3.14
 sh   pip install weasyprint
+sh   pip install fonttools
