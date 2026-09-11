@@ -28,6 +28,16 @@ status_of() {
 		return
 	}
 
+	# Ask herdr whether the agent is running. task_idle_age only knows whether
+	# the pane changed since the last poll, and cap-crew is usually the only
+	# thing polling, so an agent that stopped ten minutes ago still reads as
+	# working on the next call. cap-send already trusts this signal for the
+	# same question.
+	case $(pane_agent_status "$1") in
+		working) printf 'working'; return ;;
+		idle)    printf 'idle'; return ;;
+	esac
+
 	age=$(task_idle_age "$1" | cut -d' ' -f1)
 
 	[ "$age" -ge "$CAP_IDLE_SECS" ] && printf 'idle' || printf 'working'
