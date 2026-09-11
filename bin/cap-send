@@ -19,13 +19,6 @@ text=$*
 [ -n "$text" ] || die "nothing to send"
 
 task_load "$slug"
-# Waits rather than refusing at once: a review or commit run holds this
-# lock for minutes, and the captain should type a correction once and have
-# it arrive when safe, not be sent to retry by hand. Costs wall-clock time
-# up to the wait; the default comfortably outlasts a cap-verify run
-# (CAP_VERIFY_MAX, 900s by default).
-task_lock "$slug" "${CAP_SEND_LOCK_WAIT:-900}"
-task_owner_claim "$slug" "$take"
 
 # A dead pane used to end the command here, which left the captain holding
 # work the agent should be doing: local-env's pane died mid-round and the
@@ -54,8 +47,6 @@ Then carry out this instruction from the captain:
 $text"
 
   if [ "$CAP_MODEL" != '-' ]; then margs=(--model "$CAP_MODEL"); fi
-  # Fresh, not the CAP_ENV_SCRUB global: task_lock and task_owner_claim above
-  # both exported a CAP_* variable in this same process, after it froze.
   mapfile -t es < <(cap_env_scrub)
   scrub=(env "${es[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
   case $CAP_HARNESS in
@@ -112,6 +103,14 @@ wait_working() {
 }
 
 if ! pane_live "$slug"; then
+	# Reviving starts a whole new session; it is rare and disruptive enough
+	# that it dies loudly on contention like every other mutating command,
+	# rather than queueing this call's own message. task_lock arms the
+	# same release flush every locking command gets, so anything left
+	# queued for the session that just died still goes in once this
+	# process exits below, after the new pane is confirmed working.
+	task_lock "$slug"
+	task_owner_claim "$slug" "$take"
 	revive
 	wait_working ||
 		die "$slug: restarted the session but no turn began - check by hand: cap peek $slug"
@@ -167,39 +166,57 @@ if [ "$force" = 0 ] && [ -n "$ctx" ] && [ "$ctx" -ge "$CAP_SEND_CTX_MAX" ] 2>/de
 	fi
 fi
 
-deliver
-started=0
-wait_working && started=1
+# Held only around the delivery itself, and never waited for - see
+# docs/pipeline-notes.md, "cap-send and the task lock", for why both a
+# blocking wait and holding across the ctx/compaction step above were
+# tried and both wrong. Busy means queued, not refused: still enforces
+# ownership first, since a session with no right to this task should not
+# be able to queue into it either just because it is momentarily free to.
+if task_try_lock "$slug"; then
+	task_owner_claim "$slug" "$take"
 
-# A message leaving the input box only proves it was submitted, not that a
-# turn began - this has happened for real: the text sat in the pane with no
-# response and the agent read idle minutes later (see docs/pipeline-notes.md,
-# "Gate A frequency" era investigation). Retry the whole delivery once before
-# giving up, rather than reporting success on a guess.
-if [ "$started" = 0 ]; then
-	warn "$slug: no turn started after the first send; retrying once"
+	# Flushed explicitly here, ahead of this call's own message, so an
+	# older queued correction always lands before a newer one instead of
+	# racing the automatic release flush every locking command now gets
+	# (see task_try_lock) - that one alone would deliver this call's
+	# message first and the backlog only after, at exit.
+	queue_flush "$slug"
+
 	deliver
+	started=0
 	wait_working && started=1
-fi
 
-[ "$started" = 1 ] || die "$slug: sent twice but the agent never started a turn - check by hand: cap peek $slug"
+	# A message leaving the input box only proves it was submitted, not
+	# that a turn began - this has happened for real: the text sat in the
+	# pane with no response and the agent read idle minutes later. Retry
+	# the whole delivery once before giving up, rather than reporting
+	# success on a guess.
+	if [ "$started" = 0 ]; then
+		warn "$slug: no turn started after the first send; retrying once"
+		deliver
+		wait_working && started=1
+	fi
 
-# A turn has started, so the task is not done, and cap send is the one place
-# that knows this for certain. The verb used to depend on the agent choosing
-# to log `working:` itself, so cap crew reported done for a task mid-round and
-# the reminder hook listed it as waiting to land. Record the fact here instead
-# of inferring it from the screen.
-#
-# Named by pid, not "the captain": with more than one captain, only the pid
-# tells them apart. Kept in full rather than truncated to a prefix, and
-# flattened to one line, since task_status_verb and task_status_latest each
-# treat one line as one event.
-sent_by=$(session_identity)
-sent=$(printf '%s' "$text" | tr '\n' ' ')
-printf 'working: sent by pid %s: %s\n' "${sent_by%@*}" "$sent" >>"$TASKS/$slug/status.log"
+	[ "$started" = 1 ] || die "$slug: sent twice but the agent never started a turn - check by hand: cap peek $slug"
 
-if [ "$force" = 1 ] && [ -n "$ctx" ]; then
-	printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"
+	# A turn has started, so the task is not done, and cap send is the one
+	# place that knows this for certain. Named by pid, not "the captain":
+	# with more than one captain, only the pid tells them apart. Kept in
+	# full rather than truncated to a prefix, and flattened to one line,
+	# since task_status_verb and task_status_latest each treat one line as
+	# one event.
+	sent_by=$(session_identity)
+	sent=$(printf '%s' "$text" | tr '\n' ' ')
+	printf 'working: sent by pid %s: %s\n' "${sent_by%@*}" "$sent" >>"$TASKS/$slug/status.log"
+
+	if [ "$force" = 1 ] && [ -n "$ctx" ]; then
+		printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"
+	else
+		printf 'sent to %s (working, ctx %s%% used)\n' "$slug" "${ctx:-?}"
+	fi
 else
-	printf 'sent to %s (working, ctx %s%% used)\n' "$slug" "${ctx:-?}"
+	task_owner_check "$slug" "$take"
+	queue_send "$slug" "$text"
+	printf 'queued for %s: busy (%s); delivered once whoever holds it exits cleanly\n' \
+		"$slug" "$(cat "$TASKS/$slug/.lock" 2>/dev/null || echo 'held by another cap command')"
 fi
