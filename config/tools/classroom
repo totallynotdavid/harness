@@ -1,0 +1,16 @@
+# Tools needed to test .cicat/snapshot/snapshot.php (the sanitised-database-
+# snapshot script, from the "snapshot" task) against this project's own
+# .devstack/ dev stack. Not required for the repository to build or test
+# otherwise.
+#
+# The .devstack/php/ container (docker.io/library/php:${PHP_VERSION}-fpm-bookworm)
+# ships PHP's mysqli/pdo_mysql extensions (Moodle's own DB driver needs those)
+# but no mysql/mysqldump client binaries, which snapshot.php shells out to for
+# its bulk dump/restore steps. Installed into the running container by hand
+# for this task (apt-get, not persisted -- does not survive a container
+# rebuild); a future worktree testing the same script, or any other ops
+# script needing these binaries, hits the same gap. The real fix is adding
+# this package to .devstack/php/Dockerfile's existing apt-get install list,
+# which is outside this task's ground (.cicat/snapshot/** only) -- flagged in
+# .cicat/snapshot/README.md for whoever owns .devstack/.
+sh   apt-get install -y default-mysql-client
