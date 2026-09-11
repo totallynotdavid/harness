@@ -180,17 +180,36 @@ for an answer a deterministic command already gives for free. It complements gat
 not replace it: passing tests do not by themselves rule out the logic/security classes of
 defect gate exists to catch.
 
-## Ready-to-land is now tracked, not inferred
+## Task state is not a log word
+
+On 2026-09-11 `bin/hooks/crew-status.sh` stayed silent for ten minutes on a task that had
+gone idle, because the last thing its agent logged was `working: round 5 done - ...` - the
+wrong verb, picked by the agent, and the hook only reacts to `done`, `blocked`,
+`needs-input`, `failed`. `cap crew` showed `idle` for the same task at the same time (that
+column reads herdr, not the log). Two readers of the same state disagreeing, because one of
+them trusted a word an agent typed instead of asking whether it was actually true.
+
+`task_state` (`bin/lib.sh`) is the one place that question gets answered now. `bin/cap-crew`'s
+`status_of`, `bin/hooks/crew-status.sh`, and `bin/cap-spawn`'s reclaimable-task check all call
+it instead of reading `task_status_latest` themselves. Ground truth only: herdr says whether
+the agent is running - that answer is never talked around by a log line claiming otherwise -
+`gate.json` says whether the work is ready to land (see below), and the log is read only to
+name *why* a task stopped, and only for `blocked`, `needs-input`, and `failed`, the three
+verbs that carry a reason. A bare `done`, or nothing logged at all, is not a reason: it falls
+through to `ready` when `gate.json` says so, and otherwise to `idle` (still live, stopped,
+nothing to report) or `exited` (pane gone). herdr itself answering neither `working` nor
+`idle` falls back to whether the pane's visible output has changed recently
+(`task_idle_age`), the same signal `cap send` already trusts for this exact question.
 
 `cap gate` records each profile's verdict in `state/tasks/<slug>/gate.json`, tagged with a
 fingerprint of exactly what was reviewed (`git diff <base>` plus any uncommitted change).
-`cap crew` reads that file: a task whose agent reports `done` shows as `ready` instead only
-when **both** A and B last passed **at the fingerprint the tree has right now** - a stale
-pass (code changed since), a FAIL, or a profile that never ran at all all fall back to
-plain `done`. This exists because `done` alone was indistinguishable from "still needs
-another round": one task went through 6+ fix-verify rounds, each one reported `done`, and
-none of them ever got `cap commit`/`cap land` run against it. `ready` in `cap crew` is the
-signal that was missing - see it, land it, don't start another round on it.
+`task_state` reads that file directly: a stopped task shows `ready` only when **both** A and
+B last passed **at the fingerprint the tree has right now** - a stale pass (code changed
+since), a FAIL, or a profile that never ran at all all fall back to `idle`/`exited` instead.
+This exists because `done` alone was indistinguishable from "still needs another round": one
+task went through 6+ fix-verify rounds, each one reported `done`, and none of them ever got
+`cap commit`/`cap land` run against it. `ready` is the signal that was missing - see it, land
+it, don't start another round on it.
 
 `cap send <slug> "<text>"` injects text into an *already-running* agent pane. The agent
 keeps its accumulated session context, so sending another round of findings costs only
@@ -247,6 +266,23 @@ that task and exits cleanly, the same as it would if nothing had died. `cap send
 this precisely (`queued for <slug>: busy (...); delivered once whoever holds it exits
 cleanly`) rather than naming a specific command, since the holder that finally releases the
 lock is not always the one holding it when the message was queued.
+
+A kill before the flush starts and a kill *during* it are different failures, and both now
+cost only that same delay. `queue_flush` claims its batch by renaming `send-queue` to
+`send-queue.flushing` before reading it; a holder killed after that rename but before
+delivery finishes left that file behind, unread by anything. `queue_flush` now checks for a
+leftover `.flushing` file on every call and folds it back in front of the live queue before
+claiming again, so the next flush - by any locking command - picks the backlog up rather than
+leaving it orphaned.
+
+Delivery from the queue goes through `pane_deliver`, the same submit-confirm-and-retry the
+direct path always used, not a bare `pane_send` trusted to have worked: the queued path used
+to log `working: sent by pid ...` regardless of whether the pane actually accepted the
+message, which is exactly the silent-non-delivery failure the direct path's own retry exists
+to catch. A message that still fails after both attempts, and anything still queued behind
+it, stays in the queue instead of being logged as sent and lost. Queued text is stored
+base64-encoded rather than flattened with `tr '\n' ' '`, so a multi-line message arrives
+exactly as typed whether the lock happened to be free or not.
 
 ## Orphaned panes and processes from killed background calls
 
