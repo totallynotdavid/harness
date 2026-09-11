@@ -199,6 +199,55 @@ dropping and respawning a task whenever the existing agent can pick up where it 
 Only `cap drop` + fresh `cap spawn` when the task's direction has fundamentally changed
 (e.g. redoing the brief) or the worktree is in a state not worth preserving.
 
+## cap-send and the task lock
+
+Delivering into a worktree `cap gate` is mid-rebase (`sync_base`) is unsafe, so `cap send`
+has to respect the same lock `cap gate`, `cap verify`, `cap cleanup`, `cap commit`, and
+`cap land` take for their whole run. Two designs were tried and rejected before the current
+one:
+
+A bounded wait (`flock -w`) cannot work at any bound: `cap verify` loops its own
+`CAP_VERIFY_MAX` ceiling over every script it runs, so it can hold the lock for roughly an
+hour; `cap gate`'s review has no ceiling at all; and a captain driving `cap` through a tool
+with its own timeout (commonly 600s) gets killed before a longer wait ever resolves, losing
+the message with no sign it happened.
+
+Holding the lock across the whole command, including `compact_pane`'s wait for the agent's
+own context to shrink (up to `CAP_SEND_COMPACT_SECS`, 600s by default), is also wrong: that
+step has nothing to do with the worktree, so it has no business holding the same lock every
+other command dies against at once.
+
+`cap send` now holds the lock only around the actual delivery (`task_try_lock`, never
+blocking) and does the ctx check and any compaction beforehand, unlocked. When the lock is
+free, delivery happens exactly as before. When it is not, the message is appended to
+`state/tasks/<slug>/send-queue` (`queue_send`) and the command returns at once - it is never
+refused, and the captain never has to retype it.
+
+Flushing that queue (`queue_flush`) went through two more designs before landing. Running it
+inside `task_try_lock` itself meant `cap gate`'s review and the stack-cascade rebase also
+typed the pending message into the agent's pane the moment either happened to acquire the
+lock first, mid-review or mid-rebase. Moving the flush into `cap send` alone fixed that but
+opened a different gap: a message queued while `cap gate` or `cap land` held the lock then
+sat until someone happened to run `cap send` on that task again - nothing else would ever
+deliver it, and nothing surfaced that it was waiting.
+
+The queue now flushes on the lock's *release*, for every locking command, not just `cap
+send`. `task_try_lock` arms one `EXIT` trap the first time a process locks anything
+(`task_flush_locks_on_exit`), and that trap composes with whatever `trap ... EXIT` the
+command sets afterwards (`bin/cap-spawn`, `bin/cap-verify`) rather than being overwritten by
+it - see the `trap` wrapper above `task_lock` in `bin/lib.sh`. A gate review or a rebase now
+flushes the moment it finishes and exits, after its own work is done, never mid-review or
+mid-rebase. `cap send` additionally flushes explicitly before its own message, so an older
+queued correction still lands ahead of a newer one instead of racing the exit-time flush.
+
+If a holder is killed instead of exiting cleanly, its `EXIT` trap never runs, so its flush
+does not happen - but the flock it held still releases at the kernel level as it always has,
+so this costs nothing beyond a delay: the message waits for whichever later command locks
+that task and exits cleanly, the same as it would if nothing had died. `cap send` reports
+this precisely (`queued for <slug>: busy (...); delivered once whoever holds it exits
+cleanly`) rather than naming a specific command, since the holder that finally releases the
+lock is not always the one holding it when the message was queued.
+
 ## Orphaned panes and processes from killed background calls
 
 When the harness kills a `run_in_background` Bash call (e.g. for memory pressure), the
