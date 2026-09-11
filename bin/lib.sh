@@ -303,20 +303,37 @@ owns_taken() {
 
 # One cap command per task at a time. Gate, check, commit, and land all
 # read-modify-write state/tasks/<slug>/. Lock is released on process exit.
+# wait=0 (default) refuses at once, naming whoever holds it; a positive
+# wait blocks up to that many seconds before refusing the same way, for a
+# caller whose job is to deliver something rather than to review or ship.
 task_lock() {
-  local slug=$1
+  local slug=$1 wait=${2:-0}
   local dir=$TASKS/$slug
   # Re-entrant: cap land can release via cap drop without deadlocking. The
   # marker is exported, so only the holder's children inherit it.
   case " ${CAP_LOCKS:-} " in *" $slug "*) return 0 ;; esac
   mkdir -p "$dir"
   exec {CAP_LOCK_FD}>>"$dir/.lock"
-  if ! flock -n "$CAP_LOCK_FD"; then
-    die "$slug is already held by $(cat "$dir/.lock" 2>/dev/null || echo 'another cap command')"
+  if [ "$wait" -gt 0 ] 2>/dev/null; then
+    flock -w "$wait" "$CAP_LOCK_FD" ||
+      die "$slug is still held by $(cat "$dir/.lock" 2>/dev/null || echo 'another cap command') after waiting ${wait}s"
+  else
+    flock -n "$CAP_LOCK_FD" ||
+      die "$slug is already held by $(cat "$dir/.lock" 2>/dev/null || echo 'another cap command')"
   fi
   printf 'pid %s (%s) since %s\n' "$$" "$(basename "$0")" "$(date -u +%H:%M:%SZ)" >"$dir/.lock"
   CAP_LOCKS="${CAP_LOCKS:-} $slug"
   export CAP_LOCKS
+
+  # Pinned here, not inside session_identity: x=$(session_identity) always
+  # runs in a subshell, so an export inside it never reaches the caller.
+  # Without this, cap-land shelling out to cap-drop would get a different
+  # plain-shell fallback identity and refuse. cap_env_scrub strips
+  # CAP_SESSION the same as CAP_LOCKS, so a dispatched agent never sees it.
+  if [ -z "${CAP_SESSION:-}" ]; then
+    CAP_SESSION=$(session_identity)
+    export CAP_SESSION
+  fi
 }
 
 # Read a task field without sourcing its record.
@@ -339,32 +356,40 @@ task_env_set() {
   mv "$tmp" "$f"
 }
 
-# The identity of the session that ran this cap command: walk the process
-# tree from $$ to the first claude or codex ancestor, the one /proc walk
-# every mutating cap-* command and bin/hooks/crew-status.sh now share.
-# Prints "<pid>@<start-time>" (proc(5) field 22) so a reused pid is never
-# mistaken for the same incarnation. A plain shell has none of that
-# ancestry; identity then falls back to $$'s own parent, the shell itself.
+# The identity of the session that ran this cap command: CAP_SESSION if
+# task_lock already pinned one in this process (see task_lock), else a walk
+# from $$ to the first claude or codex ancestor - the one /proc walk every
+# mutating cap-* command and bin/hooks/crew-status.sh share. Prints
+# "<pid>@<start-time>" (proc(5) field 22); a plain shell has no such
+# ancestor, so identity falls back to $$'s own parent, the shell itself.
 session_identity() {
-  local pid=$$ parent stamp comm
+  if [ -n "${CAP_SESSION:-}" ]; then
+    printf '%s' "$CAP_SESSION"
+    return 0
+  fi
+
+  local pid=$$ parent stamp comm id=""
   parent=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || true)
   [ -n "$parent" ] || parent=1
 
-  while [ "$pid" -gt 1 ] 2>/dev/null; do
+  while [ -z "$id" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
     comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
     if [ "$comm" = claude ] || [ "$comm" = codex ]; then
       stamp=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
-      if [ -n "$stamp" ]; then
-        printf '%s@%s' "$pid" "$stamp"
-        return 0
-      fi
+      [ -n "$stamp" ] && id="$pid@$stamp"
     fi
-    pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || true)
-    [ -n "$pid" ] || pid=1
+    if [ -z "$id" ]; then
+      pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || true)
+      [ -n "$pid" ] || pid=1
+    fi
   done
 
-  stamp=$(awk '{print $22}' "/proc/$parent/stat" 2>/dev/null || true)
-  printf '%s@%s' "$parent" "${stamp:-0}"
+  if [ -z "$id" ]; then
+    stamp=$(awk '{print $22}' "/proc/$parent/stat" 2>/dev/null || true)
+    id="$parent@${stamp:-0}"
+  fi
+
+  printf '%s' "$id"
 }
 
 # Whether an id from session_identity still names a running process. pids
@@ -862,18 +887,23 @@ stack_cascade_landed() {
   done
 }
 
-# Remove inherited model and session settings, plus every CAP_* variable
-# exported at this point (CAP_LOCKS, CAP_ASK_KEY, CAP_TASK, any future one) -
-# computed here rather than a maintained list, so a dispatched harness
-# inherits none of what cap commands use to coordinate with each other. A
-# call site that needs one back (cap-spawn, cap-send: CAP_TASK) re-adds it
-# after this array.
-CAP_ENV_SCRUB=(-u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL
-  -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL -u CLAUDE_CODE_SUBAGENT_MODEL
-  -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SSE_PORT -u CODEX_SANDBOX)
-while IFS= read -r cap_var; do
-  CAP_ENV_SCRUB+=(-u "$cap_var")
-done < <(compgen -e CAP_ || true)
+# Strips every inherited model/session setting and CAP_* variable (CAP_LOCKS,
+# CAP_SESSION, CAP_ASK_KEY, CAP_TASK, any future one) from a dispatched
+# harness's environment - computed from what is actually exported, not a
+# maintained list. CAP_ENV_SCRUB below freezes this at source time, so a
+# caller that exports a new CAP_* variable later in the same process (a
+# lock, an identity) must call this function fresh instead of reading it.
+cap_env_scrub() {
+  local scrub=(-u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL
+    -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL -u CLAUDE_CODE_SUBAGENT_MODEL
+    -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SSE_PORT -u CODEX_SANDBOX)
+  local cap_var
+  while IFS= read -r cap_var; do
+    scrub+=(-u "$cap_var")
+  done < <(compgen -e CAP_ || true)
+  printf '%s\n' "${scrub[@]}"
+}
+mapfile -t CAP_ENV_SCRUB < <(cap_env_scrub)
 
 # Point common package-manager caches at a shared location so a fresh
 # worktree's install is not stuck starting cold, and a project's own relative
