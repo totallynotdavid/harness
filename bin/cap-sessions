@@ -62,9 +62,3 @@ fi
 	printf 'PID\tHARNESS\tKIND\tRSS\tAGE\tWHERE\n'
 	printf "$rows"
 } | column -t -s"$(printf '\t')"
-
-# Two sessions in one repo is the condition worth naming, not the count.
-printf '\n'
-printf "$rows" | awk -F'\t' '{ n[$6]++ } END {
-	for (w in n) if (n[w] > 1) printf "  %d sessions share %s; nothing coordinates them\n", n[w], w
-}'
