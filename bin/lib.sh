@@ -46,16 +46,12 @@ task_load() {
 }
 task_slugs() { [ -d "$TASKS" ] && ls -1 "$TASKS" 2>/dev/null || true; }
 
-# Making a worktree usable before an agent is told it is ready.
-#
-# git worktree add checks out tracked files only, and node_modules is ignored,
-# so a fresh worktree has no dependencies at all. Sixteen of sixty-nine failing
-# tool calls across a day were an agent discovering that one failed turn at a
-# time. A warm install takes ten seconds; the turns cost far more.
-#
-# The install command is detected, never assumed. Five checked-out repositories
-# gave five different answers and one of them needs three at once, so every
-# marker that matches runs, not just the first.
+# Make worktree usable before agent starts. Worktrees have no dependencies
+# (node_modules is ignored). Runs every ecosystem's installer whose lockfile
+# is present - JS, Python, Rust, Go, Ruby, PHP can all fire in one call.
+# bun runs independently of the rest of the JS chain, so a repo with both
+# bun.lock and package-lock.json runs both installers. Within pnpm/yarn/npm,
+# and within uv/poetry, only the first matching lockfile runs.
 
 preflight_deps() {
   local tree=$1 ran=0
@@ -89,13 +85,10 @@ preflight_deps() {
   [ "$ran" = 1 ]
 }
 
-# Tools a project needs that nothing in the project declares.
-#
-# No lockfile states that a repository needs pdfinfo, so detection cannot
-# recover it. The list lives here rather than in the project, because Captain
-# is the thing that gets cloned to another machine and because most registered
-# projects are clones nobody should be restructuring.
-#
+# Tools a project needs that nothing in the project declares. Lives in Captain
+# (not the project) because Captain is cloned to other machines and most
+# projects are clones nobody should restructure. One file per project, kind
+# then argument per line:
 #   config/tools/<project>
 #     mise podman
 #     mise php@8.4
@@ -122,11 +115,8 @@ preflight_tools() {
   done <"$f"
 }
 
-# Which commits the project's own tooling has actually passed on.
-#
-# Verification is a fact about a commit, so it is recorded against one. A
-# fan-out from a base nobody has built is how four slices came to invent four
-# different vitest configs.
+# Which commits the project's own tooling has actually passed on. cap-spawn
+# reads this to refuse forking a second task from a base nothing has verified.
 VERIFIED=$CAP_HOME/state/verified
 
 verified_record() {
@@ -141,13 +131,10 @@ verified_is() {
   [ -n "$sha" ] && [ -f "$VERIFIED/$project/$sha" ]
 }
 
-# What one task of a project actually costs in memory.
-#
-# CAP_MIN_FREE_MB was a guess. The harness runs these builds, so it can measure
-# instead: a nuxt build that takes seventeen seconds with memory free ran for
-# three hours and eighteen minutes under swap exhaustion, holding 772 MB the
-# whole time and deepening the pressure that caused it. Parallelism is faster
-# only while the working set fits.
+# What one task of a project actually costs in memory, measured from a real
+# cap-verify run (project_peak_record below) rather than guessed, so the
+# CAP_MIN_FREE_MB default only ever covers a project that hasn't run yet.
+# Parallelism is faster only while every task's working set fits at once.
 PEAKS=$CAP_HOME/state/peaks
 
 project_peak_mb() {
@@ -187,20 +174,9 @@ wave_project() {
   sed -n 's/^#[[:space:]]*project:[[:space:]]*//p' "$1" 2>/dev/null | head -1
 }
 
-# Path ownership.
-#
-# A collision is a property of a set of tasks, not of any one of them, so
-# nothing that looks at a single task can see one coming. Four agents each
-# wrote their own package.json, vitest.config.ts, .env.example and lockfile
-# because the repository root belonged to nobody. A task now declares the paths
-# it owns and the harness refuses a second claim on the same ground.
-#
-# Globs use git's :(glob) pathspec, so ** crosses directories and * does not.
-#
-# They live in state/tasks/<slug>/owns, one per line, and never in task.env.
-# task.env is sourced, so a multi-glob value there is parsed as an assignment
-# followed by a command: a task owning `package.json pnpm-lock.yaml` made
-# every cap command print `pnpm-lock.yaml: command not found`.
+# Path ownership guard prevents collisions across tasks. Tasks declare paths
+# in state/tasks/<slug>/owns (one per line), never in task.env (which is sourced
+# and would parse multi-glob as shell). Globs use git's :(glob) pathspec.
 
 owns_read() {
   local f=$TASKS/$1/owns
@@ -260,14 +236,9 @@ owns_overlap() {
   return 1
 }
 
-# A glob as an anchored regex, following git's :(glob) pathspec rules: **
-# crosses directory separators, * does not.
-# A glob with no wildcard is a directory claim, matching everything under it,
-# because that is what `git ls-files -- ":(glob)layers/catalog"` already means
-# and owns_files is built on it. Without this the planner and the runtime guard
-# disagreed: `cap wave check` counted 32 files under `layers/catalog` as
-# claimed, then the guard blocked the very first write to one of them, because
-# `^layers/catalog$` matches the directory and no file inside it.
+# Glob to anchored regex per git's :(glob) rules: ** crosses dirs, * does not.
+# No wildcard means directory claim (everything under it) so regex matches both
+# the dir itself and files inside it, not just `^dir$`.
 owns_regex() {
   case $1 in
   *[*?]*) ;;
@@ -317,21 +288,13 @@ owns_taken() {
   return $found
 }
 
-# One cap command per task at a time.
-#
-# state/tasks/<slug>/ is read-modify-written by gate, check, commit and land,
-# and nothing coordinated them. On 2026-09-09 two `cap gate local-env --full`
-# runs were live at once, each with its own Gate A session, both writing the
-# same report and both about to write gate.json, so whichever finished second
-# silently discarded the other's verdict and the account paid twice for one
-# review. The kernel drops the lock when the holding process exits, so a
-# crashed command never leaves a task wedged.
+# One cap command per task at a time. Gate, check, commit, and land all
+# read-modify-write state/tasks/<slug>/. Lock is released on process exit.
 task_lock() {
   local slug=$1
   local dir=$TASKS/$slug
-  # Re-entrant across a process tree, so cap land can release the pane through
-  # cap drop without deadlocking against its own hold. The marker is exported,
-  # so only a child of the holder inherits it.
+  # Re-entrant: cap land can release via cap drop without deadlocking. The
+  # marker is exported, so only the holder's children inherit it.
   case " ${CAP_LOCKS:-} " in *" $slug "*) return 0 ;; esac
   mkdir -p "$dir"
   exec {CAP_LOCK_FD}>>"$dir/.lock"
@@ -389,10 +352,8 @@ herdr_open() {
 
 task_pane() { awk -F= '$1=="CAP_PANE"{print $2}' "$TASKS/$1/task.env" 2>/dev/null; }
 
-# Run a command in a pane via a temp script. herdr pane run types its argument
-# into the pane's cooked-mode pty; a prompt of a few KB overruns the tty's
-# line-length limit and truncates mid-quote, hanging the shell. A short
-# "bash <script>" line never does.
+# Run a command in a pane via temp script. Typing directly overruns tty
+# line-length limit with large prompts; "bash <script>" never does.
 pane_launch() {
   local pane=$1 script
   shift
@@ -417,16 +378,10 @@ pane_kill() {
   [ -n "$p" ] && herdr pane close "$p" >/dev/null 2>&1
 }
 
-# Send text without pressing Enter. Chunked: herdr pane send-text types
-# straight into the pane with no backpressure, and a target TUI's own input
-# handling can't always keep up. Confirmed by hand against a live codex
-# instance: a single send-text call of a normal multi-paragraph message
-# (well under any documented size limit - 1785 chars) silently dropped
-# everything after roughly the first 1000, mid-word, with no error from
-# herdr or codex. Sending in small pieces with a short pause between each
-# reproduced the identical message intact every time; a single un-chunked
-# call reproduced the drop every time. Chunk size and pause are empirical
-# margin below where drops were observed, not a documented limit from herdr.
+# Send text without pressing Enter. Split into chunks because herdr pane
+# send-text has no backpressure and target TUI can drop large messages
+# mid-word. Chunk size and pause are empirically safe margins below observed
+# drop threshold.
 pane_send() {
   local p text chunk_size i n
   p=$(task_pane "$1")
@@ -449,8 +404,7 @@ pane_enter() {
   [ -n "$p" ] && herdr pane send-keys "$p" enter >/dev/null 2>&1 || true
 }
 
-# herdr's own reported status ("working"/"idle"/"unknown"), not a guess from
-# output staleness. The authoritative answer to "did a turn actually start."
+# herdr's reported status, not a guess from output staleness.
 pane_agent_status() {
   local p
   p=$(task_pane "$1")
@@ -838,17 +792,11 @@ usage_files() { compgen -G "$CAP_USAGE_DIR/*.json" >/dev/null 2>&1; }
 
 # --- what the harness offers -----------------------------------------------
 #
-# A profile names a model and a reasoning effort. Both are facts about the
-# account rather than settings, and codex will state them on request: its
-# app-server answers model/list with every model the account can reach, each
-# one carrying the efforts it accepts and the effort it defaults to. Captain
-# asks instead of guessing, so a profile naming a retired model or an effort
-# its model does not take fails at cap models, not three minutes into a review.
-#
-# What the catalog does not carry, and never will, is which tier a model
-# belongs to. It says gpt-5.6-terra exists and accepts xhigh. It does not say
-# terra is the right reviewer for work that has to be right the first time.
-# Facts are discovered. That judgment stays in config/captain.conf.
+# Profile names a model and reasoning effort. Codex publishes both; Captain
+# asks instead of guessing so invalid profiles fail early (cap models), not
+# three minutes into a review. The catalog never carries tier assignments
+# (which model is the right reviewer for critical work); that judgment stays
+# in config/captain.conf.
 #
 # The claude harness publishes no equivalent, so its profiles go unchecked.
 # Its aliases (opus, sonnet, haiku, fable) resolve at session start and the
@@ -1006,7 +954,6 @@ codex_rate_limits() {
   fi
   codex_rollout_limits | jq -e '. + {source: "rollout"}' 2>/dev/null
 }
-
 
 # Measured utilization for one harness, as "<percent> <resets_at> <source>". The
 # percent is the fullest window that harness reports, because the tightest
