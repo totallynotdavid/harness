@@ -21,6 +21,7 @@ while [ $# -gt 0 ]; do
   --again) again=1; shift ;;
   --take) take=1; shift ;;
   --repo) repo=1; project=${2:?usage: cap verify --repo <project> [--again]}; shift 2 ;;
+  -*) die "usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]" ;;
   *) slug=$1; shift ;;
   esac
 done
