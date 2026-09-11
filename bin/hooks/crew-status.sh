@@ -18,35 +18,38 @@ cat >/dev/null
 lines=""
 add() { lines="$lines$1"$'\n'; }
 
-# A task owned by a live session other than this one is that session's to
-# watch, not this one's to nag about.
-me=$(session_identity)
 for slug in $(task_slugs); do
-	owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
-	if [ -n "$owner" ] && [ "$owner" != "$me" ] && session_alive "$owner"; then
-		continue
-	fi
+	# A task free for this session (task_owner_free: unowned, dead-owned,
+	# owned by this session or its own dispatched agent, see bin/lib.sh)
+	# is safe to report on; one held by another live session is that
+	# session's to watch, not this one's to nag about.
+	task_owner_free "$slug" 0 || continue
 
-	status=$(task_status_latest "$slug" 2>/dev/null || true)
+	# task_state settles *whether* the task has stopped from herdr and
+	# *whether* it is ready from gate.json - never from a word the agent
+	# logged. The log names a reason only for the three verbs that carry
+	# one; anything else that has stopped just needs a look.
+	state=$(task_state "$slug" 2>/dev/null || true)
 	project=$(task_field "$slug" CAP_PROJECT 2>/dev/null || true)
 
-	case $status in
-	done)
-		add "  $slug ($project) is done and unlanded: cap check $slug"
+	case $state in
+	ready)
+		add "  $slug ($project) is ready to land: cap land $slug"
 		;;
 	blocked | needs-input | failed)
-		note=$(grep -E "^$status:" "$TASKS/$slug/status.log" 2>/dev/null | tail -1 || true)
-		add "  $slug ($project) is $status: ${note#*: }"
+		note=$(grep -E "^$state:" "$TASKS/$slug/status.log" 2>/dev/null | tail -1 || true)
+		add "  $slug ($project) is $state: ${note#*: }"
 		;;
-	working)
-		# A task can stop existing without saying so. relq-lower-floor read as
-		# "working" in cap crew while its pane was absent from herdr's registry
-		# entirely, and the captain noticed before the harness did.
-		if ! pane_live "$slug" 2>/dev/null; then
-			add "  $slug ($project) says working but its pane is gone: cap peek $slug"
-		fi
+	idle)
+		add "  $slug ($project) has stopped and is waiting on you: cap peek $slug"
+		;;
+	exited)
+		add "  $slug ($project) exited: cap land $slug or cap drop $slug"
 		;;
 	esac
+
+	queue_pending "$slug" 2>/dev/null &&
+		add "  $slug ($project) has a message queued that has not gone in yet"
 done
 
 if [ -n "$lines" ]; then

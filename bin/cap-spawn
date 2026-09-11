@@ -133,7 +133,10 @@ if [ "$avail" -lt "$need" ]; then
 	printf 'cap: %s MB available, %s peaked at %s MB\n' "$avail" "$project" "$need" >&2
 	reclaimable=""
 	for t in $(task_slugs); do
-		[ "$(task_status_latest "$t" 2>/dev/null)" = "done" ] || continue
+		# ready, from task_state, not a logged "done": gate.json is the
+		# ground truth for finished, and a task an agent only claims to
+		# have finished is not safe to suggest dropping.
+		[ "$(task_state "$t" 2>/dev/null)" = "ready" ] || continue
 		reclaimable="$reclaimable $t"
 	done
 	[ -z "$reclaimable" ] || printf 'cap: finished tasks still holding their panes:%s\n' "$reclaimable" >&2
@@ -149,7 +152,12 @@ dir=$(task_dir "$slug")
 # mkdir makes the directory exist regardless of who has spawned here.
 task_lock "$slug"
 [ -f "$dir/task.env" ] && die "task '$slug' already exists (cap drop $slug first)"
-pane_live "$slug" && die "a pane named '$slug' is already live"
+# task_lock's own mkdir is the only thing that can have created $dir at
+# this point, since task.env does not exist yet - safe to remove on the
+# way out, the same recovery the later failure paths below already use,
+# so a live pane sharing this name does not leave a lock-only directory
+# cap drop then refuses to touch.
+pane_live "$slug" && { rm -rf "$dir"; die "a pane named '$slug' is already live"; }
 
 mkdir -p "$dir"
 dir=$(cd "$dir" && pwd)

@@ -20,6 +20,14 @@ text=$*
 
 task_load "$slug"
 
+# Checked before anything else below, including the context ceiling and
+# any compaction it triggers: compacting another session's agent is the
+# one irreversible thing this command can do, and it must never happen
+# before ownership is confirmed, the way sync_base never runs in cap-gate
+# before its own task_owner_claim. task_owner_claim (the write) still
+# only happens under the lock further down; this is read-only.
+task_owner_check "$slug" "$take"
+
 # A dead pane used to end the command here, which left the captain holding
 # work the agent should be doing: local-env's pane died mid-round and the
 # correction meant for it had to be applied by hand. The task record still
@@ -73,35 +81,6 @@ $text"
 }
 
 
-deliver() {
-	pane_send "$slug" "$text"
-	for _ in 1 2 3; do
-		sleep 0.4
-		pane_enter "$slug"
-		sleep 0.6
-		# Stop retrying once the message has left the input box. Check the
-		# END of the text, not the start: pane_tail returns the last N
-		# lines of the pane, which for an unsubmitted multi-line message is
-		# its tail, not its head. Anchoring on the first 40 chars made this
-		# check pass (falsely, "it's gone") for any message longer than the
-		# tail window, because the start had simply scrolled out of view
-		# while the message sat there unsubmitted - found by hand against
-		# relq-executor-ergonomics after wait_working correctly caught the
-		# resulting no-turn-started failure twice in a row.
-		pane_tail "$slug" 6 | grep -qF "${text: -40}" || break
-	done
-}
-
-wait_working() {
-		local i
-	# shellcheck disable=SC2034 # a counted retry, the body does not read i
-	for i in 1 2 3 4 5 6; do
-		sleep 1
-		[ "$(pane_agent_status "$slug")" = working ] && return 0
-	done
-	return 1
-}
-
 if ! pane_live "$slug"; then
 	# Reviving starts a whole new session; it is rare and disruptive enough
 	# that it dies loudly on contention like every other mutating command,
@@ -112,7 +91,7 @@ if ! pane_live "$slug"; then
 	task_lock "$slug"
 	task_owner_claim "$slug" "$take"
 	revive
-	wait_working ||
+	pane_wait_working "$slug" ||
 		die "$slug: restarted the session but no turn began - check by hand: cap peek $slug"
 	printf 'restarted %s and sent (working, fresh session)\n' "$slug"
 	exit 0
@@ -121,7 +100,7 @@ fi
 # A session near its limit is the failure that made aula-integrate report tests
 # passing while seven files errored: it ran out of context mid-verification and
 # summarised optimistically. So the ceiling is checked before delivering, not
-# after, back when this printed an advisory *below* the `deliver` call the
+# after, back when this printed an advisory *below* `pane_deliver` and the
 # message was already in the agent's input box by the time the captain read it.
 #
 # The recovery is compaction, and cap-ask already does exactly this before it
@@ -134,7 +113,7 @@ compact_pane() {
 	pane_send "$slug" "/compact"
 	sleep 0.4
 	pane_enter "$slug"
-	wait_working || return 1
+	pane_wait_working "$slug" || return 1
 
 	# Wait on the context reading, not on the agent status. Compacting a full
 	# session runs for minutes behind a progress bar, and the status line keeps
@@ -182,22 +161,8 @@ if task_try_lock "$slug"; then
 	# message first and the backlog only after, at exit.
 	queue_flush "$slug"
 
-	deliver
-	started=0
-	wait_working && started=1
-
-	# A message leaving the input box only proves it was submitted, not
-	# that a turn began - this has happened for real: the text sat in the
-	# pane with no response and the agent read idle minutes later. Retry
-	# the whole delivery once before giving up, rather than reporting
-	# success on a guess.
-	if [ "$started" = 0 ]; then
-		warn "$slug: no turn started after the first send; retrying once"
-		deliver
-		wait_working && started=1
-	fi
-
-	[ "$started" = 1 ] || die "$slug: sent twice but the agent never started a turn - check by hand: cap peek $slug"
+	pane_deliver "$slug" "$text" ||
+		die "$slug: sent twice but the agent never started a turn - check by hand: cap peek $slug"
 
 	# A turn has started, so the task is not done, and cap send is the one
 	# place that knows this for certain. Named by pid, not "the captain":

@@ -21,7 +21,7 @@ AGENTS
   cap watch [--timeout S] [--interval S]      wait until an agent needs input
 
 REVIEW AND DELIVERY
-  cap check <slug>                            run checks for an agent
+  cap check <slug> [--take]                   run checks for an agent
   cap check --repo <project> [--base REF]     run checks for a project
   cap verify <slug> [--take]                  run the project's own tests/lint/typecheck
   cap cleanup <slug> [profile] [--take]       clean up comments and readability
