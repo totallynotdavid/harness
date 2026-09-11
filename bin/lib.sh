@@ -301,26 +301,65 @@ owns_taken() {
   return $found
 }
 
+# A field of /proc/<pid>/stat, numbered from 1 (state) the way proc(5)
+# numbers them after the process name: 2 is ppid, 20 is starttime. The name
+# can itself contain spaces or a ")", which would shift every plain
+# whitespace-split field after it, so this strips through the LAST ")"
+# first - the name is the only field that can hold one, so the rest split
+# safely from there.
+proc_stat_field() {
+  local pid=$1 n=$2 raw rest
+  local -a fields
+  raw=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+  rest=${raw##*)}
+  read -r -a fields <<<"$rest"
+  printf '%s' "${fields[$((n - 1))]}"
+}
+
+# `trap CMD EXIT` composes here instead of overwriting, so task_try_lock's
+# own exit hook (queue_flush on release, below) survives whatever a locking
+# command sets afterwards - bin/cap-spawn and bin/cap-verify each call
+# `trap ... EXIT` themselves after locking. Every EXIT trap from here on
+# appends to CAP_EXIT_FNS and runs in that order, so a caller writes a
+# plain `trap cleanup EXIT` and never has to know this exists.
+CAP_EXIT_FNS=()
+trap() {
+  if [ "$#" = 2 ] && [ "$2" = EXIT ] && [ "$1" != - ]; then
+    CAP_EXIT_FNS+=("$1")
+    builtin trap cap_run_exit_fns EXIT
+  else
+    # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
+    builtin trap "$@"
+  fi
+}
+cap_run_exit_fns() {
+  local fn
+  for fn in "${CAP_EXIT_FNS[@]}"; do eval "$fn" || true; done
+}
+
 # One cap command per task at a time. Gate, check, commit, and land all
 # read-modify-write state/tasks/<slug>/. Lock is released on process exit.
-# wait=0 (default) refuses at once, naming whoever holds it; a positive
-# wait blocks up to that many seconds before refusing the same way, for a
-# caller whose job is to deliver something rather than to review or ship.
+# Never blocks: refuses at once, naming whoever holds it. A caller whose
+# job is delivery, not review or shipping, uses task_try_lock instead and
+# decides for itself what to do when the task is busy.
 task_lock() {
-  local slug=$1 wait=${2:-0}
+  local slug=$1
+  task_try_lock "$slug" ||
+    die "$slug is already held by $(cat "$TASKS/$slug/.lock" 2>/dev/null || echo 'another cap command')"
+}
+
+# Same lock, but returns 1 on contention instead of dying, so a caller that
+# has somewhere else to put the work - cap-send's queue - can choose that
+# instead of failing outright.
+task_try_lock() {
+  local slug=$1
   local dir=$TASKS/$slug
   # Re-entrant: cap land can release via cap drop without deadlocking. The
   # marker is exported, so only the holder's children inherit it.
   case " ${CAP_LOCKS:-} " in *" $slug "*) return 0 ;; esac
   mkdir -p "$dir"
   exec {CAP_LOCK_FD}>>"$dir/.lock"
-  if [ "$wait" -gt 0 ] 2>/dev/null; then
-    flock -w "$wait" "$CAP_LOCK_FD" ||
-      die "$slug is still held by $(cat "$dir/.lock" 2>/dev/null || echo 'another cap command') after waiting ${wait}s"
-  else
-    flock -n "$CAP_LOCK_FD" ||
-      die "$slug is already held by $(cat "$dir/.lock" 2>/dev/null || echo 'another cap command')"
-  fi
+  flock -n "$CAP_LOCK_FD" || return 1
   printf 'pid %s (%s) since %s\n' "$$" "$(basename "$0")" "$(date -u +%H:%M:%SZ)" >"$dir/.lock"
   CAP_LOCKS="${CAP_LOCKS:-} $slug"
   export CAP_LOCKS
@@ -328,12 +367,28 @@ task_lock() {
   # Pinned here, not inside session_identity: x=$(session_identity) always
   # runs in a subshell, so an export inside it never reaches the caller.
   # Without this, cap-land shelling out to cap-drop would get a different
-  # plain-shell fallback identity and refuse. cap_env_scrub strips
+  # identity under the same harness and refuse. cap_env_scrub strips
   # CAP_SESSION the same as CAP_LOCKS, so a dispatched agent never sees it.
   if [ -z "${CAP_SESSION:-}" ]; then
     CAP_SESSION=$(session_identity)
     export CAP_SESSION
   fi
+
+  # Flushes this task's queue the moment this process's hold on it ends,
+  # never mid-review or mid-rebase. Registered once per process, so a
+  # second slug locked here does not queue a second flush of the first.
+  # A kill instead of a clean exit skips this trap; the flock still
+  # releases at the kernel level, and the message waits for whichever
+  # later holder locks this slug and exits cleanly.
+  if [ -z "${CAP_LOCK_EXIT_ARMED:-}" ]; then
+    CAP_LOCK_EXIT_ARMED=1
+    trap task_flush_locks_on_exit EXIT
+  fi
+}
+
+task_flush_locks_on_exit() {
+  local slug
+  for slug in ${CAP_LOCKS:-}; do queue_flush "$slug" || true; done
 }
 
 # Read a task field without sourcing its record.
@@ -357,65 +412,123 @@ task_env_set() {
 }
 
 # The identity of the session that ran this cap command: CAP_SESSION if
-# task_lock already pinned one in this process (see task_lock), else a walk
-# from $$ to the first claude or codex ancestor - the one /proc walk every
-# mutating cap-* command and bin/hooks/crew-status.sh share. Prints
-# "<pid>@<start-time>" (proc(5) field 22); a plain shell has no such
-# ancestor, so identity falls back to $$'s own parent, the shell itself.
+# task_lock already pinned one, else a walk from $$ to the first claude or
+# codex ancestor, as "<pid>@<start-time>" (proc(5) field 20). Empty with no
+# such ancestor - a plain shell can live for days, and treating it as owner
+# would block every later harness session from the task indefinitely.
+# Every caller here reads a missing owner as safe, not as a shell's.
 session_identity() {
   if [ -n "${CAP_SESSION:-}" ]; then
     printf '%s' "$CAP_SESSION"
     return 0
   fi
 
-  local pid=$$ parent stamp comm id=""
-  parent=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || true)
-  [ -n "$parent" ] || parent=1
-
-  while [ -z "$id" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
+  local pid=$$ stamp comm id=""
+  while [ "$pid" -gt 1 ] 2>/dev/null; do
     comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
     if [ "$comm" = claude ] || [ "$comm" = codex ]; then
-      stamp=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
+      stamp=$(proc_stat_field "$pid" 20 2>/dev/null || true)
       [ -n "$stamp" ] && id="$pid@$stamp"
+      break
     fi
-    if [ -z "$id" ]; then
-      pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || true)
-      [ -n "$pid" ] || pid=1
-    fi
+    pid=$(proc_stat_field "$pid" 2 2>/dev/null || true)
+    [ -n "$pid" ] || break
   done
-
-  if [ -z "$id" ]; then
-    stamp=$(awk '{print $22}' "/proc/$parent/stat" 2>/dev/null || true)
-    id="$parent@${stamp:-0}"
-  fi
 
   printf '%s' "$id"
 }
 
 # Whether an id from session_identity still names a running process. pids
 # get reused, so this also checks the recorded start time, not just pid
-# occupancy.
+# occupancy - and a transient failure to read /proc/<pid>/stat answers
+# "still alive," never "dead": an access-control decision must not treat
+# "could not tell" as license to reclaim a task with no --take. Only
+# /proc/<pid> itself being gone is treated as the process having exited.
 session_alive() {
   local id=$1 pid=${1%@*} stamp=${1#*@} live
   [ -n "$id" ] && [ "$pid" != "$id" ] && [ -n "$stamp" ] || return 1
-  live=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
-  [ -n "$live" ] && [ "$live" = "$stamp" ]
+  [ -e "/proc/$pid" ] || return 1
+  live=$(proc_stat_field "$pid" 20 2>/dev/null || true)
+  [ -z "$live" ] && return 0
+  [ "$live" = "$stamp" ]
 }
 
 # Refuses a mutating command when the task is owned by a live session other
-# than the caller, naming the pid so the captain can look. Says nothing
-# about --take: a refusal that advertises its own override stops being one.
-# A dead owner is not an owner, so this claims an unowned or dead-owned task
-# the same way, right here - no stale lock to clear. Call after task_lock:
-# claiming first lets two sessions each write themselves in as owner first.
-task_owner_claim() {
+# than the caller, naming the pid so the captain can look; says nothing
+# about --take, since a refusal that advertises its own override stops
+# being one. A dead owner is not an owner, so an unowned or dead-owned
+# task refuses nobody. Read-only, unlike task_owner_claim below, so it is
+# safe to call without the lock - cap-send uses it to gate queueing too.
+task_owner_check() {
   local slug=$1 take=${2:-0} owner me
   owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
   me=$(session_identity)
   if [ -n "$owner" ] && [ "$owner" != "$me" ] && session_alive "$owner"; then
     [ "$take" = 1 ] || die "$slug is owned by pid ${owner%@*}"
   fi
+}
+
+# Refuses the same way as task_owner_check, then records the caller as
+# owner - skipped when this session has no identity of its own (a plain
+# shell; see session_identity), since a task nobody could name as owner
+# stays the safe, unowned state rather than being claimed by one. Call
+# after task_lock: claiming first lets two sessions each write themselves
+# in as owner before either has done any work.
+task_owner_claim() {
+  local slug=$1 take=${2:-0} me
+  task_owner_check "$slug" "$take"
+  me=$(session_identity)
+  [ -n "$me" ] || return 0
   task_env_set "$slug" CAP_OWNER "$me"
+}
+
+# Durable queue for a cap-send delivery a busy task could not take. One
+# line per message: pid (possibly empty, see session_identity) and text
+# split on the first tab directly, not via `read`'s own splitting, which
+# treats tab as whitespace and eats a leading empty pid into the text.
+# The append is guarded by its own lock, separate from the task lock,
+# since this runs exactly when the caller could not get that lock.
+queue_send() {
+  local slug=$1 text=$2 id fd
+  id=$(session_identity)
+  exec {fd}>>"$TASKS/$slug/.send-queue.lock"
+  flock "$fd"
+  printf '%s\t%s\n' "${id%@*}" "$(printf '%s' "$text" | tr '\n' ' ')" \
+    >>"$TASKS/$slug/send-queue"
+  flock -u "$fd"
+  exec {fd}>&-
+}
+
+# Delivers what queue_send queued into the task's live pane, in order,
+# then clears the queue. Called only by cap-send, once it already holds
+# the task lock and is about to deliver its own message - so a review
+# or a rebase taking the same lock is never the one handing it over.
+# Claims the file by renaming it first, under queue_send's own lock, so
+# a message appended mid-flush lands in the fresh file, not the deleted one.
+queue_flush() {
+  local slug=$1 dir=$TASKS/$1 fd claimed pid text
+  local spool=$dir/send-queue
+  [ -s "$spool" ] || return 0
+  pane_live "$slug" || return 0
+
+  claimed="$spool.flushing"
+  exec {fd}>>"$dir/.send-queue.lock"
+  flock "$fd"
+  mv "$spool" "$claimed" 2>/dev/null || { flock -u "$fd"; exec {fd}>&-; return 0; }
+  flock -u "$fd"
+  exec {fd}>&-
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    pid=${line%%$'\t'*}
+    text=${line#*$'\t'}
+    pane_send "$slug" "$text"
+    sleep 0.4
+    pane_enter "$slug"
+    sleep 0.3
+    printf 'working: sent by pid %s: %s\n' "$pid" "$text" >>"$dir/status.log"
+  done <"$claimed"
+  rm -f "$claimed"
 }
 
 task_children() {
@@ -816,9 +929,18 @@ stack_push() {
 # Rebase a task from its recorded parent tip onto a new one.
 # Run the rebase in the task worktree because Git rejects a branch checked out elsewhere.
 # STACK_MOVED and STACK_CONFLICT report partial progress to the caller.
+#
+# Locks and claims the child before touching it: this rebases its worktree
+# and rewrites its task record from inside a command the child never asked
+# to run, which is exactly the cross-session mutation task ownership exists
+# to stop. take=0 always - a --take on the cascading command's own task
+# does not extend to every descendant it touches.
 stack_sync_task() {
   local task=$1 new_tip=$2 snap=$3
   local tree branch old_tip
+
+  task_lock "$task"
+  task_owner_claim "$task" 0
 
   tree=$(task_field "$task" CAP_TREE)
   branch=$(task_field "$task" CAP_BRANCH)
@@ -887,12 +1009,12 @@ stack_cascade_landed() {
   done
 }
 
-# Strips every inherited model/session setting and CAP_* variable (CAP_LOCKS,
-# CAP_SESSION, CAP_ASK_KEY, CAP_TASK, any future one) from a dispatched
-# harness's environment - computed from what is actually exported, not a
-# maintained list. CAP_ENV_SCRUB below freezes this at source time, so a
-# caller that exports a new CAP_* variable later in the same process (a
-# lock, an identity) must call this function fresh instead of reading it.
+# Every flag that strips an inherited model/session setting and CAP_*
+# variable (CAP_LOCKS, CAP_SESSION, CAP_ASK_KEY, CAP_TASK, any future one)
+# from a dispatched harness's environment - computed fresh from what is
+# exported right now, not a maintained list, so a lock or identity pinned
+# earlier in this process is always included. Every dispatch site
+# (cap-spawn, cap-send, cap-ask) calls this directly at dispatch time.
 cap_env_scrub() {
   local scrub=(-u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL
     -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL -u CLAUDE_CODE_SUBAGENT_MODEL
@@ -903,7 +1025,6 @@ cap_env_scrub() {
   done < <(compgen -e CAP_ || true)
   printf '%s\n' "${scrub[@]}"
 }
-mapfile -t CAP_ENV_SCRUB < <(cap_env_scrub)
 
 # Point common package-manager caches at a shared location so a fresh
 # worktree's install is not stuck starting cold, and a project's own relative
