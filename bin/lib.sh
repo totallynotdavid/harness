@@ -332,13 +332,31 @@ CAP_EXIT_FNS=()
 # does starts its own list instead of inheriting the parent's.
 CAP_EXIT_PID=""
 trap() {
-  if [ "$#" = 2 ] && [ "$2" = EXIT ] && [ "$1" != - ]; then
-    if [ "${CAP_EXIT_PID:-}" != "$BASHPID" ]; then
-      CAP_EXIT_FNS=()
-      CAP_EXIT_PID=$BASHPID
+  # Composes for EXIT specifically, however it arrives - alongside other
+  # signals (`trap cmd EXIT INT`) or with `-` (`trap - EXIT`), not only
+  # the exact two-argument `trap cmd EXIT` shape.
+  local sig has_exit=0 other=()
+  if [ "$#" -ge 2 ]; then
+    for sig in "${@:2}"; do
+      if [ "$sig" = EXIT ]; then has_exit=1; else other+=("$sig"); fi
+    done
+  fi
+
+  if [ "$has_exit" = 1 ]; then
+    if [ "$1" != - ]; then
+      if [ "${CAP_EXIT_PID:-}" != "$BASHPID" ]; then
+        CAP_EXIT_FNS=()
+        CAP_EXIT_PID=$BASHPID
+      fi
+      CAP_EXIT_FNS+=("$1")
+      builtin trap cap_run_exit_fns EXIT
     fi
-    CAP_EXIT_FNS+=("$1")
-    builtin trap cap_run_exit_fns EXIT
+    # `trap - EXIT`: composition has no notion of "this caller's entry" to
+    # remove alone, so the EXIT side is left exactly as it was rather than
+    # cleared - whatever is already queued still runs. Any signal named
+    # alongside EXIT other than EXIT itself is still set directly.
+    # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
+    [ "${#other[@]}" -eq 0 ] || builtin trap "$1" "${other[@]}"
   else
     # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
     builtin trap "$@"
@@ -726,14 +744,27 @@ pane_dispatch() {
   {
     printf '#!/usr/bin/env bash\n'
     printf 'set -o pipefail\n'
-    printf '%s </dev/null 2>%q | tee %q >/dev/null\n' "$(printf '%q ' "$@")" "$err" "$out"
+    # No >/dev/null after tee: its own stdout is the script's stdout, which
+    # is the pane. Dropping it left every dispatched call showing a blank
+    # pane for its whole run - stderr still goes straight to $err, unseen.
+    printf '%s </dev/null 2>%q | tee %q\n' "$(printf '%q ' "$@")" "$err" "$out"
     printf 'echo $? >%q\n' "$rc_file"
     printf 'touch %q\n' "$done_file"
   } >"$script"
   herdr pane run "$pane" "bash $script" >/dev/null 2>&1 || die "herdr pane run failed"
 
-  local timed_out=0
+  # Also gives up the moment the pane itself is gone (tab closed, herdr
+  # restarted) instead of spinning out the full $max: the wrapper script
+  # dies on SIGHUP without ever touching $done_file, so that alone would
+  # otherwise wait out the whole hour where a bare child's death used to
+  # end the call at once.
+  local timed_out=0 pane_gone=0
   while [ ! -f "$done_file" ]; do
+    if ! herdr pane get "$pane" >/dev/null 2>&1; then
+      warn "$label: pane no longer exists; giving up rather than waiting out ${max}s"
+      pane_gone=1
+      break
+    fi
     sleep 1
     waited=$((waited + 1))
     if [ "$waited" -ge "$max" ]; then
@@ -749,7 +780,7 @@ pane_dispatch() {
     case $rc in '' | *[!0-9]*) rc=1 ;; esac
   fi
   rm -f "$rc_file" "$done_file" "$script"
-  [ "$timed_out" = 1 ] || herdr pane close "$pane" >/dev/null 2>&1 || true
+  [ "$timed_out" = 1 ] || [ "$pane_gone" = 1 ] || herdr pane close "$pane" >/dev/null 2>&1 || true
   return "$rc"
 }
 
@@ -795,18 +826,19 @@ pane_enter() {
   [ -n "$p" ] && herdr pane send-keys "$p" enter >/dev/null 2>&1 || true
 }
 
-# Types text in and submits it, confirming it left the input box - checked
-# against the END of the text, not the start: pane_tail returns the pane's
-# last lines, which for an unsubmitted multi-line message is its tail, not
-# its head. Retries the type-and-enter itself up to 3 times before giving up.
+# Types text in once, then presses Enter up to 3 times, checking after each
+# for a turn to start - pane_wait_working, not whether the text is still
+# visible in the pane: a short message, or one the harness echoes back,
+# makes that check match forever and turns a retry into retyping on top
+# of itself. Retypes nothing; pane_deliver below decides whether to
+# resend if none of the 3 Enters start a turn.
 pane_submit() {
   local slug=$1 text=$2 _
+  pane_send "$slug" "$text"
   for _ in 1 2 3; do
-    pane_send "$slug" "$text"
     sleep 0.4
     pane_enter "$slug"
-    sleep 0.6
-    pane_tail "$slug" 6 | grep -qF "${text: -40}" || return 0
+    pane_wait_working "$slug" && return 0
   done
   return 1
 }
@@ -824,15 +856,14 @@ pane_wait_working() {
 }
 
 # The full verified send both cap-send's direct delivery and queue_flush's
-# backlog delivery need: submit, confirm a turn began, and retry the whole
-# thing once before reporting failure - the compensating control exists
-# because a silent non-delivery happened for real, and both delivery paths
-# need it equally, not just the one that was written first.
+# backlog delivery need: submit, and if no turn started, resend once before
+# reporting failure - the compensating control exists because a silent
+# non-delivery happened for real, and both delivery paths need it equally.
 pane_deliver() {
   local slug=$1 text=$2
-  pane_submit "$slug" "$text" && pane_wait_working "$slug" && return 0
+  pane_submit "$slug" "$text" && return 0
   warn "$slug: no turn started after the first send; retrying once"
-  pane_submit "$slug" "$text" && pane_wait_working "$slug" && return 0
+  pane_submit "$slug" "$text" && return 0
   return 1
 }
 
@@ -1216,7 +1247,7 @@ stack_sync_task() {
     warn "$task is locked by another cap command; its branch was left where it was"
     return 1
   fi
-  if ! task_owner_try_claim "$task" 0; then
+  if ! task_owner_try_claim "$task"; then
     STACK_CONFLICT=$task
     warn "$task is owned by pid $(task_field "$task" CAP_OWNER 2>/dev/null | cut -d@ -f1); its branch was left where it was"
     return 1
