@@ -323,8 +323,20 @@ proc_stat_field() {
 # appends to CAP_EXIT_FNS and runs in that order, so a caller writes a
 # plain `trap cleanup EXIT` and never has to know this exists.
 CAP_EXIT_FNS=()
+
+# A subshell forks with this array and this trap already set, and would
+# otherwise re-run every inherited entry at its own exit too. BASHPID is
+# the real OS pid and changes inside a subshell even though $$ does not,
+# so a process only runs, or keeps appending to, the list it itself
+# armed - a fork that never calls trap itself skips it, and one that
+# does starts its own list instead of inheriting the parent's.
+CAP_EXIT_PID=""
 trap() {
   if [ "$#" = 2 ] && [ "$2" = EXIT ] && [ "$1" != - ]; then
+    if [ "${CAP_EXIT_PID:-}" != "$BASHPID" ]; then
+      CAP_EXIT_FNS=()
+      CAP_EXIT_PID=$BASHPID
+    fi
     CAP_EXIT_FNS+=("$1")
     builtin trap cap_run_exit_fns EXIT
   else
@@ -334,6 +346,7 @@ trap() {
 }
 cap_run_exit_fns() {
   local fn
+  [ "${CAP_EXIT_PID:-}" = "$BASHPID" ] || return 0
   for fn in "${CAP_EXIT_FNS[@]}"; do eval "$fn" || true; done
 }
 
