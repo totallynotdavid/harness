@@ -16,6 +16,10 @@ task_lock "$slug"
 # snapshot commit itself is never pushed or kept, so it does not need the
 # user's signature.
 tmp_index=$(mktemp -u)
+# Seed from HEAD first: an empty starting index can't tell "already tracked
+# but gitignore-matches" (e.g. a committed .env.example under a .env.*
+# rule) apart from "new and ignored", and would silently drop the former.
+GIT_INDEX_FILE=$tmp_index git -C "$CAP_TREE" read-tree HEAD
 GIT_INDEX_FILE=$tmp_index git -C "$CAP_TREE" add -A
 snap_tree=$(GIT_INDEX_FILE=$tmp_index git -C "$CAP_TREE" write-tree)
 rm -f "$tmp_index"
