@@ -143,9 +143,19 @@ fi
 
 printf '\n## spawn\n'
 started=0
+landed=0
 for i in $(seq 0 $((n - 1))); do
 	s=${slugs[$i]}
 	[ ! -d "$TASKS/$s" ] || continue
+	# Landing releases the task directory but keeps the branch, merged into the
+	# base. Without this check a rerun tries to fork a branch that exists and
+	# reports a failure for work that is already done.
+	if git -C "$repo" rev-parse --verify -q "cap/$s" >/dev/null &&
+		git -C "$repo" merge-base --is-ancestor "cap/$s" HEAD 2>/dev/null; then
+		printf '  %-22s landed\n' "$s"
+		landed=$((landed + 1))
+		continue
+	fi
 	if [ "$started" -ge "$slots" ]; then
 		printf '  %-22s queued, not enough memory\n' "$s"
 		continue
@@ -160,5 +170,10 @@ for i in $(seq 0 $((n - 1))); do
 		printf '  %-22s spawn failed\n' "$s"
 	fi
 done
-printf '\n%s of %s started; run cap wave spawn %s again when memory frees\n' \
-	"$started" "$n" "$name"
+left=$((n - landed))
+if [ "$left" = 0 ]; then
+	printf '\n%s is fully landed\n' "$name"
+else
+	printf '\n%s of %s started; run cap wave spawn %s again when memory frees\n' \
+		"$started" "$left" "$name"
+fi
