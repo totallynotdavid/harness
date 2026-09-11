@@ -47,7 +47,31 @@ It also turned up a bug nobody was looking for: neither harness invocation had
 ever set its working directory to `--dir`'s target. The old pane transport hid
 it, because herdr opened the pane in the right place.
 
-## Stage 2: the gate emits findings, not prose
+## Stage 2: Captain learns there is more than one captain
+
+Added 2026-09-11, ahead of everything below it. Every command in `bin/` assumes
+one captain drives one task at a time. Three captain sessions have been sharing
+this hub for days.
+
+What that cost, in three days:
+
+- two `cap gate` runs raced on local-env, each paying for its own Gate A
+- `cap/aula-integrate` landed while a fix branched from it was still open
+- local-env landed before any gate passed
+- `cap send` dispatched a round into a worktree `cap gate` was still reading
+- `gate_fingerprint` discarded a correct double-PASS because a sibling landed
+  on master mid-review, on a branch unchanged by a byte
+- two captains briefed one agent with contradictory instructions inside a
+  minute; it followed one and reported it as the captain's own choice, because
+  every message arrives as "sent by the captain"
+
+`cap sessions` already reports the condition and enforces nothing. The identity
+needs no storage: the process tree already answers it, which is what
+`bin/hooks/crew-status.sh` and `cap sessions` each walk their own copy of.
+
+This is the precondition for running anything below in parallel.
+
+## Stage 3: the gate emits findings, not prose
 
 Moved ahead of the spawn rewrite on 2026-09-10. It depends only on stage 1,
 it is much the smaller change, and a day of gate rounds on cap-headless
@@ -75,7 +99,7 @@ already shipped. Those findings had to be copied into
 `notes/classroom/defects.md` by hand to survive at all, because a gate report
 describes a branch and that branch had nothing left to land.
 
-## Stage 3: cap spawn goes headless
+## Stage 4: cap spawn goes headless
 
 The larger half. `cap spawn`'s agents are long-running, and `cap crew`,
 `cap watch`, `cap send` and `cap peek` all currently guess at them from pixels.
@@ -101,7 +125,7 @@ session interactively in a pane on demand. Both harnesses support it. The
 difference is that watching becomes a thing the captain asks for, not the
 channel the pipeline depends on.
 
-## Stage 4: cap step
+## Stage 5: cap step
 
 Depends on 2 and 3 for state worth trusting.
 
@@ -115,7 +139,7 @@ turn.
 NORTH.md reserves for a human: a gate FAIL with findings, and land. Out-of-order
 steps get refused rather than documented.
 
-## Stage 5: the harness-facing half leaves bash
+## Stage 6: the harness-facing half leaves bash
 
 A consequence of stages 1 and 2, not a taste. Bash is fine for git and worktree
 plumbing and should keep it. It is the wrong tool for JSONL streams, schema
@@ -127,7 +151,7 @@ were silent wrong answers rather than crashes.
 `bin/cap-history` is already Python. The harness-facing commands follow it.
 Nothing else moves.
 
-## Stage 6: one ledger with a schema
+## Stage 7: one ledger with a schema
 
 `paper-cuts.md` is a database in a markdown list. Its own header said it was not
 for project bugs while seven of thirteen open entries were relq and rqueue
@@ -149,7 +173,7 @@ the way map.md already is.
   discovering the worktree lacks something the task obviously needed. A
   worktree the project cannot build in is not ready, and telling the agent to
   start anyway spends a session finding that out one failed turn at a time.
-  Blocked only by file ownership while stage 2 holds `lib.sh`.
+  Blocked only by file ownership while stage 3 holds `lib.sh`.
 - `cap-ask`'s claude branch is one inline block of about 170 lines covering
   resume-key resolution, the turn loop, result parsing, session-limit
   classification, usage recording and error reporting, and the harness dispatch
@@ -158,7 +182,7 @@ the way map.md already is.
   round ten of cap-headless and deliberately not acted on there: restructuring
   the file at that point was the surest way to add a defect to a branch that
   had spent ten rounds removing them. It belongs to whoever next opens that
-  file, which is the stage 3 spawn work.
+  file, which is the stage 4 spawn work.
 - `cap doctor`. Comparing two Captain hosts took a dozen manual ssh probes.
 - Locking. `task_lock` exists and only `cap gate`, `cap check`, `cap drop`,
   `cap land` and `cap cleanup` take it. Three captain sessions share this hub
