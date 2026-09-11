@@ -18,6 +18,10 @@ run = "shellcheck -S warning -e SC1091 $(grep -LE '^#!.*python' bin/cap bin/cap-
 description = "find a bare `[ cond ] && cmd` whose false status escapes into set -e"
 run = "bin/lint-andlist"
 
+[tasks."check:usage-shape"]
+description = "assert usage_write and bin/cap-statusline agree on the state/usage record shape and rounding"
+run = "bin/lint-usage-shape"
+
 [tasks."check:syntax"]
 description = "parse every shell script without running it"
 run = "for f in $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lint-* bin/hooks/*.sh); do bash -n \"$f\" || exit 1; done"

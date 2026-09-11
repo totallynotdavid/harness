@@ -230,9 +230,13 @@ usually cheaper.
 Two measurements, no settings that describe the account:
 
 - The rate-limit windows the harness reports. `bin/cap-statusline` prints Claude Code's
-  status line and records the reading; every session Captain starts renders it, so the
-  fleet keeps it fresh for free. Wire it up once in `~/.claude/settings.json`:
-  `"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }`.
+  status line and records the reading for every *interactive* session Captain starts, so
+  the fleet keeps it fresh for free. Wire it up once in `~/.claude/settings.json`:
+  `"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }`. A
+  headless `cap-ask` call never renders a status line, so it writes the same shape of
+  reading itself, from its own turn's `rate_limit_event` (`usage_write` in `bin/lib.sh`) -
+  this makes the status line hook redundant for `cap ask`/`cap gate`, not unnecessary: it
+  is still the only source of a live reading for `cap spawn`'s long-running agents.
 - Session-limit rejections. `cap ask` writes the profile to
   `state/usage/blocked/<profile>` until the reported reset, which takes it out of its tier.
 

@@ -972,15 +972,24 @@ usage_read() {
   cutoff=$(($(now) - ${CAP_USAGE_TTL:-900}))
 
   if usage_files; then
+    # five_hour/seven_day come from the single newest record, same as always.
+    # spend_limit comes from whichever record within the same cutoff last
+    # actually observed one, independently - a headless call's record never
+    # carries one, so it must not shadow an interactive session's still-fresh
+    # reading just for being newer overall.
     out=$(jq -rs --argjson cutoff "$cutoff" --arg h "$harness" '
-      map(select((.at // 0) >= $cutoff and (.harness // "claude") == $h))
-      | if length == 0 then empty else
-          (max_by(.at)
-           | (now) as $n
-           | [(if (.five_hour.resets_at // 0) > $n then (.five_hour.pct // 0) else 0 end),
-              (if (.seven_day.resets_at // 0) > $n then (.seven_day.pct // 0) else 0 end),
-              (.spend_limit.pct // 0)] as $p
-           | "\($p | max | floor) \(.five_hour.resets_at // 0) snapshot")
+      map(select((.at // 0) >= $cutoff and (.harness // "claude") == $h)) as $recent
+      | if ($recent | length) == 0 then empty else
+          ($recent | max_by(.at)) as $latest
+          | (now) as $n
+          | ([$recent[] | select(.spend_limit != null)] | if length == 0 then null
+             else (max_by(.at) | .spend_limit) end) as $sl
+          | [(if ($latest.five_hour.resets_at // 0) > $n then ($latest.five_hour.pct // 0) else 0 end),
+             (if ($latest.seven_day.resets_at // 0) > $n then ($latest.seven_day.pct // 0) else 0 end),
+             (if $sl == null then 0 else
+                (($sl.resets_at // 0) as $sr | if $sr == 0 or $sr > $n then ($sl.pct // 0) else 0 end)
+              end)] as $p
+          | "\($p | max | floor) \($latest.five_hour.resets_at // 0) snapshot"
         end
     ' "$CAP_USAGE_DIR"/*.json 2>/dev/null) || out=""
     if [ -n "$out" ]; then
@@ -1046,6 +1055,80 @@ usage_detail() {
       ' 2>/dev/null || true
       ;;
   esac
+}
+
+# The rule for picking which of a result's modelUsage entries names the
+# model actually asked for: the one whose canonicalModel/key names the
+# profile's model, or the largest context window when nothing matches.
+# usage_write and cap-ask's ctx_pct both interpolate this one definition, so
+# a session with more than one model (a subagent adds its own entry) can
+# never have the two disagree about which one is "the" model.
+read -r -d '' CAP_MODEL_PICK_JQ <<'JQ' || true
+def pick_model($model):
+  (.modelUsage // {}) | to_entries as $entries
+  | (if ($model // "") == "" or $model == "-" then null
+     else ($entries | map(select((.value.canonicalModel // .key // "") | contains($model))) | .[0])
+     end)
+    // ($entries | max_by(.value.contextWindow // 0));
+JQ
+
+# Record a claude quota reading in the shape bin/cap-statusline writes in
+# Python, so usage_read has a fresh number even for a session whose status
+# line never rendered (that hook only fires for an interactive session).
+# mise run check:usage-shape asserts the two writers agree on that shape.
+usage_write() {
+  local session=$1 dir=$2 rl_json=${3:-} result_json=${4:-} model=${5:-}
+  [ -n "$session" ] || return 0
+
+  # A rejection's own rate_limit_event doesn't always carry unifiedWindows
+  # (its own rejection reason lives in api_error_status/terminal_reason
+  # instead). Write nothing rather than let the // 0 defaults below publish
+  # a fabricated 0% that usage_read's max_by(.at) would then prefer over any
+  # real reading.
+  jq -e '(.rate_limit_info.unifiedWindows.five_hour // .rate_limit_info.unifiedWindows.seven_day) != null' \
+    <<<"${rl_json:-null}" >/dev/null 2>&1 || return 0
+
+  mkdir -p "$CAP_USAGE_DIR" 2>/dev/null || return 0
+
+  local model_id="" model_fallback="" display=""
+  IFS=$'\t' read -r model_id model_fallback <<<"$(jq -r --arg model "$model" "$CAP_MODEL_PICK_JQ"'
+    pick_model($model) as $mu | "\($mu.key // "")\t\($mu.value.canonicalModel // $mu.key // "")"
+  ' <<<"${result_json:-null}" 2>/dev/null)" || true
+
+  # Only an interactive status line learns a model's display name
+  # (bin/cap-statusline, keyed by model.id); reuse its last recording for
+  # this model id instead of restating the raw id. The "^claude-" exclusion
+  # skips raw ids and this function's own past placeholder writes.
+  if [ -n "$model_id" ]; then
+    display=$(jq -rs --arg mid "$model_id" '
+      map(select(.model_id == $mid and (.model // "") != "" and (((.model // "") | test("^claude-")) | not)))
+      | sort_by(.at) | last | .model // empty
+    ' "$CAP_USAGE_DIR"/*.json 2>/dev/null) || true
+  fi
+
+  # A headless call's rate_limit_event never carries a spend_limit field;
+  # only bin/cap-statusline's interactive reading ever observes one. Write
+  # null rather than carry an old reading forward under this call's own
+  # fresh at - a carried value stopped aging out under CAP_USAGE_TTL, which
+  # let a stale spend_limit outlive its own record indefinitely. usage_read
+  # finds the newest record that actually observed one instead.
+  jq -n --arg session "$session" --arg dir "$dir" --argjson at "$(now)" \
+    --arg model_id "$model_id" --arg model_fallback "$model_fallback" \
+    --argjson rl "${rl_json:-null}" --arg disp "$display" --argjson spend null '
+    # Explicit half-away-from-zero, the formula bin/cap-statusline also uses
+    # (math.floor(pct + 0.5)). mise run check:usage-shape asserts they agree.
+    def pct_round: (. + 0.5) | floor;
+    {at: $at, session_id: $session, harness: "claude",
+     model_id: $model_id,
+     model: (if $disp != "" then $disp else $model_fallback end),
+     cwd: $dir, project_dir: $dir,
+     five_hour: {pct: (($rl.rate_limit_info.unifiedWindows.five_hour.utilization // 0) * 100 | pct_round),
+                 resets_at: ($rl.rate_limit_info.unifiedWindows.five_hour.resetsAt // 0)},
+     seven_day: {pct: (($rl.rate_limit_info.unifiedWindows.seven_day.utilization // 0) * 100 | pct_round),
+                 resets_at: ($rl.rate_limit_info.unifiedWindows.seven_day.resetsAt // 0)},
+     spend_limit: $spend}' \
+    >"$CAP_USAGE_DIR/$session.json.tmp" 2>/dev/null &&
+    mv "$CAP_USAGE_DIR/$session.json.tmp" "$CAP_USAGE_DIR/$session.json"
 }
 
 # A profile the harness has rejected for a session limit is out of its tier
