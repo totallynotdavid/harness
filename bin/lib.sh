@@ -22,6 +22,19 @@ have() { command -v "$1" >/dev/null 2>&1; }
 now() { date +%s; }
 stamp() { date +%Y-%m-%d; }
 
+# A session id for a headless harness launch. uuidgen is not guaranteed
+# present, so this falls back to the kernel's own generator; die with a
+# reason rather than let a missing fallback exit callers silently under set -e.
+new_uuid() {
+  if have uuidgen; then
+    uuidgen
+  elif [ -r /proc/sys/kernel/random/uuid ]; then
+    cat /proc/sys/kernel/random/uuid
+  else
+    die "no uuid source on this host (need uuidgen or /proc/sys/kernel/random/uuid)"
+  fi
+}
+
 # projects.tsv: name, path, mode, model.
 
 proj_field() {
@@ -529,19 +542,24 @@ sync_base() {
   return 0
 }
 
-# A fingerprint of exactly what a gate call reviews: the full diff against
-# base plus any uncommitted change. Two gate calls with the same fingerprint
-# reviewed the identical code, regardless of how many commits or stash
-# round-trips happened in between.
-#
-# Untracked files are part of that, and used to be missing. A task whose
-# deliverable is new files carries almost no tracked diff: local-env added a
-# 17-file .devstack/ directory against 983 bytes of `git diff`. A diff-only
-# fingerprint stayed constant while the actual work changed underneath it, so
-# gate_ready kept reporting a stale PASS as fresh and cap-crew showed `ready`
-# for a review that never saw the deliverable.
+# The commit to diff a worktree against: where its branch actually left base,
+# not base's current tip. A sibling task landing into base after this branch
+# was cut would otherwise show up as this branch's own change, in a diff, a
+# fingerprint, or a reviewer's own `git diff` command. Used by cap-check,
+# cap-cleanup, cap-gate, and gate_fingerprint below.
+diff_base() {
+  local tree=$1 base=$2 mb
+  mb=$(git -C "$tree" merge-base "$base" HEAD 2>/dev/null) || true
+  printf '%s' "${mb:-$base}"
+}
+
+# Fingerprint of exactly what a gate reviews: full diff plus untracked files.
+# Same fingerprint means identical code reviewed, independent of commits or
+# stash round-trips. Untracked files must be included, since a diff alone
+# says nothing about a new file the deliverable adds.
 gate_fingerprint() {
   local tree=$1 base=$2 f
+  base=$(diff_base "$tree" "$base")
   {
     git -C "$tree" diff "$base" 2>/dev/null || true
     # Hash each path as well as its bytes, so a rename is a new fingerprint.
@@ -1232,23 +1250,6 @@ role_profile() {
   tier=$(role_tier "$role")
   [ -n "$tier" ] || die "unknown dispatch role '$role' (see config/captain.conf)"
   tier_profile "$tier" "$role" "${2:-}"
-}
-
-limit_reset_epoch() {
-  local harness=${1:-claude} human=${2:-} t
-  t=$(usage_read "$harness" | awk '{print $2}')
-  if [ "$t" != '-' ] && [ "${t:-0}" -gt "$(now)" ] 2>/dev/null; then
-    printf '%s' "$t"
-    return 0
-  fi
-  human=${human#resets }
-  human=${human%%(UTC)*}
-  if [ -n "$human" ] && t=$(date -u -d "$human" +%s 2>/dev/null); then
-    [ "$t" -gt "$(now)" ] || t=$((t + 86400))
-    printf '%s' "$t"
-    return 0
-  fi
-  printf '0'
 }
 
 role_profile_or_die() {

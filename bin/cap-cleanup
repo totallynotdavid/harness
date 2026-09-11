@@ -13,7 +13,7 @@ task_lock "$slug"
 # after cap commit too, and requiring a dirty tree meant a cleanup pass could
 # only ever run before the commit. cap check reports over-long comment blocks
 # on committed work, and the pass that fixes them has to be reachable then.
-base=$(git -C "$CAP_TREE" merge-base "$CAP_BASE" HEAD 2>/dev/null || printf '%s' "$CAP_BASE")
+base=$(diff_base "$CAP_TREE" "$CAP_BASE")
 reviewable=$(git -C "$CAP_TREE" diff --name-only "$base" | wc -l)
 reviewable=$((reviewable + $(git -C "$CAP_TREE" ls-files --others --exclude-standard | wc -l)))
 reviewable=$((reviewable + $(git -C "$CAP_TREE" diff --name-only | wc -l)))
