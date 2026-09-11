@@ -466,30 +466,63 @@ session_alive() {
   [ "$live" = "$stamp" ]
 }
 
+# Whether this process is the agent cap-spawn dispatched into slug: its
+# dispatch environment sets CAP_TASK to the task's own slug (see
+# cap_env_scrub's callers), and every cap-* command an agent runs inside
+# its own worktree inherits it. A captain's shell never has it set.
+task_dispatched_here() {
+  [ -n "${CAP_TASK:-}" ] && [ "$CAP_TASK" = "$1" ]
+}
+
+# Whether a stored owner pid is itself the dispatched agent of the task
+# it is recorded as owning, read from that pid's own environment via
+# /proc since this is also checked from outside it (a captain, or a
+# different agent) - session_identity alone cannot tell a captain's
+# claude process from its own crewmate's. Unreadable (wrong user, pid
+# gone) answers no, not yes.
+owner_is_task_agent() {
+  local slug=$1 pid=$2 task
+  [ -n "$pid" ] && [ -r "/proc/$pid/environ" ] || return 1
+  task=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^CAP_TASK=//p')
+  [ -n "$task" ] && [ "$task" = "$slug" ]
+}
+
+# True when the task is free for this caller to touch: unowned, dead-owned,
+# owned by the caller itself or its own dispatched agent, or --take was
+# passed. False otherwise, naming nobody - task_owner_check below wraps
+# this to die with the pid; stack_sync_task uses this directly to degrade
+# on a conflict instead of exiting.
+task_owner_free() {
+  local slug=$1 take=${2:-0} owner me
+  task_dispatched_here "$slug" && return 0
+  owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
+  [ -n "$owner" ] && owner_is_task_agent "$slug" "${owner%@*}" && return 0
+  me=$(session_identity)
+  [ -n "$owner" ] && [ "$owner" != "$me" ] && session_alive "$owner" || return 0
+  [ "$take" = 1 ]
+}
+
 # Refuses a mutating command when the task is owned by a live session other
 # than the caller, naming the pid so the captain can look; says nothing
 # about --take, since a refusal that advertises its own override stops
-# being one. A dead owner is not an owner, so an unowned or dead-owned
-# task refuses nobody. Read-only, unlike task_owner_claim below, so it is
-# safe to call without the lock - cap-send uses it to gate queueing too.
+# being one. Read-only, unlike task_owner_claim below, so it is safe to
+# call without the lock - cap-send uses it to gate queueing too.
 task_owner_check() {
-  local slug=$1 take=${2:-0} owner me
-  owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
-  me=$(session_identity)
-  if [ -n "$owner" ] && [ "$owner" != "$me" ] && session_alive "$owner"; then
-    [ "$take" = 1 ] || die "$slug is owned by pid ${owner%@*}"
-  fi
+  local slug=$1 take=${2:-0}
+  task_owner_free "$slug" "$take" ||
+    die "$slug is owned by pid $(task_field "$slug" CAP_OWNER 2>/dev/null | cut -d@ -f1)"
 }
 
 # Refuses the same way as task_owner_check, then records the caller as
-# owner - skipped when this session has no identity of its own (a plain
-# shell; see session_identity), since a task nobody could name as owner
-# stays the safe, unowned state rather than being claimed by one. Call
-# after task_lock: claiming first lets two sessions each write themselves
-# in as owner before either has done any work.
+# owner - skipped for a plain shell (see session_identity) and for the
+# task's own dispatched agent (task_dispatched_here), since an agent
+# naming itself owner of its own task is exactly what blocked its own
+# captain here. Call after task_lock: claiming first lets two sessions
+# each write themselves in as owner before either has done any work.
 task_owner_claim() {
   local slug=$1 take=${2:-0} me
   task_owner_check "$slug" "$take"
+  task_dispatched_here "$slug" && return 0
   me=$(session_identity)
   [ -n "$me" ] || return 0
   task_env_set "$slug" CAP_OWNER "$me"
