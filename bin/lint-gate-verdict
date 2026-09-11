@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# lint-gate-verdict - assert gate_verdict reads the verdict a report states.
+#
+# gate_verdict is the pipeline's trust anchor: cap-gate's PASS/FAIL record
+# depends on it. The hard case is telling a stated verdict from a report
+# quoting the gate prompt's own "end with GATE: PASS or GATE: FAIL" line.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+# shellcheck source=/dev/null
+. bin/lib.sh
+
+dir=$(mktemp -d)
+trap 'rm -rf "$dir"' EXIT
+
+# Each fixture is a report shape a real reviewer has produced or plausibly
+# will. The verdict a human reads off the bottom of the file is the answer.
+{
+	printf 'Review of the branch.\n\n'
+	printf 'The prompt asks me to end with exactly:\n'
+	printf 'GATE: PASS\n'
+	printf 'or GATE: FAIL.\n\n'
+	seq 1 30 | sed 's/^/finding /'
+	printf '\n**GATE: FAIL**\n'
+} >"$dir/quoted-instruction.md"
+
+printf 'Findings below.\n\nGATE: FAIL.\n' >"$dir/trailing-period.md"
+printf 'Nothing wrong.\n\nGATE: PASS\n' >"$dir/plain-pass.md"
+# The fence/indent must come AFTER the real verdict: tail -1 returns the
+# right answer even unfixed if the quote comes first, giving false coverage.
+printf 'Report.\n\nGATE: FAIL\n\n```\nGATE: PASS\n```\n' >"$dir/fenced-quote.md"
+printf 'Report.\n\nGATE: FAIL\n\n    GATE: PASS\n' >"$dir/fenced-indent.md"
+printf 'Report.\n\n  GATE: FAIL  \n' >"$dir/indented.md"
+# An unbalanced fence count makes the report's own markdown unable to tell
+# a quote from a stated verdict, in either direction - no pairing rule reads
+# every such report correctly, so all three read UNKNOWN rather than guess.
+printf 'Findings.\n\n```\nunclosed example\n\nGATE: FAIL\n' >"$dir/unclosed-fence.md"
+# Gate B's repro: states the real verdict, then opens (never closes) a fence
+# quoting the other one as a postscript example. Read as FAIL, not UNKNOWN:
+# a correctly fence-aware reader sees GATE: FAIL sitting entirely before the
+# fence ever opens, which is not actually ambiguous. The round-fifteen
+# fence-count-parity heuristic could not tell position from presence and
+# called every unclosed fence UNKNOWN regardless; a real state machine can.
+printf 'Findings.\n\nGATE: FAIL\n\nPostscript, quoting the other one:\n```\nGATE: PASS\n' >"$dir/fence-unclosed-quote.md"
+# Gate A's original repro assumed an unclosed opener "shifts" pairing so a
+# verdict between it and a later fence lands inside. Fences pair up strictly
+# in the order they're encountered, never by skipping the earliest opener:
+# the bare ``` before "The literal:" closes the ```sh opener there and then,
+# so GATE: PASS sits unfenced between that close and the final, separately
+# unclosed ```. Read as PASS, not UNKNOWN.
+printf 'Findings.\n\n```sh\nunclosed example\n\nGATE: FAIL\n\nThe literal:\n\n```\nGATE: PASS\n```\n' >"$dir/fence-unclosed-shift.md"
+# CommonMark: a fence is 3+ of one character, backtick or tilde, matched on
+# reopen by the same character and a length at least as long. Neither half
+# of that rule existed before - only backticks were ever recognized, and any
+# length line closed any other, so a shorter or differently-fenced quote
+# inside a longer real fence could prematurely end it.
+printf 'Report.\n\nGATE: FAIL\n\n~~~\nGATE: PASS\n~~~\n' >"$dir/tilde-fence-quote.md"
+# A backtick line inside a tilde fence cannot close it - the reverse of the
+# usual case, and the one direction backtick-only matching could never see.
+printf 'Report.\n\nGATE: FAIL\n\n~~~\n```\nGATE: PASS\n~~~\n' >"$dir/fence-char-mismatch.md"
+printf 'Report.\n\nGATE: FAIL\n\n````\nExample:\n```\nGATE: PASS\n```\n````\n' >"$dir/fence-length-nested.md"
+# A bare, deliberate choice: the gate prompt asks for the verdict as its own
+# line, and stripping backticks would reopen the quoted-literal hole.
+printf 'Report.\n\n`GATE: FAIL`\n' >"$dir/inline-code.md"
+# The mirror of quoted-instruction.md, and the dangerous direction: a report
+# that states its verdict and then quotes the other one in a closing note. A
+# reader that strips quote characters and takes the last match anywhere in the
+# file records the quote. Gate A on cap-headless found this shape after an
+# earlier fix over-corrected for the case above.
+{
+	printf 'Findings.\n\nGATE: FAIL\n\n'
+	printf 'Postscript: reports on this function quote both literals, like so:\n\n'
+	printf '    "GATE: PASS"\n'
+} >"$dir/quoted-postscript.md"
+{
+	printf 'Nothing wrong.\n\nGATE: PASS\n\n'
+	printf 'Postscript: the shape I checked for and did not find:\n\n'
+	printf '    "GATE: FAIL"\n'
+} >"$dir/quoted-postscript-pass.md"
+printf 'The review never reached a verdict.\n' >"$dir/no-verdict.md"
+: >"$dir/empty.md"
+# Markdown structure around a stated verdict, not a quote. Missed in round
+# eleven when the strip set was narrowed to fix quoted-postscript.md above.
+printf 'Report.\n\n## GATE: FAIL\n' >"$dir/heading.md"
+printf 'Report.\n\n- GATE: FAIL\n' >"$dir/list-dash.md"
+printf 'Report.\n\n1. GATE: FAIL\n' >"$dir/numbered.md"
+printf 'Report.\n\n> GATE: PASS\n' >"$dir/blockquote.md"
+# A closed ATX heading's trailing #s are optional per CommonMark, same as the
+# leading ones. The leading strip set already had #; the trailing one did not.
+printf 'Report.\n\n### GATE: FAIL ###\n' >"$dir/closed-heading.md"
+
+status=0
+shapes=0
+check() {
+	local want=$1 file=$2 got
+	shapes=$((shapes + 1))
+	got=$(gate_verdict "$dir/$file")
+	if [ "$got" != "$want" ]; then
+		printf 'lint-gate-verdict: %s: read %s, the report states %s\n' "$file" "$got" "$want" >&2
+		status=1
+	fi
+}
+
+# A verdict stated after the report quotes its own instructions must win. This
+# is the shape that regressed: bold or trailing punctuation on the real verdict
+# left the quoted line as the only exact match.
+check FAIL quoted-instruction.md
+check FAIL trailing-period.md
+check FAIL fenced-quote.md
+check FAIL fenced-indent.md
+check FAIL indented.md
+check PASS plain-pass.md
+check FAIL quoted-postscript.md
+check PASS quoted-postscript-pass.md
+check UNKNOWN unclosed-fence.md
+check FAIL fence-unclosed-quote.md
+check PASS fence-unclosed-shift.md
+check UNKNOWN inline-code.md
+check FAIL tilde-fence-quote.md
+check FAIL fence-char-mismatch.md
+check FAIL fence-length-nested.md
+
+# UNKNOWN is not a failure mode, it is the safe one: cap-gate keeps the
+# previous report, records nothing and exits 2. A report with no verdict must
+# reach it rather than being read as either answer.
+check UNKNOWN no-verdict.md
+check UNKNOWN empty.md
+check UNKNOWN missing.md
+
+check FAIL heading.md
+check FAIL list-dash.md
+check FAIL numbered.md
+check PASS blockquote.md
+check FAIL closed-heading.md
+
+# Handcrafted fixtures guard the dangerous direction: a wrong verdict
+# recorded. This guards the lossy one: a real report going unreadable and
+# cap-gate discarding a paid review. tests/gate-reports/ freezes a few real
+# reports, trimmed to what this assertion needs, named for the verdict each
+# states (<slug>.PASS.md, .FAIL.md, .UNKNOWN.md) - including one that hit its
+# own usage limit before producing anything and legitimately reads UNKNOWN.
+corpus=0
+for f in tests/gate-reports/*.md; do
+	[ -e "$f" ] || continue
+	corpus=$((corpus + 1))
+	base=$(basename "$f" .md)
+	want=${base##*.}
+	got=$(gate_verdict "$f")
+	if [ "$got" != "$want" ]; then
+		printf 'lint-gate-verdict: %s: read %s, the frozen corpus states %s\n' "$f" "$got" "$want" >&2
+		status=1
+	fi
+done
+
+if [ "$status" = 0 ]; then
+	printf 'lint-gate-verdict: %d report shapes read correctly, %d corpus report(s) verdicted correctly\n' "$shapes" "$corpus"
+fi
+exit "$status"

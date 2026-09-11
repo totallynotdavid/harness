@@ -570,23 +570,60 @@ gate_fingerprint() {
   } | sha256sum | cut -d' ' -f1
 }
 
-# The exact-line GATE: PASS / GATE: FAIL verdict from a gate report, ignoring
-# any earlier match against the echoed prompt text itself (the prompt
-# contains the literal substrings "GATE: PASS" and "GATE: FAIL" inside the
-# instruction sentence, which is not a verdict).
+# The exact-line GATE: PASS / GATE: FAIL verdict from a gate report. Skips
+# fenced code (``` or ~~~, 3+, matched by character and length per
+# CommonMark - an opener never closed swallows the rest of the report) and
+# four-or-more-space or tab-indented lines, then strips markdown structure -
+# heading (# on both ends), list, blockquote, bold/italic, trailing period -
+# never quote marks or backticks. Last matching line wins.
 gate_verdict() {
   [ -f "$1" ] || { printf 'UNKNOWN'; return; }
-  # Strip each line's leading non-letter clutter first: codex pads with plain
-  # spaces, claude prefixes a "* " bullet marker. Only then does the line
-  # have to be exactly "GATE: PASS"/"GATE: FAIL" (plus trailing whitespace)
-  # to count - never a substring match, which is what the echoed prompt
-  # sentence ("...exactly: GATE: PASS or GATE: FAIL.") would give.
-  # Drop blank lines before taking the window. A pane capture can end with a
-  # dozen empty lines below the verdict, which pushed "GATE: PASS" out of a
-  # fixed tail and lost a review that had actually completed: gate B passed
-  # local-env and was recorded UNKNOWN.
-  grep -v '^[[:space:]]*$' "$1" | tail -15 | sed -E 's/^[^A-Za-z]*//' |
-    grep -E '^GATE: (PASS|FAIL)[[:space:]]*$' | tail -1 |
+  local body
+  # grep -v exits 1, not just prints nothing, on a zero-byte report - what
+  # cap-gate feeds this after a session-limit rejection. Harmless today only
+  # because the caller uses a command substitution, where bash does not
+  # apply set -e to the command inside.
+  body=$(grep -v '^[[:space:]]*$' "$1" || true)
+  printf '%s\n' "$body" |
+    awk '
+      # <=3 leading spaces then a run of ch (backtick or tilde). An opener
+      # may carry an info string after the run (```sh); a closer may not -
+      # only trailing spaces/tabs, checked by the caller when it matters.
+      function fence_run(line, ch,    lead, rest, run) {
+        lead = 0
+        while (lead < 3 && substr(line, lead + 1, 1) == " ") lead++
+        rest = substr(line, lead + 1)
+        run = 0
+        while (substr(rest, run + 1, 1) == ch) run++
+        return run
+      }
+      function only_trailing_space(line, ch, run,    lead, rest, trail) {
+        lead = 0
+        while (lead < 3 && substr(line, lead + 1, 1) == " ") lead++
+        rest = substr(line, lead + 1)
+        trail = substr(rest, run + 1)
+        gsub(/[ \t]/, "", trail)
+        return trail == ""
+      }
+      {
+        if (in_fence) {
+          # A closer must be the same character, at least as long as the
+          # opener, and bare - anything else, including the other fence
+          # character or an info string, is still content.
+          n = fence_run($0, fch)
+          if (n >= flen && only_trailing_space($0, fch, n)) in_fence = 0
+          next
+        }
+        n = fence_run($0, "`")
+        if (n >= 3) { in_fence = 1; fch = "`"; flen = n; next }
+        n = fence_run($0, "~")
+        if (n >= 3) { in_fence = 1; fch = "~"; flen = n; next }
+        if ($0 ~ /^(    |\t)/) next
+        print
+      }
+    ' |
+    sed -E 's/^[[:space:]]*[0-9]+[.)][[:space:]]*//; s/^[[:space:]#>*_-]*//; s/[[:space:]#*_.]*$//' |
+    grep -E '^GATE: (PASS|FAIL)$' | tail -1 |
     grep -oE 'PASS|FAIL' || printf 'UNKNOWN'
 }
 

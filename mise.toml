@@ -18,6 +18,10 @@ run = "shellcheck -S warning -e SC1091 $(grep -LE '^#!.*python' bin/cap bin/cap-
 description = "find a bare `[ cond ] && cmd` whose false status escapes into set -e"
 run = "bin/lint-andlist"
 
+[tasks."check:verdict"]
+description = "assert gate_verdict reads the verdict a report states, across known report shapes"
+run = "bin/lint-gate-verdict"
+
 [tasks."check:usage-shape"]
 description = "assert usage_write and bin/cap-statusline agree on the state/usage record shape and rounding"
 run = "bin/lint-usage-shape"
