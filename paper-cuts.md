@@ -59,3 +59,19 @@ several of these scripts are shaped the way they are, and other files cite them.
 - [ ] 2026-09-11 - The peak memory a project records is a high-water mark that never decays, so one unlucky build throttles every later wave. aula's recorded peak is 2910 MB; the seven `cap verify` runs measured since have peaked between 1839 and 2470 MB. `cap wave spawn` divides free memory by the recorded peak, so it offered one slot at a time through a three-row wave that would have fit two, and the wave took three sequential rounds instead of two. A trailing median or a decaying maximum would track the project as it actually is now.
 - [ ] 2026-09-11 - `cap commit` wrote a body that restated the diff for all five commits it produced this session, and split one logical change into two commits whose halves cannot stand alone (a compose file and the document explaining it). rules/commits.md says the body must state why, not what, and `cap land` does not check bodies, only the summary line, so nothing catches it. Every message had to be rewritten by hand before landing. Related to the entry above on `cap commit` not enforcing the rules `cap land` refuses on; this is the same gap measured at 5 of 5.
 - [ ] 2026-09-11 - The prompt hook decides a task is finished from `task_status_latest`, which reads only what the agent chose to write into `state/tasks/<slug>/status.log`. `cap send` appends `working:` when it dispatches, and the agent is supposed to append `done:` when it stops. When it does not, the task reads `working` forever and the hook never lists it again under "Waiting on you", so a finished task goes silent instead of asking for a decision. Hit on panel-secretaria today: its agent wrote `done:` after the first round, then finished two more rounds without writing anything, and the captain had to notice by hand twice. The agent that got it right was sonnet under the full contract; the one that did not had been compacted down to Haiku mid-task, which is exactly the condition where an instruction-following mechanism degrades. This is the shape the pinned design rule rejects: if the agent ignores the instruction, the bad thing happens anyway. `bin/cap-crew` was fixed today (d6b331e) by asking herdr for the agent's real state instead of trusting the log, and `bin/hooks/crew-status.sh` needs the same treatment, but it is owned by the in-flight cap-owner task. Do it when cap-owner lands, and add a `check:` task asserting that neither reads status.log as the only evidence a task is still running - that registration also needs mise.toml, which cap-owner owns.
+
+## No command grants a path to a task's owns list
+
+The ownership hook refuses a write outside `state/tasks/<slug>/owns`, which is
+correct. When the refusal is right but the path should have been granted, the
+captain has to know that the list is a plain file in the hub and append to it by
+hand. There is no `cap grant <slug> <path>`, so the recovery step is the one
+part of the mechanism that only works if you already know the internals.
+
+Hit on 2026-09-11: `cap-owner` was asked to delete the `CAP_ENV_SCRUB` global,
+which required editing `bin/cap-ask`. The hook blocked it, the agent reported the
+block, and the fix was `printf 'bin/cap-ask\n' >> state/tasks/cap-owner/owns`.
+
+Not fixed now because `bin/cap` and the spawn path belong to the `cap-owner`
+task, which is three rounds deep on multi-captain ownership. Adding a second
+ownership mechanism to that branch would widen a task that is close to landing.
