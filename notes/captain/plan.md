@@ -49,45 +49,27 @@ it, because herdr opened the pane in the right place.
 
 ## Stage 2: Captain learns there is more than one captain
 
-Added 2026-09-11, ahead of everything below it, after a day in which this was
-the only cause of lost work.
+Added 2026-09-11, ahead of everything below it. Every command in `bin/` assumes
+one captain drives one task at a time. Three captain sessions have been sharing
+this hub for days.
 
-Every command in `bin/` is written as though one captain drives one task at a
-time. That assumption is false on this machine and has been for days. `cap
-sessions` already reports the condition and its own header names two incidents
-from 2026-09-09; it is observational, and records nothing.
+What that cost, in three days:
 
-Six incidents, all the same cause. Two `cap gate` runs raced on local-env and
-each paid for its own Gate A. `cap/aula-integrate` landed while a fix branched
-from it was still open. local-env landed before any gate passed. A `cap send`
-dispatched a round into a worktree a gate was still reading, because `cap send`
-takes no lock while `cap gate` holds one. `gate_fingerprint` diffs against the
-base tip, so a sibling landing on master during a ten-minute review discarded a
-correct double-PASS on an untouched branch. And two captains briefed one agent
-with contradictory instructions inside the same minute: one asked for 32 commit
-summaries reworded in place with the branch's two merges preserved, the other
-for a `reset --soft` rebuild. The agent did the second and reported it as "per
-your explicit choice", which was true, because every message arrives as "sent
-by the captain" with no way to tell one captain from another. The first captain
-read that as a fabricated authorization and nearly reverted the other's
-accepted decision.
+- two `cap gate` runs raced on local-env, each paying for its own Gate A
+- `cap/aula-integrate` landed while a fix branched from it was still open
+- local-env landed before any gate passed
+- `cap send` dispatched a round into a worktree `cap gate` was still reading
+- `gate_fingerprint` discarded a correct double-PASS because a sibling landed
+  on master mid-review, on a branch unchanged by a byte
+- two captains briefed one agent with contradictory instructions inside a
+  minute; it followed one and reported it as the captain's own choice, because
+  every message arrives as "sent by the captain"
 
-Nothing was lost only because that rebuild happened to be tree-identical.
+`cap sessions` already reports the condition and enforces nothing. The identity
+needs no storage: the process tree already answers it, which is what
+`bin/hooks/crew-status.sh` and `cap sessions` each walk their own copy of.
 
-The fix is identity, and it does not need to be stored. A `cap` command can
-walk its own process tree to the first `claude` or `codex` ancestor, which is
-the session that ran it. That is the same `/proc` reading `cap sessions`
-already does, it needs no new state, no id threaded through any call, and no
-cooperation from the agent. `cap spawn` stamps the owning session on the task;
-every mutating command refuses a task owned by a live session that is not the
-caller, names the pid that holds it, and takes it with `--take`. A dead owner's
-task is claimable with no stale lock to clear, because the kernel is the
-record.
-
-What this unlocks is the rest of this plan. Stages 3 and 4 both widen what one
-command does on a task's behalf, and widening them under a harness that cannot
-say who asked is how today's rebuild happened. It is also the precondition for
-running the stages below in parallel at all.
+This is the precondition for running anything below in parallel.
 
 ## Stage 3: the gate emits findings, not prose
 
