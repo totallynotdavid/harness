@@ -99,12 +99,7 @@ if [ -n "$bad_trailers" ]; then
   done < <(git -C "$CAP_TREE" rev-list --reverse --topo-order "$CAP_BASE..HEAD")
   git -C "$CAP_TREE" update-ref HEAD "$new"
 
-  # A remap built in traversal order is only complete if every parent was
-  # rebuilt before the commit that names it. Without --topo-order above,
-  # rev-list --reverse can still emit a side branch before the commit it
-  # forked from, so parent_args silently kept the unstripped original -
-  # still reachable through a merge's second parent, and this rewrite
-  # would exit 0 having left the very thing it was asked to remove.
+  # A rewrite that silently leaves the thing it was asked to remove must not exit 0.
   still_bad=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
   [ -z "$still_bad" ] ||
     die "$slug: AI attribution survived the rewrite:
