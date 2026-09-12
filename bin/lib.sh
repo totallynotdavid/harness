@@ -1276,27 +1276,21 @@ gate_ready() {
   local slug=$1 tree=$2 base=$3
   local f=$TASKS/$slug/gate.json cur a_v a_fp b_v b_fp
   [ -f "$f" ] || return 1
-
-  # gate_fingerprint diffs the base and cats every untracked file; cheap once,
-  # not on every captain turn crew-status.sh calls this from. cap-gate itself
-  # skips this cache and always computes fresh, since it is about to record
-  # the fingerprint it reads as the one this exact review covered.
-  local cache=$TASKS/$slug/.gate-fp-cache age
-  if [ -f "$cache" ]; then
-    age=$(($(now) - $(stat -c %Y "$cache" 2>/dev/null || echo 0)))
-    [ "$age" -lt "${CAP_GATE_FP_TTL:-30}" ] && cur=$(cat "$cache")
-  fi
-  if [ -z "${cur:-}" ]; then
-    cur=$(gate_fingerprint "$tree" "$base")
-    printf '%s' "$cur" >"$cache"
-  fi
-
+  cur=$(gate_fingerprint "$tree" "$base")
   a_v=$(jq -r '.A.verdict // empty' "$f" 2>/dev/null || true)
   a_fp=$(jq -r '.A.fingerprint // empty' "$f" 2>/dev/null || true)
   b_v=$(jq -r '.B.verdict // empty' "$f" 2>/dev/null || true)
   b_fp=$(jq -r '.B.fingerprint // empty' "$f" 2>/dev/null || true)
   [ "$a_v" = PASS ] && [ "$b_v" = PASS ] && [ "$a_fp" = "$cur" ] && [ "$b_fp" = "$cur" ]
 }
+
+# rules/commits.md forbids crediting an AI, not a Co-Authored-By trailer as
+# such - a cherry-picked upstream commit or a human pair credit is not this.
+# Matches a session-link trailer, a generated-with byline, or a Co-Authored-By
+# naming a known model or a vendor noreply address. One pattern, read by
+# cap-commit (strips it) and cap-land (refuses on it), so the two never
+# again disagree about what counts as AI attribution.
+AI_TRAILER_RE='^(claude|codex)-session:|generated with \[(claude code|codex)\]|^co-authored-by:[[:space:]]*(claude|codex|chatgpt|gpt)\b|^co-authored-by:.*<noreply@(anthropic|openai)\.com>'
 
 git_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null || echo '-'; }
 git_base() {

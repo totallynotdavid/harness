@@ -43,7 +43,7 @@ commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD")
 # this existed.
 bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" \
 	--format='%h %s%n%b' |
-	grep -inE '^(co-authored-by|claude-session):|generated with \[claude code\]' || true)
+	grep -inE "$AI_TRAILER_RE" || true)
 [ -z "$bad_trailers" ] || {
 	printf 'cap: %s carries AI attribution, which rules/commits.md forbids:\n' "$slug" >&2
 	printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
