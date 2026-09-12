@@ -344,18 +344,27 @@ CAP_EXIT_FNS=()
 # inherited CAP_EXIT_FNS at its own exit; one that does starts its own list.
 CAP_EXIT_PID=""
 trap() {
-  # Composes only the one unambiguous form, `trap CMD SIG...` where CMD is
-  # a real command and EXIT is among SIG. Anything else - `trap - EXIT`,
-  # `trap -p ...`, `trap -l`, a bare query - goes straight to the builtin
-  # so it behaves exactly as it always did, including actually disarming.
-  local sig has_exit=0 other=()
-  if [ "$#" -ge 2 ] && [ "$1" != - ] && [ "${1:0:1}" != - ]; then
+  # Composes only `trap CMD SIG...` where CMD is a real command and EXIT
+  # is among SIG. `trap - EXIT` and `trap '' EXIT` both reach the builtin
+  # unchanged and forget this process's composed handlers, so a later
+  # `trap CMD EXIT` starts fresh instead of resurrecting what was just
+  # cancelled. A flag like `trap -p EXIT` or `trap -l` is a query and
+  # touches no state at all.
+  local sig has_exit=0 other=() compose=0 reset_exit=0
+  if [ "$#" -ge 2 ]; then
     for sig in "${@:2}"; do
       if [ "$sig" = EXIT ]; then has_exit=1; else other+=("$sig"); fi
     done
+    if [ "$has_exit" = 1 ]; then
+      case $1 in
+      '' | -) reset_exit=1 ;;
+      -*) ;;
+      *) compose=1 ;;
+      esac
+    fi
   fi
 
-  if [ "$has_exit" = 1 ]; then
+  if [ "$compose" = 1 ]; then
     if [ "${CAP_EXIT_PID:-}" != "$BASHPID" ]; then
       CAP_EXIT_FNS=()
       CAP_EXIT_PID=$BASHPID
@@ -364,6 +373,10 @@ trap() {
     builtin trap cap_run_exit_fns EXIT
     # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
     [ "${#other[@]}" -eq 0 ] || builtin trap "$1" "${other[@]}"
+  elif [ "$reset_exit" = 1 ]; then
+    [ "${CAP_EXIT_PID:-}" != "$BASHPID" ] || CAP_EXIT_FNS=()
+    # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
+    builtin trap "$@"
   else
     # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
     builtin trap "$@"
