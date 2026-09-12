@@ -706,44 +706,90 @@ queue_prepend() {
   return 1
 }
 
-# Delivers what queue_send queued into a live pane, in order, then clears
-# the queue - called explicitly by cap-send before its own message, and
-# automatically from every locking command's EXIT trap on release. Returns
-# 0 only once empty: a message typed but never confirmed is logged and
-# dropped rather than requeued, since a later flush must never type it
-# again; a non-zero return says the pane's state is not to be trusted.
-queue_flush() {
-  local slug=$1 dir=$TASKS/$1 fd claimed pid b64 text line
-  local spool=$dir/send-queue
-  claimed="$spool.flushing"
+# Once a pane goes untrusted in this process it stays that way for the
+# rest of it: an unconfirmed pane_submit may have left text sitting unsent
+# in the input box, and the EXIT trap calls queue_flush again on its own,
+# so nothing short of a process-lifetime flag stops that next call from
+# typing more text in behind it.
+declare -A CAP_QUEUE_UNTRUSTED
+queue_mark_untrusted() { CAP_QUEUE_UNTRUSTED[$1]=1; }
 
-  # A holder killed mid-flush leaves its claim behind in *.flushing, which
-  # nothing else ever reads back. Folding it in front of the live spool
-  # before claiming again recovers it exactly like any other queued
-  # message - only cap-send/task_try_lock ever call this for a given
-  # slug's lock, so nothing else can be claiming the same file right now.
-  if [ -f "$claimed" ]; then
-    if queue_prepend "$slug" "$claimed"; then
-      rm -f "$claimed"
-    else
-      # queue_prepend already left $claimed on disk for the next attempt.
-      # Claiming $spool onto $claimed below would overwrite that undelivered
-      # batch instead of recovering it - stop here and retry on the next flush.
-      warn "$slug: could not recover queued messages in $claimed; left in place, will retry on the next flush"
-      return 1
-    fi
+# Recovers a batch a holder killed mid-flush left behind in *.flushing,
+# which nothing else ever reads back, by folding it in front of the live
+# spool - only cap-send/task_try_lock ever call queue_flush for a given
+# slug's lock, so nothing else can be claiming the same file right now.
+# Returns 1 only when the fold itself could not be made; the batch stays
+# on disk either way, never lost.
+queue_recover_stranded() {
+  local slug=$1 claimed=$TASKS/$1/send-queue.flushing
+  [ -f "$claimed" ] || return 0
+  if queue_prepend "$slug" "$claimed"; then
+    rm -f "$claimed"
+    return 0
   fi
+  # queue_prepend already left $claimed on disk for the next attempt.
+  # Claiming the live spool onto it would overwrite that undelivered
+  # batch instead of recovering it - stop here and retry on the next flush.
+  warn "$slug: could not recover queued messages in $claimed; left in place, will retry on the next flush"
+  return 1
+}
 
-  [ -s "$spool" ] || return 0
-  pane_live "$slug" || return 0
+# Whether text can be typed into this pane right now, without causing any
+# delivery itself: alive, and not sitting on a prompt herdr recognises.
+# Digits can select a menu option and Enter can accept one, so typing a
+# queued message into a blocked pane could approve something the captain
+# never saw.
+pane_usable() {
+  pane_live "$1" || return 1
+  [ "$(pane_agent_status "$1")" != blocked ]
+}
 
+# Claims the live spool for delivery by renaming it to *.flushing, so a
+# concurrent queue_send keeps appending to a fresh send-queue rather than
+# racing what this call is about to read. Returns 1 when the rename fails
+# - nothing was there, or another process's claim won the race.
+queue_claim() {
+  local slug=$1 dir=$TASKS/$1 fd rc
   exec {fd}>>"$dir/.send-queue.lock"
   flock "$fd"
-  mv "$spool" "$claimed" 2>/dev/null || { flock -u "$fd"; exec {fd}>&-; return 0; }
+  mv "$dir/send-queue" "$dir/send-queue.flushing" 2>/dev/null
+  rc=$?
   flock -u "$fd"
   exec {fd}>&-
+  return "$rc"
+}
 
-  local n=0
+# Puts back everything claimed after the $n'th line, since it was never
+# typed at all and is safe to retry on a later flush. Prepended, not
+# appended: anything already in the live spool arrived after the claim,
+# so it is newer than this.
+queue_requeue_remainder() {
+  local slug=$1 claimed=$2 n=$3 tail=$2.tail
+  tail -n "+$((n + 1))" "$claimed" >"$tail"
+  if [ -s "$tail" ]; then
+    if queue_prepend "$slug" "$tail"; then
+      rm -f "$claimed" "$tail"
+    else
+      # $claimed still holds everything already resolved (delivered or
+      # dropped as unconfirmed) and logged. Left in place, queue_recover_stranded
+      # would fold the whole thing back next flush and retype the
+      # unconfirmed one. Replace it with the tail alone.
+      mv "$tail" "$claimed"
+    fi
+  else
+    rm -f "$claimed" "$tail"
+  fi
+}
+
+# Delivers a claimed batch into the pane, in order, then clears it. A
+# message that types but never confirms a turn started stops the batch
+# there, logged as unconfirmed and dropped rather than retried - the pane
+# is marked untrusted for the rest of this process, and anything still
+# unclaimed behind it goes back in the live queue for a later flush.
+queue_deliver_claimed() {
+  local slug=$1 dir=$TASKS/$1 claimed=$TASKS/$1/send-queue.flushing
+  local pid b64 text line n=0
+
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     [ -n "$line" ] || continue
@@ -819,11 +865,9 @@ pane_launch() {
 }
 
 # No agent session runs as a bare background child - it always runs in
-# its own pane, opened and closed just for this call, never a shared
-# watcher pane (rejected: with more than one caller dispatching at once,
-# it shows whoever is newest, not the one being watched). Structured
-# output is not traded away for that: stdout is teed to a file to parse
-# and shown live too. Blocks until the command exits, then returns its rc.
+# its own pane, opened and closed just for this call. Structured output
+# is not traded away for that: stdout is teed to a file to parse and
+# shown live too. Blocks until the command exits, then returns its rc.
 pane_dispatch() {
   local tree=$1 label=$2 out=$3 err=$4
   shift 4
@@ -1309,8 +1353,7 @@ gate_ready() {
 # such - a cherry-picked upstream commit or a human pair credit is not this.
 # Matches a session-link trailer, a generated-with byline, or a Co-Authored-By
 # naming a known model or a vendor noreply address. One pattern, read by
-# cap-commit (strips it) and cap-land (refuses on it), so the two never
-# again disagree about what counts as AI attribution.
+# both cap-commit (strips it) and cap-land (refuses on it).
 AI_TRAILER_RE='^(claude|codex)-session:|generated with \[(claude code|codex)\]|^co-authored-by:[[:space:]]*(claude|codex|chatgpt|gpt)\b|^co-authored-by:.*<noreply@(anthropic|openai)\.com>'
 
 # Every AI-credited line in tree $1's $2..HEAD range, one per output line,
