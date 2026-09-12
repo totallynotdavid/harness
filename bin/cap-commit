@@ -19,7 +19,7 @@ done
 profile=${profile:-@chore}
 task_load "$slug"
 task_lock "$slug"
-task_owner_claim_or_take "$slug" "$take"
+if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 [ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to commit"
 

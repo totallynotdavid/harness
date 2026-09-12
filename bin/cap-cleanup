@@ -20,7 +20,7 @@ profile=${profile:-@chore}
 
 task_load "$slug"
 task_lock "$slug"
-task_owner_claim_or_take "$slug" "$take"
+if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 # Refuse on a worktree with nothing to review, not on one with nothing
 # uncommitted. The prompt below works against $CAP_BASE, which is well defined
