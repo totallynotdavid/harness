@@ -157,6 +157,7 @@ if task_try_lock "$slug"; then
 		# be typed again by anyone, so it is logged as unconfirmed rather
 		# than queued for a later flush to retry.
 		pane_submit "$slug" "$text" || {
+			queue_mark_untrusted "$slug"
 			printf 'unconfirmed: sent by %s: %s\n' \
 				"$(session_label "$(session_identity)")" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$TASKS/$slug/status.log"
 			die "$slug: typed into the pane but never confirmed a turn started; will not be retried automatically - check by hand: cap peek $slug"
