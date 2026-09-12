@@ -1408,6 +1408,7 @@ stack_sync_task() {
       STACK_CONFLICT=$task
       warn "$task conflicts with its new base; its branch was left where it was"
       warn "resolve by hand: cd $tree && git rebase --onto $new_tip $old_tip"
+      task_unlock "$task"
       return 1
     fi
 
@@ -1417,6 +1418,7 @@ stack_sync_task() {
 
   stack_snapshot_field "$snap" "$task" CAP_PARENT_TIP
   task_env_set "$task" CAP_PARENT_TIP "$new_tip"
+  task_unlock "$task"
 }
 
 stack_cascade() {
