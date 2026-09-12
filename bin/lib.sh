@@ -1091,6 +1091,36 @@ task_state() {
 
 git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
 
+# Install rules/commits.md's one rule with no exceptions - no AI attribution
+# trailer - as a commit-msg hook scoped to one worktree: refused inside the
+# agent's own loop, not caught after the run. `--git-path hooks` resolves to
+# the common $GIT_DIR/hooks every worktree shares - core.hooksPath set with
+# `git config --worktree` (needs extensions.worktreeConfig first) lands in
+# this worktree's own config.worktree instead, which nothing else reads.
+git_install_attribution_hook() {
+  local tree=$1 gitdir hooksdir
+  gitdir=$(git -C "$tree" rev-parse --git-dir)
+  git -C "$tree" config extensions.worktreeConfig true
+  hooksdir=$gitdir/hooks-local
+  git -C "$tree" config --worktree core.hooksPath "$hooksdir"
+  mkdir -p "$hooksdir"
+  cat >"$hooksdir/commit-msg" <<'HOOK'
+#!/usr/bin/env bash
+# Installed by git_install_attribution_hook (bin/lib.sh). rules/commits.md's
+# one rule with no exceptions, refused here rather than caught afterward.
+set -euo pipefail
+
+msg_file=$1
+bad=$(grep -inE '^(co-authored-by|claude-session):|generated with \[claude code\]' "$msg_file" || true)
+if [ -n "$bad" ]; then
+  printf 'commit-msg: rules/commits.md forbids AI attribution in a commit:\n' >&2
+  printf '%s\n' "$bad" | sed 's/^/  /' >&2
+  exit 1
+fi
+HOOK
+  chmod +x "$hooksdir/commit-msg"
+}
+
 # Sync a worktree onto the current tip of its base branch before review, so
 # an unrelated task landing on base since this one branched never gets
 # misread by a gate as this branch deleting/reverting that feature (see
