@@ -181,6 +181,8 @@ if task_try_lock "$slug"; then
 		queue_send "$slug" "$text"
 		if [ -n "${CAP_QUEUE_UNTRUSTED[$slug]:-}" ]; then
 			printf 'queued for %s: an earlier message in its queue was typed but never confirmed; check by hand: cap peek %s\n' "$slug" "$slug"
+		elif ! pane_live "$slug"; then
+			printf 'queued for %s: the session is not live; delivered once it is revived\n' "$slug"
 		elif ! pane_usable "$slug"; then
 			printf 'queued for %s: the agent is waiting on a prompt; delivered once a later command on it finds the pane free\n' "$slug"
 		else
