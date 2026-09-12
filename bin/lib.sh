@@ -484,6 +484,10 @@ task_unlock() {
     CAP_LOCK_DEPTH[$slug]=$(( CAP_LOCK_DEPTH[$slug] - 1 ))
     return 0
   fi
+  # A caller that releases explicitly, rather than by exiting, skips
+  # task_flush_locks_on_exit entirely: CAP_LOCKS is about to lose this slug
+  # below, so nothing left running will ever flush what is queued for it.
+  queue_flush "$slug" || true
   unset 'CAP_LOCK_DEPTH[$slug]'
   exec {fd}>&-
   unset 'CAP_LOCK_FDS[$slug]'
@@ -1454,6 +1458,11 @@ stack_sync_task() {
     warn "$task is locked by another cap command; its branch was left where it was"
     return 1
   fi
+
+  # Read before the claim below overwrites it, and restored on every exit
+  # from here on - the claim exists only to check nobody else has a live
+  # right to this descendant, not to hand it to the cascading session.
+  prev_owner=$(task_field "$task" CAP_OWNER 2>/dev/null || true)
   if ! task_owner_try_claim "$task"; then
     STACK_CONFLICT=$task
     warn "$task is owned by pid $(task_field "$task" CAP_OWNER 2>/dev/null | cut -d@ -f1); its branch was left where it was"
@@ -1465,9 +1474,14 @@ stack_sync_task() {
   branch=$(task_field "$task" CAP_BRANCH)
   old_tip=$(task_field "$task" CAP_PARENT_TIP)
 
-  [ -d "$tree" ] || die "$task has no worktree at $tree"
-  [ "$(git_dirty "$tree")" = 0 ] ||
+  if [ ! -d "$tree" ]; then
+    task_env_set "$task" CAP_OWNER "$prev_owner"
+    die "$task has no worktree at $tree"
+  fi
+  if [ "$(git_dirty "$tree")" != 0 ]; then
+    task_env_set "$task" CAP_OWNER "$prev_owner"
     die "$task has uncommitted changes in $tree; commit or discard them first"
+  fi
 
   if [ "$old_tip" != "$new_tip" ]; then
     stack_snapshot_add "$snap" "$tree" "$branch"
@@ -1477,6 +1491,7 @@ stack_sync_task() {
       STACK_CONFLICT=$task
       warn "$task conflicts with its new base; its branch was left where it was"
       warn "resolve by hand: cd $tree && git rebase --onto $new_tip $old_tip"
+      task_env_set "$task" CAP_OWNER "$prev_owner"
       task_unlock "$task"
       return 1
     fi
@@ -1487,26 +1502,24 @@ stack_sync_task() {
 
   stack_snapshot_field "$snap" "$task" CAP_PARENT_TIP
   task_env_set "$task" CAP_PARENT_TIP "$new_tip"
+  task_env_set "$task" CAP_OWNER "$prev_owner"
 }
 
 # The caller holds the child's lock across every field it rewrites, not
 # just the rebase: stack_cascade_landed's CAP_BASE/CAP_PARENT/gh pr edit
 # on this same child, right after stack_sync_task, is the same
-# read-modify-write task_lock exists to serialize. CAP_OWNER is restored to
-# its prior value, not left as the cascading session: the lock is what
-# serializes the rebase, and ownership must not outlive it.
+# read-modify-write task_lock exists to serialize. stack_sync_task itself
+# restores CAP_OWNER before returning, on every exit path it has.
 stack_cascade() {
   local slug=$1 new_tip=$2 snap=$3
-  local child tree rc prev_owner
+  local child tree rc
 
   for child in $(task_children "$slug"); do
     tree=$(task_field "$child" CAP_TREE)
-    prev_owner=$(task_field "$child" CAP_OWNER 2>/dev/null || true)
 
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
-    task_env_set "$child" CAP_OWNER "$prev_owner"
     task_unlock "$child"
     [ "$rc" = 0 ] || return "$rc"
   done

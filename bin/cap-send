@@ -153,8 +153,14 @@ if task_try_lock "$slug"; then
 	# message first and the backlog only after, at exit.
 	queue_flush "$slug" || true
 
-	pane_deliver "$slug" "$text" ||
-		die "$slug: sent but the agent never started a turn - check by hand: cap peek $slug"
+	# Queued, not dropped, on a failed delivery: pane_send may already have
+	# typed the text into the pane, but a confirmed turn is what pane_deliver
+	# actually checked for, and every other failure in this subsystem leaves
+	# the message queued rather than losing it.
+	pane_deliver "$slug" "$text" || {
+		queue_send "$slug" "$text"
+		die "$slug: sent but the agent never started a turn; queued for delivery once the pane accepts input - check by hand: cap peek $slug"
+	}
 
 	# A turn has started, so the task is not done, and cap send is the one
 	# place that knows this for certain. Named by pid, not "the captain":
