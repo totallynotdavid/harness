@@ -370,9 +370,20 @@ trap() {
   fi
 }
 cap_run_exit_fns() {
-  local fn
+  # $? here is the real exit status that fired this trap - captured before
+  # anything else touches it, then restored right before each eval so a
+  # handler reading $? sees what it would in a plain `trap CMD EXIT`, not
+  # this function's own BASHPID test. set +e for the same reason: `(exit
+  # "$code")` failing on a nonzero code is not a real failure, but set -e,
+  # inherited from the caller, would otherwise abort this loop on it.
+  local fn code=$?
   [ "${CAP_EXIT_PID:-}" = "$BASHPID" ] || return 0
-  for fn in "${CAP_EXIT_FNS[@]}"; do eval "$fn" || true; done
+  set +e
+  for fn in "${CAP_EXIT_FNS[@]}"; do
+    (exit "$code")
+    eval "$fn"
+  done
+  set -e
 }
 
 # One cap command per task at a time. Gate, check, commit, and land all
