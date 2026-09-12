@@ -54,11 +54,9 @@ else
   die "$slug's history no longer matches its code: HEAD's tree differs from the snapshot at $snap_ref. Compare with: git -C $CAP_TREE diff $snap_ref HEAD"
 fi
 
-# AI_TRAILER_RE (bin/lib.sh) is the one pattern cap-land also refuses on.
-# Rebuilt with commit-tree, not git filter-branch (drops -S): %h alone, not
-# %h %s, keeps a trailer folded into %s visible to the regex.
-bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='commit %h:%n%B' |
-  grep -inE "$AI_TRAILER_RE" || true)
+# ai_trailer_report (bin/lib.sh) is the one reader cap-land also uses.
+# Rebuilt with commit-tree, not git filter-branch, which drops -S.
+bad_trailers=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
 if [ -n "$bad_trailers" ]; then
   warn "$slug: stripping AI attribution rules/commits.md forbids:"
   printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2

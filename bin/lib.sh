@@ -1292,6 +1292,23 @@ gate_ready() {
 # again disagree about what counts as AI attribution.
 AI_TRAILER_RE='^(claude|codex)-session:|generated with \[(claude code|codex)\]|^co-authored-by:[[:space:]]*(claude|codex|chatgpt|gpt)\b|^co-authored-by:.*<noreply@(anthropic|openai)\.com>'
 
+# Every AI-credited line in tree $1's $2..HEAD range, one per output line,
+# prefixed with the short hash of the commit it is in. A plain
+# `git log --format='commit %h:%n%B' | grep -in` never shows which commit a
+# hit came from: grep prints only matching lines, so the marker line is
+# dropped along with everything else that did not match, and cap-commit and
+# cap-land shared that same blind format until this replaced both.
+ai_trailer_report() {
+  local tree=$1 base=$2 c
+  while IFS= read -r c; do
+    # grep exits 1 on the (usual) commit with nothing to flag; under set -e,
+    # inherited from lib.sh, that would abort this loop at the first clean
+    # commit instead of finishing the range.
+    git -C "$tree" log -1 --format='%B' "$c" |
+      { grep -inE "$AI_TRAILER_RE" || true; } | sed "s/^/$c: /"
+  done < <(git -C "$tree" log --format=%h "$base..HEAD")
+}
+
 git_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null || echo '-'; }
 git_base() {
   local b

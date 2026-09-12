@@ -38,12 +38,9 @@ fi
 commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD")
 [ "$commits" -gt 0 ] || die "$slug has no commits to land"
 
-# rules/commits.md, enforced rather than described. An agent told to read a rule
-# still writes the trailer; five had to be stripped with filter-branch before
-# this existed.
-bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" \
-	--format='%h %s%n%b' |
-	grep -inE "$AI_TRAILER_RE" || true)
+# rules/commits.md, enforced rather than described. ai_trailer_report
+# (bin/lib.sh) is the one reader cap-commit also uses.
+bad_trailers=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
 [ -z "$bad_trailers" ] || {
 	printf 'cap: %s carries AI attribution, which rules/commits.md forbids:\n' "$slug" >&2
 	printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
