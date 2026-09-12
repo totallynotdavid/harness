@@ -152,12 +152,6 @@ dir=$(task_dir "$slug")
 # mkdir makes the directory exist regardless of who has spawned here.
 task_lock "$slug"
 [ -f "$dir/task.env" ] && die "task '$slug' already exists (cap drop $slug first)"
-# task_lock's own mkdir is the only thing that can have created $dir at
-# this point, since task.env does not exist yet - safe to remove on the
-# way out, the same recovery the later failure paths below already use,
-# so a live pane sharing this name does not leave a lock-only directory
-# cap drop then refuses to touch.
-pane_live "$slug" && { rm -rf "$dir"; die "a pane named '$slug' is already live"; }
 
 mkdir -p "$dir"
 dir=$(cd "$dir" && pwd)
