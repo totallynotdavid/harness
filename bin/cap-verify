@@ -33,6 +33,7 @@ if [ "$repo" = 1 ]; then
   CAP_TREE=$(proj_path "$CAP_PROJECT")
   slug=$CAP_PROJECT
   [ -d "$CAP_TREE/.git" ] || die "$CAP_TREE is not a git repo"
+  project_lock "$CAP_PROJECT"
 else
   [ -n "$slug" ] || die "usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]"
   task_load "$slug"

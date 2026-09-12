@@ -152,6 +152,21 @@ verified_is() {
   [ -n "$sha" ] && [ -f "$VERIFIED/$project/$sha" ]
 }
 
+# One `cap verify --repo` per project's shared checkout at a time - it runs
+# builds and tests directly in proj_path, not a worktree, so two runs (or
+# one racing hand-edits) step on the same tree the way task worktrees used
+# to race before task_lock existed. Dies naming the holder rather than
+# queueing, same as task_lock; released on process exit like it too.
+project_lock() {
+  local project=$1 dir fd
+  dir=$VERIFIED/$project
+  mkdir -p "$dir"
+  exec {fd}>>"$dir/.lock"
+  flock -n "$fd" ||
+    die "$project is already being verified by $(cat "$dir/.lock" 2>/dev/null || echo 'another cap verify --repo')"
+  printf 'pid %s (%s) since %s\n' "$$" "$(basename "$0")" "$(date -u +%H:%M:%SZ)" >"$dir/.lock"
+}
+
 # What one task of a project actually costs in memory, measured from a real
 # cap-verify run (project_peak_record below) rather than guessed, so the
 # CAP_MIN_FREE_MB default only ever covers a project that hasn't run yet.
@@ -390,6 +405,7 @@ task_lock() {
 # Same lock, but returns 1 on contention instead of dying, so a caller that
 # has somewhere else to put the work - cap-send's queue - can choose that
 # instead of failing outright.
+declare -A CAP_LOCK_FDS
 task_try_lock() {
   local slug=$1
   local dir=$TASKS/$slug
@@ -397,11 +413,13 @@ task_try_lock() {
   # marker is exported, so only the holder's children inherit it.
   case " ${CAP_LOCKS:-} " in *" $slug "*) return 0 ;; esac
   mkdir -p "$dir"
-  exec {CAP_LOCK_FD}>>"$dir/.lock"
-  flock -n "$CAP_LOCK_FD" || return 1
+  local fd
+  exec {fd}>>"$dir/.lock"
+  flock -n "$fd" || { exec {fd}>&-; return 1; }
   printf 'pid %s (%s) since %s\n' "$$" "$(basename "$0")" "$(date -u +%H:%M:%SZ)" >"$dir/.lock"
   CAP_LOCKS="${CAP_LOCKS:-} $slug"
   export CAP_LOCKS
+  CAP_LOCK_FDS[$slug]=$fd
 
   # Pinned here, not inside session_identity: x=$(session_identity) always
   # runs in a subshell, so an export inside it never reaches the caller.
@@ -428,6 +446,23 @@ task_try_lock() {
 task_flush_locks_on_exit() {
   local slug
   for slug in ${CAP_LOCKS:-}; do queue_flush "$slug" || true; done
+}
+
+# Releases a lock task_try_lock just took, for a caller that decides not to
+# touch the task after all - stack_sync_task, when the owner check right
+# after locking fails. Without this, that lock sits held until this whole
+# process exits, blocking the descendant's actual owner from their own task
+# for as long as the rest of the cascade takes, over a task this process
+# already declined to touch.
+task_unlock() {
+  local slug=$1 fd
+  fd=${CAP_LOCK_FDS[$slug]:-}
+  [ -n "$fd" ] && exec {fd}>&-
+  unset 'CAP_LOCK_FDS[$slug]'
+  CAP_LOCKS=" ${CAP_LOCKS:-} "
+  CAP_LOCKS=${CAP_LOCKS/ $slug / }
+  CAP_LOCKS=${CAP_LOCKS# }
+  CAP_LOCKS=${CAP_LOCKS% }
 }
 
 # Read a task field without sourcing its record.
@@ -1258,6 +1293,7 @@ stack_sync_task() {
   if ! task_owner_try_claim "$task"; then
     STACK_CONFLICT=$task
     warn "$task is owned by pid $(task_field "$task" CAP_OWNER 2>/dev/null | cut -d@ -f1); its branch was left where it was"
+    task_unlock "$task"
     return 1
   fi
 
