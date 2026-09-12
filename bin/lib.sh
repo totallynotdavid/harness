@@ -1492,17 +1492,21 @@ stack_sync_task() {
 # The caller holds the child's lock across every field it rewrites, not
 # just the rebase: stack_cascade_landed's CAP_BASE/CAP_PARENT/gh pr edit
 # on this same child, right after stack_sync_task, is the same
-# read-modify-write task_lock exists to serialize.
+# read-modify-write task_lock exists to serialize. CAP_OWNER is restored to
+# its prior value, not left as the cascading session: the lock is what
+# serializes the rebase, and ownership must not outlive it.
 stack_cascade() {
   local slug=$1 new_tip=$2 snap=$3
-  local child tree rc
+  local child tree rc prev_owner
 
   for child in $(task_children "$slug"); do
     tree=$(task_field "$child" CAP_TREE)
+    prev_owner=$(task_field "$child" CAP_OWNER 2>/dev/null || true)
 
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
+    task_env_set "$child" CAP_OWNER "$prev_owner"
     task_unlock "$child"
     [ "$rc" = 0 ] || return "$rc"
   done
@@ -1511,13 +1515,14 @@ stack_cascade() {
 # After a parent lands, descendants inherit its base and PR target.
 stack_cascade_landed() {
   local slug=$1 new_tip=$2 snap=$3
-  local child tree up_base up_parent pr rc
+  local child tree up_base up_parent pr rc prev_owner
 
   up_base=$(task_field "$slug" CAP_BASE)
   up_parent=$(task_field "$slug" CAP_PARENT)
 
   for child in $(task_children "$slug"); do
     tree=$(task_field "$child" CAP_TREE)
+    prev_owner=$(task_field "$child" CAP_OWNER 2>/dev/null || true)
 
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
 
@@ -1534,6 +1539,7 @@ stack_cascade_landed() {
 
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
+    task_env_set "$child" CAP_OWNER "$prev_owner"
     task_unlock "$child"
     [ "$rc" = 0 ] || return "$rc"
   done
