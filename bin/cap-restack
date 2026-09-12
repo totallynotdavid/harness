@@ -12,18 +12,16 @@ while [ $# -gt 0 ]; do
 	--undo)
 		undo=1
 		shift
-		# A snapshot argument only follows --undo once the slug is already
-		# known, matching the documented <slug> ... --undo [SNAPSHOT] order.
-		# Before that, the next bare word is the slug, not a snapshot id.
-		if [ -n "$slug" ]; then
-			case ${1:-} in
-			'' | -*) ;;
-			*)
-				snapshot=$1
-				shift
-				;;
-			esac
-		fi
+		# A real path, not just a bare word, is what tells a snapshot
+		# argument apart from the slug when --undo comes before it (cap
+		# restack --undo <slug>, no explicit snapshot) - the same -f test
+		# the undo path below already applies once it has a value.
+		case ${1:-} in
+		'' | -*) ;;
+		*)
+			[ -f "$1" ] && { snapshot=$1; shift; }
+			;;
+		esac
 		;;
 	--take)
 		take=1
