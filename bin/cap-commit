@@ -61,8 +61,17 @@ if [ -n "$bad_trailers" ]; then
   warn "$slug: stripping AI attribution rules/commits.md forbids:"
   printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
   declare -A remap
-  new=$(git -C "$CAP_TREE" rev-parse "$CAP_BASE")
+  new=""
+  rewriting=0
   while IFS= read -r old; do
+    if [ "$rewriting" = 0 ]; then
+      # Untouched until the first commit that actually carries a trailer:
+      # everything before it keeps its own sha, and the parent lookup below
+      # falls back to that unchanged sha with no remap entry to find.
+      git -C "$CAP_TREE" log -1 --format='%B' "$old" | grep -qiE "$AI_TRAILER_RE" || continue
+      rewriting=1
+    fi
+
     tree=$(git -C "$CAP_TREE" rev-parse "$old^{tree}")
     msg=$(git -C "$CAP_TREE" log -1 --format='%B' "$old" |
       grep -viE "$AI_TRAILER_RE" || true)
