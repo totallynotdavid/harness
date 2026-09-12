@@ -598,12 +598,6 @@ task_dispatched_here() {
   agent_cwd_matches "$1" "$pid"
 }
 
-# Whether a stored owner pid is itself the dispatched agent of the task
-# it is recorded as owning.
-owner_is_task_agent() {
-  agent_cwd_matches "$1" "$2"
-}
-
 # True when the task is free for this caller to touch: unowned, dead-owned,
 # or owned by the caller itself or its own dispatched agent. False
 # otherwise, naming nobody - task_owner_check wraps this to die with the
@@ -614,7 +608,7 @@ task_owner_free() {
   local slug=$1 owner me
   task_dispatched_here "$slug" && return 0
   owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
-  [ -n "$owner" ] && owner_is_task_agent "$slug" "${owner%@*}" && return 0
+  [ -n "$owner" ] && agent_cwd_matches "$slug" "${owner%@*}" && return 0
   me=$(session_identity)
   [ -n "$owner" ] && [ "$owner" != "$me" ] && session_alive "$owner" || return 0
   return 1
@@ -648,15 +642,6 @@ task_owner_take() {
 # has done any work.
 task_owner_claim() {
   task_owner_check "$1"
-  task_owner_take "$1"
-}
-
-# Non-dying counterpart to task_owner_claim: returns 1 on a live conflict
-# instead of exiting, so stack_sync_task can report a contended descendant
-# through STACK_CONFLICT the way it already does a rebase conflict, rather
-# than tearing down cap-land's or cap-restack's whole run.
-task_owner_try_claim() {
-  task_owner_free "$1" || return 1
   task_owner_take "$1"
 }
 
@@ -834,8 +819,7 @@ pane_dispatch() {
   local tree=$1 label=$2 out=$3 err=$4
   shift 4
   if ! { [ -n "${HERDR_ENV:-}" ] && have herdr; }; then
-    # No herdr to open a pane in: run directly, exactly as cap-ask's own
-    # dispatch did before pane_dispatch existed, rather than losing ask,
+    # No herdr to open a pane in: run directly, rather than losing ask,
     # gate, commit, cleanup and skills entirely in an environment that
     # never had herdr in the first place.
     (cd "$tree" && "$@" </dev/null >"$out" 2>"$err")
@@ -960,13 +944,6 @@ pane_wait_working() {
     [ "$(pane_agent_status "$slug")" = working ] && return 0
   done
   return 1
-}
-
-# One attempt. queue_flush already leaves a failed delivery queued for the
-# next flush; retrying here on top of that let a delivery that landed but
-# was only slow to show as "working" repeat the same instruction.
-pane_deliver() {
-  pane_submit "$1" "$2"
 }
 
 # herdr's reported status, not a guess from output staleness.
@@ -1435,14 +1412,14 @@ stack_push() {
 # Run the rebase in the task worktree because Git rejects a branch checked out elsewhere.
 # STACK_MOVED and STACK_CONFLICT report partial progress to the caller.
 #
-# Locks and claims the child before touching it: this rebases its worktree
-# and rewrites its task record from inside a command the child never asked
-# to run, which is exactly the cross-session mutation task ownership exists
-# to stop. take=0 always - a --take on the cascading command's own task
-# does not extend to every descendant it touches.
+# Locks the child before touching it, and checks task_owner_free rather than
+# claiming ownership: this rebases its worktree and rewrites its task record
+# from inside a command the child never asked to run, so it must refuse a
+# descendant with a live owner, but the cascading session is not that
+# descendant's owner either, only a caller passing through under its lock.
 stack_sync_task() {
   local task=$1 new_tip=$2 snap=$3
-  local tree branch old_tip prev_owner
+  local tree branch old_tip
 
   # Degrades the same way the rebase conflict below does, instead of
   # dying: a contended descendant must not take cap-land's or cap-restack's
@@ -1454,11 +1431,7 @@ stack_sync_task() {
     return 1
   fi
 
-  # Read before the claim below overwrites it, and restored on every exit
-  # from here on - the claim exists only to check nobody else has a live
-  # right to this descendant, not to hand it to the cascading session.
-  prev_owner=$(task_field "$task" CAP_OWNER 2>/dev/null || true)
-  if ! task_owner_try_claim "$task"; then
+  if ! task_owner_free "$task"; then
     STACK_CONFLICT=$task
     warn "$task is owned by pid $(task_field "$task" CAP_OWNER 2>/dev/null | cut -d@ -f1); its branch was left where it was"
     task_unlock "$task"
@@ -1469,14 +1442,9 @@ stack_sync_task() {
   branch=$(task_field "$task" CAP_BRANCH)
   old_tip=$(task_field "$task" CAP_PARENT_TIP)
 
-  if [ ! -d "$tree" ]; then
-    task_env_set "$task" CAP_OWNER "$prev_owner"
-    die "$task has no worktree at $tree"
-  fi
-  if [ "$(git_dirty "$tree")" != 0 ]; then
-    task_env_set "$task" CAP_OWNER "$prev_owner"
+  [ -d "$tree" ] || die "$task has no worktree at $tree"
+  [ "$(git_dirty "$tree")" = 0 ] ||
     die "$task has uncommitted changes in $tree; commit or discard them first"
-  fi
 
   if [ "$old_tip" != "$new_tip" ]; then
     stack_snapshot_add "$snap" "$tree" "$branch"
@@ -1486,7 +1454,6 @@ stack_sync_task() {
       STACK_CONFLICT=$task
       warn "$task conflicts with its new base; its branch was left where it was"
       warn "resolve by hand: cd $tree && git rebase --onto $new_tip $old_tip"
-      task_env_set "$task" CAP_OWNER "$prev_owner"
       task_unlock "$task"
       return 1
     fi
@@ -1497,14 +1464,12 @@ stack_sync_task() {
 
   stack_snapshot_field "$snap" "$task" CAP_PARENT_TIP
   task_env_set "$task" CAP_PARENT_TIP "$new_tip"
-  task_env_set "$task" CAP_OWNER "$prev_owner"
 }
 
 # The caller holds the child's lock across every field it rewrites, not
 # just the rebase: stack_cascade_landed's CAP_BASE/CAP_PARENT/gh pr edit
 # on this same child, right after stack_sync_task, is the same
-# read-modify-write task_lock exists to serialize. stack_sync_task itself
-# restores CAP_OWNER before returning, on every exit path it has.
+# read-modify-write task_lock exists to serialize.
 stack_cascade() {
   local slug=$1 new_tip=$2 snap=$3
   local child tree rc
