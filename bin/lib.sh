@@ -733,7 +733,10 @@ queue_flush() {
       if queue_prepend "$slug" "$claimed.tail"; then
         rm -f "$claimed" "$claimed.tail"
       else
-        rm -f "$claimed.tail"
+        # $claimed still holds 1..n-1, already delivered and logged. Left in
+        # place, the recovery block above would fold the whole thing back
+        # next flush and resend them. Replace it with the tail alone.
+        mv "$claimed.tail" "$claimed"
       fi
       return 0
     fi
