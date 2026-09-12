@@ -1276,7 +1276,21 @@ gate_ready() {
   local slug=$1 tree=$2 base=$3
   local f=$TASKS/$slug/gate.json cur a_v a_fp b_v b_fp
   [ -f "$f" ] || return 1
-  cur=$(gate_fingerprint "$tree" "$base")
+
+  # gate_fingerprint diffs the base and cats every untracked file; cheap once,
+  # not on every captain turn crew-status.sh calls this from. cap-gate itself
+  # skips this cache and always computes fresh, since it is about to record
+  # the fingerprint it reads as the one this exact review covered.
+  local cache=$TASKS/$slug/.gate-fp-cache age
+  if [ -f "$cache" ]; then
+    age=$(($(now) - $(stat -c %Y "$cache" 2>/dev/null || echo 0)))
+    [ "$age" -lt "${CAP_GATE_FP_TTL:-30}" ] && cur=$(cat "$cache")
+  fi
+  if [ -z "${cur:-}" ]; then
+    cur=$(gate_fingerprint "$tree" "$base")
+    printf '%s' "$cur" >"$cache"
+  fi
+
   a_v=$(jq -r '.A.verdict // empty' "$f" 2>/dev/null || true)
   a_fp=$(jq -r '.A.fingerprint // empty' "$f" 2>/dev/null || true)
   b_v=$(jq -r '.B.verdict // empty' "$f" 2>/dev/null || true)
