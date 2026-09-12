@@ -33,9 +33,7 @@ done
 # ever applied below, in the branch that has one.
 if [ "$repo" = 1 ]; then
   # A bare word or --take alongside --repo names a task this command was
-  # never asked to touch or own - refused here rather than silently
-  # dropped, which is what let --repo <project> <slug> verify the project
-  # while leaving the slug untouched and unlocked.
+  # never asked to touch or own - refused here rather than silently dropped.
   [ -z "$slug" ] || die "$usage"
   [ "$take" = 0 ] || die "$usage"
   CAP_PROJECT=$project
