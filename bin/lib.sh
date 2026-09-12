@@ -441,10 +441,10 @@ task_try_lock() {
   CAP_LOCK_DEPTH[$slug]=1
 
   # Pinned here, not inside session_identity: x=$(session_identity) always
-  # runs in a subshell, so an export inside it never reaches the caller.
-  # Without this, cap-land shelling out to cap-drop would get a different
-  # identity under the same harness and refuse. cap_env_scrub strips
-  # CAP_SESSION the same as CAP_LOCKS, so a dispatched agent never sees it.
+  # runs in a subshell, so an export inside it never reaches the caller, and
+  # cap-land shelling out to cap-drop needs the same identity under the same
+  # harness. cap_env_scrub strips CAP_SESSION the same as CAP_LOCKS, so a
+  # dispatched agent never sees it.
   if [ -z "${CAP_SESSION:-}" ]; then
     CAP_SESSION=$(session_identity)
     export CAP_SESSION
@@ -467,12 +467,9 @@ task_flush_locks_on_exit() {
   for slug in ${CAP_LOCKS:-}; do queue_flush "$slug" || true; done
 }
 
-# Releases a lock task_try_lock just took, for a caller that decides not to
-# touch the task after all - stack_sync_task, when the owner check right
-# after locking fails. Without this, that lock sits held until this whole
-# process exits, blocking the descendant's actual owner from their own task
-# for as long as the rest of the cascade takes, over a task this process
-# already declined to touch.
+# Releases a lock task_try_lock took, as soon as a caller is done with the
+# task - stack_sync_task's own failure paths, and its cascade callers once
+# a descendant's per-child work is finished.
 task_unlock() {
   local slug=$1 fd
   fd=${CAP_LOCK_FDS[$slug]:-}
@@ -636,8 +633,8 @@ task_owner_check() {
 # Records the caller as owner, unconditionally - skipped for a plain shell
 # (see session_identity) and for the task's own dispatched agent
 # (task_dispatched_here), since an agent naming itself owner of its own
-# task is exactly what blocked its own captain here. What a --take caller
-# calls directly, and what task_owner_claim below calls after checking.
+# task would block its own captain from it. What a --take caller calls
+# directly, and what task_owner_claim below calls after checking.
 task_owner_take() {
   local slug=$1 me
   task_dispatched_here "$slug" && return 0
@@ -937,7 +934,7 @@ pane_enter() {
 # Types text in once, then presses Enter up to 3 times, checking after each
 # for a turn to start via pane_wait_working, not whether the text is still
 # visible: a short message, or one the harness echoes back, would make that
-# match forever. Retypes nothing; pane_deliver decides whether to resend.
+# match forever.
 pane_submit() {
   local slug=$1 text=$2 _
   pane_send "$slug" "$text"
@@ -959,15 +956,11 @@ pane_wait_working() {
   return 1
 }
 
-# The full verified send both cap-send's direct delivery and queue_flush's
-# backlog delivery need: submit, and if no turn started, resend once before
-# reporting failure.
+# One attempt. queue_flush already leaves a failed delivery queued for the
+# next flush; retrying here on top of that let a delivery that landed but
+# was only slow to show as "working" repeat the same instruction.
 pane_deliver() {
-  local slug=$1 text=$2
-  pane_submit "$slug" "$text" && return 0
-  warn "$slug: no turn started after the first send; retrying once"
-  pane_submit "$slug" "$text" && return 0
-  return 1
+  pane_submit "$1" "$2"
 }
 
 # herdr's reported status, not a guess from output staleness.
@@ -989,8 +982,6 @@ pane_context_pct() {
 # A task is idle when its recent output stops changing. Not a read: it
 # rewrites state/tasks/<slug>/watch and reports changed=1 exactly once per
 # change, an edge bin/cap-watch consumes to know when to re-arm $reported.
-# task_state below has its own tracker (task_state_stale_age) precisely so
-# its own, more frequent polling never eats that edge out from under it.
 task_idle_age() {
   local w=$TASKS/$1/watch h
   h=$(pane_tail "$1" 40 | cksum | cut -d' ' -f1)
@@ -1104,8 +1095,7 @@ task_state() {
     *)
       # Genuinely ambiguous (unknown, or a harness herdr does not
       # instrument): falls back to whether the pane's visible output has
-      # changed recently, tracked separately from task_idle_age so this
-      # poll never eats the change-edge cap-watch depends on.
+      # changed recently (task_state_stale_age).
       age=$(task_state_stale_age "$slug")
       if [ "$age" -ge "$CAP_IDLE_SECS" ]; then
         agent=idle
@@ -1343,10 +1333,9 @@ AI_TRAILER_RE='^(claude|codex)-session:|generated with \[(claude code|codex)\]|^
 
 # Every AI-credited line in tree $1's $2..HEAD range, one per output line,
 # prefixed with the short hash of the commit it is in. A plain
-# `git log --format='commit %h:%n%B' | grep -in` never shows which commit a
-# hit came from: grep prints only matching lines, so the marker line is
-# dropped along with everything else that did not match, and cap-commit and
-# cap-land shared that same blind format until this replaced both.
+# `git log --format='commit %h:%n%B' | grep -in` cannot do this: grep prints
+# only matching lines, so the marker line is dropped along with everything
+# that did not match.
 ai_trailer_report() {
   local tree=$1 base=$2 c hashes
   # A process substitution's own failure (an invalid range, git missing)
@@ -1491,25 +1480,31 @@ stack_sync_task() {
 
   stack_snapshot_field "$snap" "$task" CAP_PARENT_TIP
   task_env_set "$task" CAP_PARENT_TIP "$new_tip"
-  task_unlock "$task"
 }
 
+# The caller holds the child's lock across every field it rewrites, not
+# just the rebase: stack_cascade_landed's CAP_BASE/CAP_PARENT/gh pr edit
+# on this same child, right after stack_sync_task, is the same
+# read-modify-write task_lock exists to serialize.
 stack_cascade() {
   local slug=$1 new_tip=$2 snap=$3
-  local child tree
+  local child tree rc
 
   for child in $(task_children "$slug"); do
     tree=$(task_field "$child" CAP_TREE)
 
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
-    stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || return 1
+    rc=0
+    stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
+    task_unlock "$child"
+    [ "$rc" = 0 ] || return "$rc"
   done
 }
 
 # After a parent lands, descendants inherit its base and PR target.
 stack_cascade_landed() {
   local slug=$1 new_tip=$2 snap=$3
-  local child tree up_base up_parent pr
+  local child tree up_base up_parent pr rc
 
   up_base=$(task_field "$slug" CAP_BASE)
   up_parent=$(task_field "$slug" CAP_PARENT)
@@ -1530,7 +1525,10 @@ stack_cascade_landed() {
         warn "could not retarget $pr to $up_base; set its base by hand"
     fi
 
-    stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || return 1
+    rc=0
+    stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
+    task_unlock "$child"
+    [ "$rc" = 0 ] || return "$rc"
   done
 }
 
@@ -1538,8 +1536,7 @@ stack_cascade_landed() {
 # variable (CAP_LOCKS, CAP_SESSION, CAP_ASK_KEY, CAP_TASK, any future one)
 # from a dispatched harness's environment - computed fresh from what is
 # exported right now, not a maintained list, so a lock or identity pinned
-# earlier in this process is always included. Every dispatch site
-# (cap-spawn, cap-send, cap-ask) calls this directly at dispatch time.
+# earlier in this process is always included.
 cap_env_scrub() {
   local scrub=(-u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL
     -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL -u CLAUDE_CODE_SUBAGENT_MODEL
