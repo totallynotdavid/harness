@@ -484,10 +484,6 @@ task_unlock() {
     CAP_LOCK_DEPTH[$slug]=$(( CAP_LOCK_DEPTH[$slug] - 1 ))
     return 0
   fi
-  # A caller that releases explicitly, rather than by exiting, skips
-  # task_flush_locks_on_exit entirely: CAP_LOCKS is about to lose this slug
-  # below, so nothing left running will ever flush what is queued for it.
-  queue_flush "$slug" || true
   unset 'CAP_LOCK_DEPTH[$slug]'
   exec {fd}>&-
   unset 'CAP_LOCK_FDS[$slug]'
@@ -1404,6 +1400,12 @@ harness_trust() {
 STACK_MOVED=0
 STACK_CONFLICT=""
 
+# Slugs stack_cascade/stack_cascade_landed actually finished syncing, in the
+# order they finished. task_unlock only releases a lock; the top-level
+# caller flushes each of these once the whole cascade returns, rather than
+# per child while siblings are still being rebased.
+STACK_SYNCED=""
+
 # Store branch refs under state/restacks so --undo can restore them.
 stack_snapshot_new() {
   mkdir -p "$CAP_HOME/state/restacks"
@@ -1510,6 +1512,7 @@ stack_cascade() {
     tree=$(task_field "$child" CAP_TREE)
 
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
+    STACK_SYNCED="${STACK_SYNCED:+$STACK_SYNCED }$child"
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
     task_unlock "$child"
@@ -1529,6 +1532,7 @@ stack_cascade_landed() {
     tree=$(task_field "$child" CAP_TREE)
 
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
+    STACK_SYNCED="${STACK_SYNCED:+$STACK_SYNCED }$child"
 
     stack_snapshot_field "$snap" "$child" CAP_BASE
     task_env_set "$child" CAP_BASE "$up_base"

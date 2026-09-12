@@ -101,6 +101,10 @@ snapshot=$(stack_snapshot_new "$slug")
 rc=0
 stack_cascade "$slug" "$new_tip" "$snapshot" || rc=$?
 
+# Flushed once the whole cascade is done, not per child mid-walk: each of
+# these finished its own sync, however the rest of the stack came out.
+for t in $STACK_SYNCED; do queue_flush "$t" || true; done
+
 # Do not keep empty snapshots; there is nothing to undo.
 [ "$STACK_MOVED" != 0 ] || rm -f "$snapshot"
 
