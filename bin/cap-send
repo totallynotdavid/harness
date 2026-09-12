@@ -166,13 +166,13 @@ if task_try_lock "$slug"; then
 
 	# A turn has started, so the task is not done, and cap send is the one
 	# place that knows this for certain. Named by pid, not "the captain":
-	# with more than one captain, only the pid tells them apart. Kept in
-	# full rather than truncated to a prefix, and flattened to one line,
-	# since task_status_verb and task_status_latest each treat one line as
-	# one event.
-	sent_by=$(session_identity)
+	# with more than one captain, only the pid tells them apart. Flattened
+	# to one line (task_status_verb/task_status_latest treat one line as
+	# one event) but kept in full: a truncated log once caused a near-
+	# revert, when a captain could not read what another had fully asked.
+	sent_by=$(session_label "$(session_identity)")
 	sent=$(printf '%s' "$text" | tr '\n' ' ')
-	printf 'working: sent by pid %s: %s\n' "${sent_by%@*}" "$sent" >>"$TASKS/$slug/status.log"
+	printf 'working: sent by %s: %s\n' "$sent_by" "$sent" >>"$TASKS/$slug/status.log"
 
 	if [ "$force" = 1 ] && [ -n "$ctx" ]; then
 		printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"

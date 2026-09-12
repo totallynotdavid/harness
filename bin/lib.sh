@@ -526,6 +526,16 @@ session_identity() {
   printf '%s' "$id"
 }
 
+# A status.log-ready label for a session_identity id (or a bare pid, as
+# stored in the send queue): "pid N", or a name that still says something
+# happened when there is no pid to name - a caller with no recognisable
+# harness ancestor is rare but real, and leaving the field blank ("sent by
+# pid : ...") is exactly the unactionable line this attribution replaces.
+session_label() {
+  local pid=${1%@*}
+  if [ -n "$pid" ]; then printf 'pid %s' "$pid"; else printf 'an unidentified session'; fi
+}
+
 # Whether an id from session_identity still names a running process. pids
 # get reused, so this also checks the recorded start time, not just pid
 # occupancy - and a transient failure to read /proc/<pid>/stat answers
@@ -711,14 +721,14 @@ queue_flush() {
     b64=${line#*$'\t'}
     text=$(printf '%s' "$b64" | base64 -d 2>/dev/null || true)
     if pane_deliver "$slug" "$text"; then
-      printf 'working: sent by pid %s: %s\n' "$pid" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$dir/status.log"
+      printf 'working: sent by %s: %s\n' "$(session_label "$pid")" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$dir/status.log"
     else
       # This message and anything queued after it stay queued, unread,
       # rather than being lost or logged as sent - the pane is not
       # accepting input right now, so trying the rest in order would
       # only fail the same way. Prepended, not appended: anything already
       # in $spool arrived after the claim, so it is newer than this.
-      warn "$slug: a queued message from pid $pid did not deliver; left queued"
+      warn "$slug: a queued message from $(session_label "$pid") did not deliver; left queued"
       tail -n "+$n" "$claimed" >"$claimed.tail"
       if queue_prepend "$slug" "$claimed.tail"; then
         rm -f "$claimed" "$claimed.tail"
