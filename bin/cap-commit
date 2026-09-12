@@ -54,14 +54,15 @@ else
   die "$slug's history no longer matches its code: HEAD's tree differs from the snapshot at $snap_ref. Compare with: git -C $CAP_TREE diff $snap_ref HEAD"
 fi
 
-# rules/commits.md, enforced here rather than left for cap-land to catch -
-# an agent told to read a rule still writes the trailer. git filter-branch's
-# commit-filter passes no -S and drops GPG signatures, so this rebuilds
-# each commit with commit-tree instead, keeping tree, parent(s), identity,
-# dates, and signed-ness. %h on its own line, not %h %s, keeps a trailer
-# folded into %s (no blank line before it) visible to the anchored regex.
+# ai_trailer_re matches an AI credit specifically - a session-link trailer,
+# a generated-with byline, or a Co-Authored-By naming a known model or vendor
+# noreply address, never a bare human name - so a cherry-picked commit or a
+# human pair credit survives untouched. Rebuilt with commit-tree, not
+# git filter-branch (drops -S): %h alone, not %h %s, keeps a trailer folded
+# into %s visible to the regex.
+ai_trailer_re='^(claude|codex)-session:|generated with \[(claude code|codex)\]|^co-authored-by:[[:space:]]*(claude|codex|chatgpt|gpt)\b|^co-authored-by:.*<noreply@(anthropic|openai)\.com>'
 bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='commit %h:%n%B' |
-  grep -inE '^(co-authored-by|claude-session):|generated with \[claude code\]' || true)
+  grep -inE "$ai_trailer_re" || true)
 if [ -n "$bad_trailers" ]; then
   warn "$slug: stripping AI attribution rules/commits.md forbids:"
   printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
@@ -70,7 +71,7 @@ if [ -n "$bad_trailers" ]; then
   while IFS= read -r old; do
     tree=$(git -C "$CAP_TREE" rev-parse "$old^{tree}")
     msg=$(git -C "$CAP_TREE" log -1 --format='%B' "$old" |
-      grep -viE '^(co-authored-by|claude-session):|generated with \[claude code\]' || true)
+      grep -viE "$ai_trailer_re" || true)
     [ -n "$msg" ] ||
       die "$slug: $old's message is nothing but AI attribution; fix it by hand"
 
