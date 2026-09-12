@@ -7,6 +7,14 @@ set -euo pipefail
 CAP_HOME=${CAP_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 export CAP_HOME
 
+# Where state lives (CAP_HOME) and which code is running (CAP_BIN) are the
+# same directory in the hub, and only ever differ in a worktree. A sibling
+# invoked through CAP_BIN is always the one that shipped with this file,
+# never whatever CAP_HOME happens to point at. Always this file's own
+# directory: there is no ambiguity here to override.
+CAP_BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export CAP_BIN
+
 # shellcheck source=config/captain.conf
 . "$CAP_HOME/config/captain.conf"
 
