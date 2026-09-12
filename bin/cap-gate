@@ -32,8 +32,10 @@ diff_from=$(diff_base "$CAP_TREE" "$CAP_BASE")
 
 prompt="Read $CAP_HOME/rules/code.md, then review every change in this
 worktree against $diff_from (git diff $diff_from, plus any uncommitted change).
-Report concrete defects: what is wrong, where, and the failure it causes. Do
-not edit files. End with a single line, exactly: GATE: PASS or GATE: FAIL."
+Report concrete defects: what is wrong, where, and the failure it causes. State
+what you checked and what you verified as working, whether or not you found a
+defect. Do not edit files. End with a single line, exactly: GATE: PASS or
+GATE: FAIL."
 
 out_dir=$CAP_HOME/notes/$CAP_PROJECT
 mkdir -p "$out_dir"
