@@ -23,6 +23,11 @@ if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug";
 
 [ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to commit"
 
+# Refuses an attributed commit inside the agent's own loop instead of after
+# the run is already over. See git_install_attribution_hook (bin/lib.sh) for
+# why this cannot just be $CAP_TREE/.git/hooks.
+git_install_attribution_hook "$CAP_TREE"
+
 # Snapshot the full working-tree state (tracked, staged, and untracked) before
 # the commit agent reshapes it into commits, so the result can be checked
 # against it afterward: same tree, different history. A throwaway index keeps
