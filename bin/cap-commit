@@ -64,17 +64,22 @@ if [ -n "$bad_trailers" ]; then
   new=""
   rewriting=0
   while IFS= read -r old; do
+    # Read once into a variable and matched with a here-string, not piped
+    # into grep: a large message piped into grep -q lets grep exit at its
+    # first match before git log finishes writing, git log dies of SIGPIPE,
+    # and pipefail turns that into a failure indistinguishable from no match.
+    body=$(git -C "$CAP_TREE" log -1 --format='%B' "$old")
+
     if [ "$rewriting" = 0 ]; then
       # Untouched until the first commit that actually carries a trailer:
       # everything before it keeps its own sha, and the parent lookup below
       # falls back to that unchanged sha with no remap entry to find.
-      git -C "$CAP_TREE" log -1 --format='%B' "$old" | grep -qiE "$AI_TRAILER_RE" || continue
+      grep -qiE "$AI_TRAILER_RE" <<<"$body" || continue
       rewriting=1
     fi
 
     tree=$(git -C "$CAP_TREE" rev-parse "$old^{tree}")
-    msg=$(git -C "$CAP_TREE" log -1 --format='%B' "$old" |
-      grep -viE "$AI_TRAILER_RE" || true)
+    msg=$(grep -viE "$AI_TRAILER_RE" <<<"$body" || true)
     [ -n "$msg" ] ||
       die "$slug: $old's message is nothing but AI attribution; fix it by hand"
 
