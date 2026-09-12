@@ -34,7 +34,18 @@ for slug in $(task_slugs); do
 
 	case $state in
 	ready)
-		add "  $slug ($project) is ready to land: cap land $slug"
+		# gate_ready is true the moment gate A+B pass the tree as it stands,
+		# uncommitted or not (gate_fingerprint hashes the working tree, and
+		# cap-gate runs before cap-commit), so a task fresh off a passing
+		# gate is normally still dirty. cap land refuses that, same as
+		# cap-gate's own "cap commit && cap land" line below - name the
+		# same next step here instead of one that dies.
+		tree=$(task_field "$slug" CAP_TREE 2>/dev/null || true)
+		if [ -n "$tree" ] && [ "$(git_dirty "$tree")" != 0 ]; then
+			add "  $slug ($project) is ready to land: cap commit $slug && cap land $slug"
+		else
+			add "  $slug ($project) is ready to land: cap land $slug"
+		fi
 		;;
 	blocked | needs-input | failed)
 		note=$(grep -E "^$state:" "$TASKS/$slug/status.log" 2>/dev/null | tail -1 || true)
