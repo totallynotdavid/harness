@@ -11,6 +11,7 @@
 #
 # Every flag is scanned across all of "$@" rather than read positionally,
 # so its place relative to the slug or --repo never changes what it does.
+usage="usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]"
 again=0
 take=0
 repo=0
@@ -20,22 +21,29 @@ while [ $# -gt 0 ]; do
   case $1 in
   --again) again=1; shift ;;
   --take) take=1; shift ;;
-  --repo) repo=1; project=${2:?usage: cap verify --repo <project> [--again]}; shift 2 ;;
-  -*) die "usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]" ;;
-  *) slug=$1; shift ;;
+  --repo) repo=1; project=${2:?$usage}; shift 2 ;;
+  -*) die "$usage" ;;
+  *)
+    [ -z "$slug" ] || die "$usage"
+    slug=$1; shift ;;
   esac
 done
 
 # --take names a task to own, which --repo mode has none of, so it is only
 # ever applied below, in the branch that has one.
 if [ "$repo" = 1 ]; then
+  # A bare word alongside --repo is a task this command was never asked to
+  # touch, not a second flag value - refused here rather than silently
+  # dropped, which is what let --repo <project> <slug> verify the project
+  # while leaving the slug untouched and unlocked.
+  [ -z "$slug" ] || die "$usage"
   CAP_PROJECT=$project
   CAP_TREE=$(proj_path "$CAP_PROJECT")
   slug=$CAP_PROJECT
   [ -d "$CAP_TREE/.git" ] || die "$CAP_TREE is not a git repo"
   project_lock "$CAP_PROJECT"
 else
-  [ -n "$slug" ] || die "usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]"
+  [ -n "$slug" ] || die "$usage"
   task_load "$slug"
   task_lock "$slug"
   if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
