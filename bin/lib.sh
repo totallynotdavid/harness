@@ -936,7 +936,11 @@ pane_context_pct() {
   pane_tail "$1" 8 | grep -oiE '(context|ctx) [0-9]+% used' | tail -1 | grep -oE '[0-9]+'
 }
 
-# A task is idle when its recent output stops changing.
+# A task is idle when its recent output stops changing. Not a read: it
+# rewrites state/tasks/<slug>/watch and reports changed=1 exactly once per
+# change, an edge bin/cap-watch consumes to know when to re-arm $reported.
+# task_state below has its own tracker (task_state_stale_age) precisely so
+# its own, more frequent polling never eats that edge out from under it.
 task_idle_age() {
   local w=$TASKS/$1/watch h
   h=$(pane_tail "$1" 40 | cksum | cut -d' ' -f1)
@@ -946,6 +950,24 @@ task_idle_age() {
   else
     printf '%s %s\n' "$h" "$(now)" >"$w"
     printf '0 1'
+  fi
+}
+
+# Same signal as task_idle_age - has the pane's tail stopped changing - but
+# tracked in its own file, never state/tasks/<slug>/watch: task_state below
+# polls on every captain turn, and sharing task_idle_age's file would eat
+# the changed=1 edge cap-watch depends on to re-arm $reported. Only reached
+# when herdr itself cannot classify the agent (case *) below), which is
+# rare, so a second small tracker file per task costs little.
+task_state_stale_age() {
+  local w=$TASKS/$1/.task-state-watch h
+  h=$(pane_tail "$1" 40 | cksum | cut -d' ' -f1)
+
+  if [ -f "$w" ] && [ "$(cut -d' ' -f1 "$w")" = "$h" ]; then
+    printf '%s' "$(($(now) - $(cut -d' ' -f2 "$w")))"
+  else
+    printf '%s %s\n' "$h" "$(now)" >"$w"
+    printf 0
   fi
 }
 
@@ -1012,15 +1034,37 @@ task_state() {
     agent=exited
   else
     agent=$(pane_agent_status "$slug")
-    # herdr's own status can itself come back as neither: a harness it does
-    # not instrument, or a transient read failure. Falls back to whether
-    # the pane's visible output has changed recently - the same signal
-    # cap-send already trusts for this exact question.
-    if [ "$agent" != working ] && [ "$agent" != idle ]; then
-      age=$(task_idle_age "$slug" | cut -d' ' -f1)
-      [ "$age" -ge "$CAP_IDLE_SECS" ] && agent=idle || agent=working
-    fi
-    [ "$agent" = working ] && { printf working; return; }
+    case $agent in
+    working)
+      printf working
+      return
+      ;;
+    idle | done)
+      # herdr's own account of "ready for input" - done and idle differ
+      # only in whether a client has acknowledged it, not in whether the
+      # agent is running (herdr --skill). Ground truth either way.
+      agent=idle
+      ;;
+    blocked)
+      # An approval/question prompt herdr itself recognised - ground truth
+      # that this needs the captain now, not a log word to defer to.
+      printf blocked
+      return
+      ;;
+    *)
+      # Genuinely ambiguous (unknown, or a harness herdr does not
+      # instrument): falls back to whether the pane's visible output has
+      # changed recently, tracked separately from task_idle_age so this
+      # poll never eats the change-edge cap-watch depends on.
+      age=$(task_state_stale_age "$slug")
+      if [ "$age" -ge "$CAP_IDLE_SECS" ]; then
+        agent=idle
+      else
+        printf working
+        return
+      fi
+      ;;
+    esac
   fi
 
   # herdr has now settled *whether* it stopped; the log is read only for
