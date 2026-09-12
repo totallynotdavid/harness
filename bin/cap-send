@@ -146,38 +146,39 @@ fi
 if task_try_lock "$slug"; then
 	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
-	# Flushed explicitly here, ahead of this call's own message, so an
-	# older queued correction always lands before a newer one instead of
-	# racing the automatic release flush every locking command now gets
-	# (see task_try_lock) - that one alone would deliver this call's
-	# message first and the backlog only after, at exit.
-	queue_flush "$slug" || true
+	# Flushed explicitly here, ahead of this call's own message, so an older
+	# queued correction lands first instead of racing the exit-time flush
+	# every locking command now gets. A non-zero return means something
+	# ahead of this call's own text was typed but never confirmed, or a
+	# stranded claim could not be recovered - the pane's state is not to be
+	# trusted, so this call's own text goes in behind it, not out of order.
+	if queue_flush "$slug"; then
+		# Typed but never confirmed a turn started, on failure: must never
+		# be typed again by anyone, so it is logged as unconfirmed rather
+		# than queued for a later flush to retry.
+		pane_submit "$slug" "$text" || {
+			printf 'unconfirmed: sent by %s: %s\n' \
+				"$(session_label "$(session_identity)")" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$TASKS/$slug/status.log"
+			die "$slug: typed into the pane but never confirmed a turn started; will not be retried automatically - check by hand: cap peek $slug"
+		}
 
-	# Queued, not dropped, on a failed delivery: pane_submit has already
-	# typed the text by this point, and a confirmed turn is what
-	# pane_deliver actually checked for. Unlocked before queuing so this
-	# call's own exit does not immediately flush and retype the very text
-	# it just failed to confirm - task_flush_locks_on_exit only flushes
-	# slugs still in CAP_LOCKS, and task_unlock strips this one first.
-	pane_deliver "$slug" "$text" || {
-		task_unlock "$slug"
-		queue_send "$slug" "$text"
-		die "$slug: sent but the agent never started a turn; queued for delivery once the pane accepts input - check by hand: cap peek $slug"
-	}
+		# A turn has started, so the task is not done, and cap send is the one
+		# place that knows this for certain. Named by pid, not "the captain":
+		# with more than one captain, only the pid tells them apart. Flattened
+		# to one line (task_status_verb/task_status_latest treat one line as
+		# one event) but kept in full: a truncated message hides what was asked.
+		sent_by=$(session_label "$(session_identity)")
+		sent=$(printf '%s' "$text" | tr '\n' ' ')
+		printf 'working: sent by %s: %s\n' "$sent_by" "$sent" >>"$TASKS/$slug/status.log"
 
-	# A turn has started, so the task is not done, and cap send is the one
-	# place that knows this for certain. Named by pid, not "the captain":
-	# with more than one captain, only the pid tells them apart. Flattened
-	# to one line (task_status_verb/task_status_latest treat one line as
-	# one event) but kept in full: a truncated message hides what was asked.
-	sent_by=$(session_label "$(session_identity)")
-	sent=$(printf '%s' "$text" | tr '\n' ' ')
-	printf 'working: sent by %s: %s\n' "$sent_by" "$sent" >>"$TASKS/$slug/status.log"
-
-	if [ "$force" = 1 ] && [ -n "$ctx" ]; then
-		printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"
+		if [ "$force" = 1 ] && [ -n "$ctx" ]; then
+			printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"
+		else
+			printf 'sent to %s (working, ctx %s%% used)\n' "$slug" "${ctx:-?}"
+		fi
 	else
-		printf 'sent to %s (working, ctx %s%% used)\n' "$slug" "${ctx:-?}"
+		queue_send "$slug" "$text"
+		printf 'queued for %s: an earlier message in its queue did not deliver; delivered once the pane accepts input\n' "$slug"
 	fi
 else
 	[ "$take" = 1 ] || task_owner_check "$slug"
