@@ -285,31 +285,18 @@ it, stays in the queue instead of being logged as sent and lost. Queued text is 
 base64-encoded rather than flattened with `tr '\n' ' '`, so a multi-line message arrives
 exactly as typed whether the lock happened to be free or not.
 
-## Every agent session runs in a pane, never as a bare background child
+## Every agent session runs in a pane
 
-`bin/cap-spawn` opened a herdr pane for a crewmate from the start; `bin/cap-ask` did not -
-it ran `claude -p --output-format stream-json` (or `codex exec --json`) as a plain child
-process with no terminal, and `cap-gate`, `cap-commit`, `cap-cleanup`, and `cap-send`'s
-`revive` all dispatch through it, so roughly half of Captain's agent sessions were invisible
-by construction. A three-captain hub made a shared "watcher pane that follows the newest
-`state/ask` file" the wrong fix even as a stopgap: it showed one captain another captain's
-review.
+`cap-spawn` opens a herdr pane and starts the session inside it. `cap-ask` runs the harness
+through `pane_dispatch`, which opens a pane the same way, so no session runs as a bare
+background child.
 
-`pane_dispatch` (`bin/lib.sh`) is the one dispatch path now: it opens a herdr pane the same
-way `cap-spawn` does, runs the harness inside it with stdout `tee`'d to both the pane and a
-file, and blocks on a done-file the wrapper script touches last. Structured output and
-visibility were never actually a trade - `cap-ask` still parses the exact same captured
-file it always did; the pane is what a human sees while that capture happens, and it closes
-once the call finishes (or stays open, unclosed, if `CAP_ASK_MAX_WAIT` is exceeded, so a
-stuck call is somewhere to go look rather than something silently killed).
+The sessions `cap-ask` starts are still print mode: `claude -p --output-format stream-json`
+and `codex exec --json`. A print-mode session cannot be typed into, `cap-send` cannot reach
+it, and a permission prompt inside it hangs until `CAP_ASK_MAX_WAIT` is exceeded and the
+pane is left open. The pane shows its output; it does not make it a session.
 
-This closes the specific orphan class observed before: a `cap gate`/`cap ask` review killed
-mid-run (e.g. for memory pressure) used to leave a bare `claude`/`codex` process with no
-pane to notice it was gone, discoverable only via `ps aux --sort=-%mem | grep -E
-"claude|codex"`. A pane-dispatched call still shows up in `herdr pane list`, the same as a
-`cap spawn` agent, so a leftover with `"agent_status":"unknown"` (a call that crashed or
-never reached its own `herdr pane close`) is found and cleared the same way:
-`herdr pane close <pane_id>`.
+Removing print mode is the open work.
 
 ## Dispatch sizing: quota routes work, it does not cheapen it
 

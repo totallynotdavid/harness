@@ -225,12 +225,8 @@ if [ -n "$owns" ]; then
   read -r -a owns_list <<<"$owns"
   owns_write "$slug" "${owns_list[@]}"
 
-  # Deliberately $CAP_HOME, not $CAP_BIN, even when this cap-spawn is itself
-  # running from a worktree: the path goes into the agent's own settings.json
-  # and outlives this process, but a worktree does not - cap-drop/cap-land
-  # can delete the one this process is running from while the agent it
-  # spawned is still alive. A guard the guarded agent's own tree could ever
-  # make disappear, or edit out from under itself, was never really a guard.
+  # Deliberately $CAP_HOME: this path outlives the worktree it may be spawned
+  # from, and must stay outside the reach of the agent it guards.
   guard_settings=$(jq -nc --arg cmd "$CAP_HOME/bin/hooks/guard-task-paths.sh" --arg slug "$slug" '{
     hooks: {
       PreToolUse: [{

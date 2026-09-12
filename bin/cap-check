@@ -6,11 +6,9 @@ repo=""
 base=""
 project=""
 
-# Locked for read consistency against a concurrent mutator (gate, commit,
-# ...), same as they take it - but never claims ownership: this only ever
-# reads a diff, and an inspection is not the session-length commitment
-# every other lock site's --take makes. cap crew/watch/sessions skip the
-# lock entirely; they exist to show every task regardless of who owns it.
+# Locked for read consistency against a concurrent mutator, but never
+# claims ownership: an inspection is not the session-length commitment
+# --take makes elsewhere.
 if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
 	task_load "$1"
 	task_lock "$1"

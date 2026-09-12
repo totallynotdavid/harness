@@ -61,8 +61,6 @@ code. Do not change behavior, run tests, or commit. Leave all edits unstaged.
 
 If a section does not need changes, leave it alone."
 
-# Not exec: that replaces the process image and discards the EXIT trap
-# task_lock armed above, so a message queued while this command held the
-# lock would never flush once cap-ask finishes. Running it normally keeps
-# this process alive to exit (and flush) after cap-ask returns.
+# Not exec: that would discard task_lock's EXIT trap, so a message queued
+# while this command holds the lock would never flush.
 "$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"

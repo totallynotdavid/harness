@@ -20,12 +20,10 @@ text=$*
 
 task_load "$slug"
 
-# Checked before anything else below, including the context ceiling and
-# any compaction it triggers: compacting another session's agent is the
-# one irreversible thing this command can do, and it must never happen
-# before ownership is confirmed, the way sync_base never runs in cap-gate
-# before its own task_owner_claim. task_owner_claim (the write) still
-# only happens under the lock further down; this is read-only.
+# Checked before anything else below, including the context ceiling and any
+# compaction it triggers: compacting another session's agent is the one
+# irreversible thing this command can do. task_owner_claim (the write)
+# still only happens under the lock further down; this is read-only.
 [ "$take" = 1 ] || task_owner_check "$slug"
 
 # A dead pane used to end the command here, which left the captain holding
@@ -82,12 +80,10 @@ $text"
 
 
 if ! pane_live "$slug"; then
-	# Reviving starts a whole new session; it is rare and disruptive enough
-	# that it dies loudly on contention like every other mutating command,
-	# rather than queueing this call's own message. task_lock arms the
-	# same release flush every locking command gets, so anything left
-	# queued for the session that just died still goes in once this
-	# process exits below, after the new pane is confirmed working.
+	# Reviving starts a whole new session, rare and disruptive enough to die
+	# loudly on contention rather than queue this call's own message.
+	# task_lock's own release flush still delivers anything already queued
+	# for the dead session once this process exits below.
 	task_lock "$slug"
 	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 	revive
@@ -145,12 +141,10 @@ if [ "$force" = 0 ] && [ -n "$ctx" ] && [ "$ctx" -ge "$CAP_SEND_CTX_MAX" ] 2>/de
 	fi
 fi
 
-# Held only around the delivery itself, and never waited for - see
-# docs/pipeline-notes.md, "cap-send and the task lock", for why both a
-# blocking wait and holding across the ctx/compaction step above were
-# tried and both wrong. Busy means queued, not refused: still enforces
-# ownership first, since a session with no right to this task should not
-# be able to queue into it either just because it is momentarily free to.
+# Held only around the delivery itself, never waited for - see
+# docs/pipeline-notes.md, "cap-send and the task lock", for why. Busy means
+# queued, not refused, but ownership is still checked first: momentarily
+# free is not the same as this session having any right to the task.
 if task_try_lock "$slug"; then
 	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
@@ -168,8 +162,7 @@ if task_try_lock "$slug"; then
 	# place that knows this for certain. Named by pid, not "the captain":
 	# with more than one captain, only the pid tells them apart. Flattened
 	# to one line (task_status_verb/task_status_latest treat one line as
-	# one event) but kept in full: a truncated log once caused a near-
-	# revert, when a captain could not read what another had fully asked.
+	# one event) but kept in full: a truncated message hides what was asked.
 	sent_by=$(session_label "$(session_identity)")
 	sent=$(printf '%s' "$text" | tr '\n' ' ')
 	printf 'working: sent by %s: %s\n' "$sent_by" "$sent" >>"$TASKS/$slug/status.log"

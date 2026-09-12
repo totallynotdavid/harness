@@ -2,11 +2,9 @@
 # cap - run Captain commands.
 set -euo pipefail
 
-# CAP_HOME respects an inherited override (matching lib.sh, which this
-# script does not source) rather than always self-deriving, so running a
-# worktree's own cap with CAP_HOME already pointed at the hub keeps it
-# there. CAP_BIN never does: it always names this script's own directory,
-# so the dispatch below runs the sibling that actually shipped with it.
+# CAP_HOME respects an inherited override, same as lib.sh (which this
+# script does not source). CAP_BIN never does: always this script's own
+# directory, so the dispatch below runs the sibling that shipped with it.
 CAP_HOME=${CAP_HOME:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}
 export CAP_HOME
 CAP_BIN=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)

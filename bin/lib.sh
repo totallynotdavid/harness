@@ -7,11 +7,8 @@ set -euo pipefail
 CAP_HOME=${CAP_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 export CAP_HOME
 
-# Where state lives (CAP_HOME) and which code is running (CAP_BIN) are the
-# same directory in the hub, and only ever differ in a worktree. A sibling
-# invoked through CAP_BIN is always the one that shipped with this file,
-# never whatever CAP_HOME happens to point at. Always this file's own
-# directory: there is no ambiguity here to override.
+# CAP_BIN: which code is running, always this file's own directory -
+# distinct from CAP_HOME, which may point elsewhere in a worktree.
 CAP_BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export CAP_BIN
 
@@ -154,9 +151,7 @@ verified_is() {
 
 # One `cap verify --repo` per project's shared checkout at a time - it runs
 # builds and tests directly in proj_path, not a worktree, so two runs (or
-# one racing hand-edits) step on the same tree the way task worktrees used
-# to race before task_lock existed. Dies naming the holder rather than
-# queueing, same as task_lock; released on process exit like it too.
+# one racing hand-edits) would step on the same tree.
 project_lock() {
   local project=$1 dir fd
   dir=$VERIFIED/$project
@@ -339,20 +334,14 @@ proc_stat_field() {
   printf '%s' "${fields[$((n - 1))]:-}"
 }
 
-# `trap CMD EXIT` composes here instead of overwriting, so task_try_lock's
-# own exit hook (queue_flush on release, below) survives whatever a locking
-# command sets afterwards - bin/cap-spawn and bin/cap-verify each call
-# `trap ... EXIT` themselves after locking. Every EXIT trap from here on
-# appends to CAP_EXIT_FNS and runs in that order, so a caller writes a
-# plain `trap cleanup EXIT` and never has to know this exists.
+# trap CMD EXIT composes here instead of overwriting: every EXIT trap from
+# here on appends to CAP_EXIT_FNS and runs in order, so task_try_lock's own
+# exit hook survives whatever a caller sets afterwards with a plain `trap`.
 CAP_EXIT_FNS=()
 
-# A subshell forks with this array and this trap already set, and would
-# otherwise re-run every inherited entry at its own exit too. BASHPID is
-# the real OS pid and changes inside a subshell even though $$ does not,
-# so a process only runs, or keeps appending to, the list it itself
-# armed - a fork that never calls trap itself skips it, and one that
-# does starts its own list instead of inheriting the parent's.
+# BASHPID, the real OS pid, changes inside a subshell even though $$ does
+# not - a subshell that never calls trap itself never re-runs the parent's
+# inherited CAP_EXIT_FNS at its own exit; one that does starts its own list.
 CAP_EXIT_PID=""
 trap() {
   # Composes for EXIT specifically, however it arrives - alongside other
@@ -374,10 +363,8 @@ trap() {
       CAP_EXIT_FNS+=("$1")
       builtin trap cap_run_exit_fns EXIT
     fi
-    # `trap - EXIT`: composition has no notion of "this caller's entry" to
-    # remove alone, so the EXIT side is left exactly as it was rather than
-    # cleared - whatever is already queued still runs. Any signal named
-    # alongside EXIT other than EXIT itself is still set directly.
+    # `trap - EXIT` can't remove just the caller's entry, so the EXIT side
+    # is left as-is; any other named signal is still set directly.
     # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
     [ "${#other[@]}" -eq 0 ] || builtin trap "$1" "${other[@]}"
   else
@@ -457,7 +444,12 @@ task_flush_locks_on_exit() {
 task_unlock() {
   local slug=$1 fd
   fd=${CAP_LOCK_FDS[$slug]:-}
-  [ -n "$fd" ] && exec {fd}>&-
+  # No fd recorded means task_try_lock's re-entrant branch fired: some other
+  # still-active frame holds the real lock, not this call. Stripping
+  # CAP_LOCKS here would make that frame believe its lock is gone while the
+  # kernel flock stays held underneath it.
+  [ -n "$fd" ] || return 0
+  exec {fd}>&-
   unset 'CAP_LOCK_FDS[$slug]'
   CAP_LOCKS=" ${CAP_LOCKS:-} "
   CAP_LOCKS=${CAP_LOCKS/ $slug / }
@@ -528,9 +520,7 @@ session_identity() {
 
 # A status.log-ready label for a session_identity id (or a bare pid, as
 # stored in the send queue): "pid N", or a name that still says something
-# happened when there is no pid to name - a caller with no recognisable
-# harness ancestor is rare but real, and leaving the field blank ("sent by
-# pid : ...") is exactly the unactionable line this attribution replaces.
+# when there is no pid, rather than an unactionable blank ("sent by pid : ...").
 session_label() {
   local pid=${1%@*}
   if [ -n "$pid" ]; then printf 'pid %s' "$pid"; else printf 'an unidentified session'; fi
@@ -801,8 +791,7 @@ pane_dispatch() {
     printf '#!/usr/bin/env bash\n'
     printf 'set -o pipefail\n'
     # No >/dev/null after tee: its own stdout is the script's stdout, which
-    # is the pane. Dropping it left every dispatched call showing a blank
-    # pane for its whole run - stderr still goes straight to $err, unseen.
+    # is the pane. stderr goes straight to $err, unseen.
     printf '%s </dev/null 2>%q | tee %q\n' "$(printf '%q ' "$@")" "$err" "$out"
     printf 'echo $? >%q\n' "$rc_file"
     printf 'touch %q\n' "$done_file"
@@ -811,9 +800,7 @@ pane_dispatch() {
 
   # Also gives up the moment the pane itself is gone (tab closed, herdr
   # restarted) instead of spinning out the full $max: the wrapper script
-  # dies on SIGHUP without ever touching $done_file, so that alone would
-  # otherwise wait out the whole hour where a bare child's death used to
-  # end the call at once.
+  # dies on SIGHUP without ever touching $done_file.
   local timed_out=0 pane_gone=0
   while [ ! -f "$done_file" ]; do
     if ! herdr pane get "$pane" >/dev/null 2>&1; then
@@ -883,11 +870,9 @@ pane_enter() {
 }
 
 # Types text in once, then presses Enter up to 3 times, checking after each
-# for a turn to start - pane_wait_working, not whether the text is still
-# visible in the pane: a short message, or one the harness echoes back,
-# makes that check match forever and turns a retry into retyping on top
-# of itself. Retypes nothing; pane_deliver below decides whether to
-# resend if none of the 3 Enters start a turn.
+# for a turn to start via pane_wait_working, not whether the text is still
+# visible: a short message, or one the harness echoes back, would make that
+# match forever. Retypes nothing; pane_deliver decides whether to resend.
 pane_submit() {
   local slug=$1 text=$2 _
   pane_send "$slug" "$text"
@@ -899,9 +884,7 @@ pane_submit() {
   return 1
 }
 
-# Whether a turn actually began, not just whether text left the input box -
-# that alone has been trusted before and been wrong: the text sat in the
-# pane with no response and the agent read idle minutes later.
+# Whether a turn actually began, not just whether text left the input box.
 pane_wait_working() {
   local slug=$1 i
   for i in 1 2 3 4 5 6; do
