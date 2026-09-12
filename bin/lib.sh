@@ -1056,54 +1056,44 @@ task_status_latest() {
   fi
 }
 
-# One helper answers "what state is this task in," so herdr - never a word
-# an agent chose - decides whether it is working, git and gate.json decide
-# what is ready, and the log is consulted only to name why it stopped. See
+# Whether the agent itself is running, per herdr - never a word an agent
+# chose. idle covers both herdr's "idle" and "done": they differ only in
+# whether a client has acknowledged it, not in whether the agent is
+# running. Falls back to whether the pane's visible output has changed
+# recently (task_state_stale_age) only when herdr cannot classify it at
+# all (unknown, or a harness herdr does not instrument).
+task_agent_state() {
+  local slug=$1 agent age
+  pane_live "$slug" || { printf exited; return; }
+  agent=$(pane_agent_status "$slug")
+  case $agent in
+    working | blocked) printf '%s' "$agent" ;;
+    idle | done) printf idle ;;
+    *)
+      age=$(task_state_stale_age "$slug")
+      if [ "$age" -ge "$CAP_IDLE_SECS" ]; then printf idle; else printf working; fi
+      ;;
+  esac
+}
+
+# One helper answers "what state is this task in": task_agent_state
+# decides whether it is working, git and gate.json decide what is ready,
+# and the log is consulted only to name why it stopped. See
 # docs/pipeline-notes.md, "Task state is not a log word".
 task_state() {
-  local slug=$1 agent age tree base verb
+  local slug=$1 agent tree base verb
 
-  if ! pane_live "$slug"; then
-    agent=exited
-  else
-    agent=$(pane_agent_status "$slug")
-    case $agent in
-    working)
-      printf working
-      return
-      ;;
-    idle | done)
-      # herdr's own account of "ready for input" - done and idle differ
-      # only in whether a client has acknowledged it, not in whether the
-      # agent is running (herdr --skill). Ground truth either way.
-      agent=idle
-      ;;
-    blocked)
-      # An approval/question prompt herdr itself recognised - ground truth
-      # that this needs the captain now, not a log word to defer to.
-      printf blocked
-      return
-      ;;
-    *)
-      # Genuinely ambiguous (unknown, or a harness herdr does not
-      # instrument): falls back to whether the pane's visible output has
-      # changed recently (task_state_stale_age).
-      age=$(task_state_stale_age "$slug")
-      if [ "$age" -ge "$CAP_IDLE_SECS" ]; then
-        agent=idle
-      else
-        printf working
-        return
-      fi
-      ;;
-    esac
+  agent=$(task_agent_state "$slug")
+  case $agent in
+    working | blocked) printf '%s' "$agent"; return ;;
+  esac
 
-    # herdr has now settled *whether* it stopped; the log is read only for
-    # *why*, and only for the three verbs that carry one - a bare "done" or
-    # nothing logged at all is not a reason, so it falls through to ready
-    # (git/gate.json) or the bare stopped state below. Only reached with the
-    # pane still live: a dead pane's old log verb never gets to override
-    # herdr's own account of the agent being gone.
+  # herdr has now settled *whether* it stopped; the log is read only for
+  # *why*, and only for the three verbs that carry one - a bare "done" or
+  # nothing logged at all is not a reason, so it falls through to ready
+  # (git/gate.json) or the bare stopped state below. Skipped once exited: a
+  # dead pane's old log verb never gets to override the agent being gone.
+  if [ "$agent" != exited ]; then
     verb=$(task_status_latest "$slug" 2>/dev/null || true)
     case $verb in
       blocked | needs-input | failed) printf '%s' "$verb"; return ;;
