@@ -19,6 +19,8 @@ lines=""
 add() { lines="$lines$1"$'\n'; }
 
 for slug in $(task_slugs); do
+	(task_load "$slug") 2>/dev/null || continue
+
 	# A task free for this session (task_owner_free: unowned, dead-owned,
 	# owned by this session or its own dispatched agent, see bin/lib.sh)
 	# is safe to report on; one held by another live session is that
@@ -45,7 +47,11 @@ for slug in $(task_slugs); do
 		;;
 	blocked | needs-input | failed)
 		note=$(grep -E "^$state:" "$TASKS/$slug/status.log" 2>/dev/null | tail -1 || true)
-		add "  $slug ($project) is $state: ${note#*: }"
+		if [ -n "$note" ]; then
+			add "  $slug ($project) is $state: ${note#*: }"
+		else
+			add "  $slug ($project) is $state"
+		fi
 		;;
 	idle)
 		add "  $slug ($project) has stopped and is waiting on you: cap peek $slug"
