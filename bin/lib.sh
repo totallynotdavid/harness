@@ -714,11 +714,11 @@ queue_prepend() {
 }
 
 # Delivers what queue_send queued into a live pane, in order, then clears
-# the queue - called explicitly by cap-send before its own message (so an
-# older correction lands first), and automatically from every locking
-# command's EXIT trap on release (task_flush_locks_on_exit), so a review
-# or a rebase that only happens to acquire the lock, and never explicitly
-# calls this, still delivers what was waiting once its own work is done.
+# the queue - called explicitly by cap-send before its own message, and
+# automatically from every locking command's EXIT trap on release. Returns
+# 0 only once empty: a message typed but never confirmed is logged and
+# dropped rather than requeued, since a later flush must never type it
+# again; a non-zero return says the pane's state is not to be trusted.
 queue_flush() {
   local slug=$1 dir=$TASKS/$1 fd claimed pid b64 text line
   local spool=$dir/send-queue
@@ -757,25 +757,32 @@ queue_flush() {
     pid=${line%%$'\t'*}
     b64=${line#*$'\t'}
     text=$(printf '%s' "$b64" | base64 -d 2>/dev/null || true)
-    if pane_deliver "$slug" "$text"; then
+    if pane_submit "$slug" "$text"; then
       printf 'working: sent by %s: %s\n' "$(session_label "$pid")" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$dir/status.log"
     else
-      # This message and anything queued after it stay queued, unread,
-      # rather than being lost or logged as sent - the pane is not
-      # accepting input right now, so trying the rest in order would
-      # only fail the same way. Prepended, not appended: anything already
-      # in $spool arrived after the claim, so it is newer than this.
-      warn "$slug: a queued message from $(session_label "$pid") did not deliver; left queued"
-      tail -n "+$n" "$claimed" >"$claimed.tail"
-      if queue_prepend "$slug" "$claimed.tail"; then
-        rm -f "$claimed" "$claimed.tail"
+      # pane_submit already typed this one in; a later flush retrying it
+      # would type it again, which must never happen. Logged as unconfirmed
+      # and dropped here instead of requeued. Anything after it in $claimed
+      # was never typed at all, so it stays queued - prepended, not
+      # appended, since anything already in $spool arrived after the claim
+      # and so is newer than this.
+      warn "$slug: a queued message from $(session_label "$pid") was typed but never confirmed; will not be retried - check by hand: cap peek $slug"
+      printf 'unconfirmed: sent by %s: %s\n' "$(session_label "$pid")" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$dir/status.log"
+      tail -n "+$((n + 1))" "$claimed" >"$claimed.tail"
+      if [ -s "$claimed.tail" ]; then
+        if queue_prepend "$slug" "$claimed.tail"; then
+          rm -f "$claimed" "$claimed.tail"
+        else
+          # $claimed still holds 1..n, already resolved (delivered or
+          # dropped as unconfirmed) and logged. Left in place, the recovery
+          # block above would fold the whole thing back next flush and
+          # retype the unconfirmed one. Replace it with the tail alone.
+          mv "$claimed.tail" "$claimed"
+        fi
       else
-        # $claimed still holds 1..n-1, already delivered and logged. Left in
-        # place, the recovery block above would fold the whole thing back
-        # next flush and resend them. Replace it with the tail alone.
-        mv "$claimed.tail" "$claimed"
+        rm -f "$claimed" "$claimed.tail"
       fi
-      return 0
+      return 1
     fi
   done <"$claimed"
   rm -f "$claimed"
