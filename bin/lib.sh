@@ -1278,12 +1278,16 @@ gate_ready() {
   local slug=$1 tree=$2 base=$3
   local f=$TASKS/$slug/gate.json cur a_v a_fp b_v b_fp
   [ -f "$f" ] || return 1
-  cur=$(gate_fingerprint "$tree" "$base")
   a_v=$(jq -r '.A.verdict // empty' "$f" 2>/dev/null || true)
-  a_fp=$(jq -r '.A.fingerprint // empty' "$f" 2>/dev/null || true)
   b_v=$(jq -r '.B.verdict // empty' "$f" 2>/dev/null || true)
+  # Cheap file reads first: neither verdict can be PASS without both A and B
+  # having run, so a task missing either is settled before gate_fingerprint's
+  # git diff and untracked-file scan is worth paying for.
+  [ "$a_v" = PASS ] && [ "$b_v" = PASS ] || return 1
+  a_fp=$(jq -r '.A.fingerprint // empty' "$f" 2>/dev/null || true)
   b_fp=$(jq -r '.B.fingerprint // empty' "$f" 2>/dev/null || true)
-  [ "$a_v" = PASS ] && [ "$b_v" = PASS ] && [ "$a_fp" = "$cur" ] && [ "$b_fp" = "$cur" ]
+  cur=$(gate_fingerprint "$tree" "$base")
+  [ "$a_fp" = "$cur" ] && [ "$b_fp" = "$cur" ]
 }
 
 # rules/commits.md forbids crediting an AI, not a Co-Authored-By trailer as

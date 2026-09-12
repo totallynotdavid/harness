@@ -228,9 +228,10 @@ one:
 
 A bounded wait (`flock -w`) cannot work at any bound: `cap verify` loops its own
 `CAP_VERIFY_MAX` ceiling over every script it runs, so it can hold the lock for roughly an
-hour; `cap gate`'s review has no ceiling at all; and a captain driving `cap` through a tool
-with its own timeout (commonly 600s) gets killed before a longer wait ever resolves, losing
-the message with no sign it happened.
+hour; `cap gate`'s review runs through `pane_dispatch`, bounded only by `CAP_ASK_MAX_WAIT`
+(3600s by default) - well past the timeout (commonly 600s) of any tool a captain drives
+`cap` through, so that tool kills the wait before a bound matching either ceiling ever
+resolves, losing the message with no sign it happened.
 
 Holding the lock across the whole command, including `compact_pane`'s wait for the agent's
 own context to shrink (up to `CAP_SEND_COMPACT_SECS`, 600s by default), is also wrong: that
