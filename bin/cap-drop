@@ -2,17 +2,21 @@
 # cap-drop - remove a task without losing work.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap drop <slug> [--force] [--take]}
-shift || true
-
+usage="usage: cap drop <slug> [--force] [--take]"
+slug=""
 force=0
 take=0
-for a in "$@"; do
-	case $a in
-	--force) force=1 ;;
-	--take) take=1 ;;
+while [ $# -gt 0 ]; do
+	case $1 in
+	--force) force=1; shift ;;
+	--take) take=1; shift ;;
+	-*) die "$usage" ;;
+	*)
+		[ -z "$slug" ] || die "$usage"
+		slug=$1; shift ;;
 	esac
 done
+[ -n "$slug" ] || die "$usage"
 
 task_load "$slug"
 task_lock "$slug"
