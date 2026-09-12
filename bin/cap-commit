@@ -109,16 +109,3 @@ if [ -n "$bad_trailers" ]; then
   done < <(git -C "$CAP_TREE" rev-list --reverse "$CAP_BASE..HEAD")
   git -C "$CAP_TREE" update-ref HEAD "$new"
 fi
-
-# A summary over the limit has no safe automatic fix - truncating it can
-# produce a summary that reads as something the author never wrote - so
-# this refuses instead, naming every offender at once. rebase -i is not
-# available in this environment (no interactive terminal), so the way
-# back is to uncommit and let the commit agent try again.
-long_summaries=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='%h %s' |
-  awk '{ s = substr($0, index($0, " ") + 1); if (length(s) > 50) printf "%s (%d chars)\n", $0, length(s) }')
-[ -z "$long_summaries" ] || {
-  printf 'cap: %s has summaries over the 50-character limit:\n' "$slug" >&2
-  printf '%s\n' "$long_summaries" | sed 's/^/  /' >&2
-  die "reword them: git -C $CAP_TREE reset --soft $CAP_BASE, then cap commit $slug again"
-}

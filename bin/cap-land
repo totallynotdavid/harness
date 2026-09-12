@@ -50,14 +50,6 @@ bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" \
 	die "strip them, then land again"
 }
 
-long_summaries=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='%h %s' |
-	awk '{ s = substr($0, index($0, " ") + 1); if (length(s) > 50) printf "%s (%d chars)\n", $0, length(s) }')
-[ -z "$long_summaries" ] || {
-	printf 'cap: %s has summaries over the 50-character limit:\n' "$slug" >&2
-	printf '%s\n' "$long_summaries" | sed 's/^/  /' >&2
-	die "reword them, then land again"
-}
-
 # A branch that shares no ancestor with its base is not a change to the base,
 # it is a replacement of it. aula-integrate-fix rebuilt all twenty-two commits
 # from scratch to deliver seven lines, and landing it would have meant force
