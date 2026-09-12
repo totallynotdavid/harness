@@ -837,8 +837,15 @@ pane_dispatch() {
     rc=$(cat "$rc_file" 2>/dev/null || echo 1)
     case $rc in '' | *[!0-9]*) rc=1 ;; esac
   fi
-  rm -f "$rc_file" "$done_file" "$script"
-  [ "$timed_out" = 1 ] || [ "$pane_gone" = 1 ] || herdr pane close "$pane" >/dev/null 2>&1 || true
+  rm -f "$script"
+  # A timed-out or pane-gone wrapper may still be running and still means
+  # to write $rc_file and $done_file - removing them now only means it
+  # recreates two orphaned files nothing will ever clean up. Left in place,
+  # they sit next to a pane the warning above already said was left open.
+  if [ "$timed_out" = 0 ] && [ "$pane_gone" = 0 ]; then
+    rm -f "$rc_file" "$done_file"
+    herdr pane close "$pane" >/dev/null 2>&1 || true
+  fi
   return "$rc"
 }
 
