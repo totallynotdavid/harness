@@ -440,22 +440,30 @@ task_try_lock() {
   CAP_LOCK_FDS[$slug]=$fd
   CAP_LOCK_DEPTH[$slug]=1
 
-  # Pinned here, not inside session_identity: x=$(session_identity) always
-  # runs in a subshell, so an export inside it never reaches the caller, and
-  # cap-land shelling out to cap-drop needs the same identity under the same
-  # harness. cap_env_scrub strips CAP_SESSION the same as CAP_LOCKS, so a
-  # dispatched agent never sees it.
+  task_pin_session
+  task_arm_lock_exit_flush
+}
+
+# Pinned here, not inside session_identity: x=$(session_identity) always
+# runs in a subshell, so an export inside it never reaches the caller, and
+# cap-land shelling out to cap-drop needs the same identity under the same
+# harness. cap_env_scrub strips CAP_SESSION the same as CAP_LOCKS, so a
+# dispatched agent never sees it. Not locking itself, but every locker
+# needs it done, once per process, the first time any lock is taken.
+task_pin_session() {
   if [ -z "${CAP_SESSION:-}" ]; then
     CAP_SESSION=$(session_identity)
     export CAP_SESSION
   fi
+}
 
-  # Flushes this task's queue the moment this process's hold on it ends,
-  # never mid-review or mid-rebase. Registered once per process, so a
-  # second slug locked here does not queue a second flush of the first.
-  # A kill instead of a clean exit skips this trap; the flock still
-  # releases at the kernel level, and the message waits for whichever
-  # later holder locks this slug and exits cleanly.
+# Flushes this task's queue the moment this process's hold on it ends,
+# never mid-review or mid-rebase. Registered once per process, so a
+# second slug locked here does not queue a second flush of the first.
+# A kill instead of a clean exit skips this trap; the flock still
+# releases at the kernel level, and the message waits for whichever
+# later holder locks this slug and exits cleanly.
+task_arm_lock_exit_flush() {
   if [ -z "${CAP_LOCK_EXIT_ARMED:-}" ]; then
     CAP_LOCK_EXIT_ARMED=1
     trap task_flush_locks_on_exit EXIT
