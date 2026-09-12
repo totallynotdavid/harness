@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cap-ask - run a profile headless and print its answer.
+# cap-ask - run a profile in a pane and print its answer.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 if [ "${1:-}" = --list ]; then

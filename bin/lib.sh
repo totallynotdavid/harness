@@ -834,7 +834,14 @@ pane_launch() {
 pane_dispatch() {
   local tree=$1 label=$2 out=$3 err=$4
   shift 4
-  require_herdr
+  if ! { [ -n "${HERDR_ENV:-}" ] && have herdr; }; then
+    # No herdr to open a pane in: run directly, exactly as cap-ask's own
+    # dispatch did before pane_dispatch existed, rather than losing ask,
+    # gate, commit, cleanup and skills entirely in an environment that
+    # never had herdr in the first place.
+    (cd "$tree" && "$@" </dev/null >"$out" 2>"$err")
+    return $?
+  fi
   local pane script rc_file done_file waited=0
   local max=${CAP_ASK_MAX_WAIT:-3600}
   read -r pane _ <<<"$(herdr_open "$tree" "$label")"
