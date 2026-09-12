@@ -1447,7 +1447,7 @@ stack_push() {
 # does not extend to every descendant it touches.
 stack_sync_task() {
   local task=$1 new_tip=$2 snap=$3
-  local tree branch old_tip
+  local tree branch old_tip prev_owner
 
   # Degrades the same way the rebase conflict below does, instead of
   # dying: a contended descendant must not take cap-land's or cap-restack's
@@ -1528,14 +1528,13 @@ stack_cascade() {
 # After a parent lands, descendants inherit its base and PR target.
 stack_cascade_landed() {
   local slug=$1 new_tip=$2 snap=$3
-  local child tree up_base up_parent pr rc prev_owner
+  local child tree up_base up_parent pr rc
 
   up_base=$(task_field "$slug" CAP_BASE)
   up_parent=$(task_field "$slug" CAP_PARENT)
 
   for child in $(task_children "$slug"); do
     tree=$(task_field "$child" CAP_TREE)
-    prev_owner=$(task_field "$child" CAP_OWNER 2>/dev/null || true)
 
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
 
@@ -1552,7 +1551,6 @@ stack_cascade_landed() {
 
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
-    task_env_set "$child" CAP_OWNER "$prev_owner"
     task_unlock "$child"
     [ "$rc" = 0 ] || return "$rc"
   done
