@@ -776,39 +776,31 @@ queue_claim() {
   return "$rc"
 }
 
-# Puts back everything claimed after the $n'th line, since it was never
-# typed at all and is safe to retry on a later flush. Prepended, not
-# appended: anything already in the live spool arrived after the claim,
-# so it is newer than this.
-queue_requeue_remainder() {
-  local slug=$1 claimed=$2 n=$3 tail=$2.tail
-  tail -n "+$((n + 1))" "$claimed" >"$tail"
-  if [ -s "$tail" ]; then
-    if queue_prepend "$slug" "$tail"; then
-      rm -f "$claimed" "$tail"
-    else
-      # $claimed still holds everything already resolved (delivered or
-      # dropped as unconfirmed) and logged. Left in place, queue_recover_stranded
-      # would fold the whole thing back next flush and retype the
-      # unconfirmed one. Replace it with the tail alone.
-      mv "$tail" "$claimed"
-    fi
-  else
-    rm -f "$claimed" "$tail"
-  fi
+# Drops the first line of a claimed batch. Called before that line is even
+# attempted, not after: a kill during pane_submit itself leaves no way to
+# tell whether the text went in, and the same never-retype invariant that
+# drops a merely-unconfirmed delivery applies here too, so the line is gone
+# from $1 before there is any chance of finding out. Nothing already popped
+# can ever be found by queue_recover_stranded again.
+queue_drop_claimed_line() {
+  local claimed=$1 tmp=$1.tail
+  tail -n +2 "$claimed" >"$tmp" 2>/dev/null || : >"$tmp"
+  mv "$tmp" "$claimed"
 }
 
-# Delivers a claimed batch into the pane, in order, then clears it. A
-# message that types but never confirms a turn started stops the batch
-# there, logged as unconfirmed and dropped rather than retried - the pane
-# is marked untrusted for the rest of this process, and anything still
-# unclaimed behind it goes back in the live queue for a later flush.
+# Delivers a claimed batch into the pane, in order, popping each line off
+# $claimed before it is even attempted - a kill mid-submit is exactly as
+# unrecoverable as a submit that types but never confirms, so both are
+# treated the same way: gone, never retried. A confirmed failure stops the
+# batch there as untrusted; anything still unclaimed stays in $claimed for
+# queue_recover_stranded to fold back on a later flush.
 queue_deliver_claimed() {
   local slug=$1 dir=$TASKS/$1 claimed=$TASKS/$1/send-queue.flushing
-  local pid b64 text line n=0
+  local pid b64 text line
 
-  while IFS= read -r line || [ -n "$line" ]; do
-    n=$((n + 1))
+  while [ -s "$claimed" ]; do
+    line=$(head -n1 "$claimed")
+    queue_drop_claimed_line "$claimed"
     [ -n "$line" ] || continue
     pid=${line%%$'\t'*}
     b64=${line#*$'\t'}
@@ -819,18 +811,18 @@ queue_deliver_claimed() {
       warn "$slug: a queued message from $(session_label "$pid") was typed but never confirmed; will not be retried - check by hand: cap peek $slug"
       printf 'unconfirmed: sent by %s: %s\n' "$(session_label "$pid")" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$dir/status.log"
       queue_mark_untrusted "$slug"
-      queue_requeue_remainder "$slug" "$claimed" "$n"
       return 1
     fi
-  done <"$claimed"
+  done
   rm -f "$claimed"
 }
 
 # Delivers what queue_send queued into a live pane, in order, then clears
 # the queue - called explicitly by cap-send before its own message, and
 # automatically from every locking command's EXIT trap on release. Returns
-# 0 only once empty; a non-zero return says the pane's state is not to be
-# trusted, or nothing here could be claimed for delivery right now.
+# 0 only once the queue is empty, whether it started that way or ended
+# that way; a non-zero return means something is left queued - the pane is
+# untrusted, dead, blocked, or a claim could not be made or recovered.
 queue_flush() {
   local slug=$1
 
@@ -838,7 +830,6 @@ queue_flush() {
   queue_recover_stranded "$slug" || return 1
 
   [ -s "$TASKS/$slug/send-queue" ] || return 0
-  pane_live "$slug" || return 0
   pane_usable "$slug" || return 1
 
   queue_claim "$slug" || return 0
@@ -1470,31 +1461,20 @@ stack_push() {
 # Rebase a task from its recorded parent tip onto a new one.
 # Run the rebase in the task worktree because Git rejects a branch checked out elsewhere.
 # STACK_MOVED and STACK_CONFLICT report partial progress to the caller.
-#
-# Locks the child before touching it, and checks task_owner_free rather than
-# claiming ownership: this rebases its worktree and rewrites its task record
-# from inside a command the child never asked to run, so it must refuse a
-# descendant with a live owner, but the cascading session is not that
-# descendant's owner either, only a caller passing through under its lock.
+# Takes no lock and releases none: the caller holds the child's lock across
+# every field it and stack_cascade_landed rewrite, and releases it once that
+# whole pass is done. Checks task_owner_free rather than claiming ownership,
+# since the cascading session is not this descendant's owner. Returns 2 for
+# an owned-elsewhere descendant, distinct from a rebase conflict (1), so the
+# caller skips flushing work nobody here did.
 stack_sync_task() {
   local task=$1 new_tip=$2 snap=$3
   local tree branch old_tip
 
-  # Degrades the same way the rebase conflict below does, instead of
-  # dying: a contended descendant must not take cap-land's or cap-restack's
-  # whole run down with it, especially after cap-land has already merged
-  # the parent PR by the time it reaches this call.
-  if ! task_try_lock "$task"; then
-    STACK_CONFLICT=$task
-    warn "$task is locked by another cap command; its branch was left where it was"
-    return 1
-  fi
-
   if ! task_owner_free "$task"; then
     STACK_CONFLICT=$task
     warn "$task is owned by pid $(task_field "$task" CAP_OWNER 2>/dev/null | cut -d@ -f1); its branch was left where it was"
-    task_unlock "$task"
-    return 1
+    return 2
   fi
 
   tree=$(task_field "$task" CAP_TREE)
