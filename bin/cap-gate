@@ -73,7 +73,7 @@ for pair in "${profiles[@]}"; do
   # leaves the last good report intact. Pass CAP_ASK_KEY fingerprint to prevent
   # a resumed round from restating a stale verdict against changed code.
   tmp=$(mktemp)
-  if ! CAP_ASK_KEY=$fp "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$tmp"; then
+  if ! CAP_ASK_KEY=$fp "$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$tmp"; then
     warn "gate $label ($profile) did not run to completion"
   fi
   printf '\n'

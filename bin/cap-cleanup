@@ -59,4 +59,4 @@ If a section does not need changes, leave it alone."
 # task_lock armed above, so a message queued while this command held the
 # lock would never flush once cap-ask finishes. Running it normally keeps
 # this process alive to exit (and flush) after cap-ask returns.
-"$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
+"$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"

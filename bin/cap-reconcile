@@ -55,7 +55,7 @@ if [ "$remote" = 1 ]; then
 fi
 
 printf '\n## Crew\n\n'
-"$CAP_HOME/bin/cap-crew"
+"$CAP_BIN/cap-crew"
 
 # Show open paper cuts.
 if [ -f "$CAP_HOME/paper-cuts.md" ]; then

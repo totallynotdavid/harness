@@ -38,7 +38,7 @@ is normal, not a grouping signal. Unstage everything first (git restore
 worktree yourself. Use git add -p to split unrelated changes into separate
 commits. Do not edit files. Do not push."
 
-"$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
+"$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
 
 # shellcheck disable=SC1083 # HEAD^{tree} is git syntax, not a brace group
 final_tree=$(git -C "$CAP_TREE" rev-parse HEAD^{tree})

@@ -199,6 +199,6 @@ esac
 # thrashed and every other build slowed to a crawl.
 if [ "$landed" = 1 ] && pane_live "$slug"; then
 	printf 'releasing %s\n' "$slug"
-	"$CAP_HOME/bin/cap-drop" "$slug" --force ||
+	"$CAP_BIN/cap-drop" "$slug" --force ||
 		warn "could not release $slug; run cap drop $slug"
 fi

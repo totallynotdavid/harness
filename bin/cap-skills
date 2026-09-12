@@ -25,7 +25,7 @@ ensure() {
   local repo
   repo=$(src_repo "$1")
   [ -n "$repo" ] || die "unknown source '$1' (cap skills sources)"
-  "$CAP_HOME/bin/cap-explore" "$repo" ${2:-}
+  "$CAP_BIN/cap-explore" "$repo" ${2:-}
 }
 
 find_skills() {
