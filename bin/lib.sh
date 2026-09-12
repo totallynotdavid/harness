@@ -698,7 +698,10 @@ queue_send() {
 
 # Ground truth for whether cap-send left a message queued for a task that
 # has not gone in yet - a file's non-emptiness, not a word anyone chose.
-queue_pending() { [ -s "$TASKS/$1/send-queue" ]; }
+# A holder killed mid-flush leaves the same backlog in send-queue.flushing
+# instead, which queue_flush only folds back on its next call - until then
+# it is exactly as pending as anything still in send-queue itself.
+queue_pending() { [ -s "$TASKS/$1/send-queue" ] || [ -s "$TASKS/$1/send-queue.flushing" ]; }
 
 # Prepends a file's lines onto a task's live spool, under queue_send's own
 # lock, so nothing appended concurrently is lost or reordered behind
