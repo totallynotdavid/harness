@@ -95,14 +95,12 @@ fi
 
 # A session near its limit is the failure that made aula-integrate report tests
 # passing while seven files errored: it ran out of context mid-verification and
-# summarised optimistically. So the ceiling is checked before delivering, not
-# after, back when this printed an advisory *below* `pane_deliver` and the
-# message was already in the agent's input box by the time the captain read it.
+# summarised optimistically. The ceiling is checked before delivering, so the
+# message never reaches an agent already too full to act on it.
 #
-# The recovery is compaction, and cap-ask already does exactly this before it
-# resumes a large session. Doing it here too keeps it off the captain's hands.
-# The alternatives this replaces were both worse: --force fills the session the
-# ceiling exists to protect, and cap drop throws away the worktree.
+# The recovery is compaction, matching what cap-ask already does before it
+# resumes a large session. --force fills the session the ceiling exists to
+# protect; cap drop throws away the worktree - both worse than compacting.
 compact_pane() {
 	local deadline waited=0 now
 	warn "$slug: at $ctx% context; compacting before the message goes in"
@@ -156,7 +154,7 @@ if task_try_lock "$slug"; then
 	queue_flush "$slug"
 
 	pane_deliver "$slug" "$text" ||
-		die "$slug: sent twice but the agent never started a turn - check by hand: cap peek $slug"
+		die "$slug: sent but the agent never started a turn - check by hand: cap peek $slug"
 
 	# A turn has started, so the task is not done, and cap send is the one
 	# place that knows this for certain. Named by pid, not "the captain":
