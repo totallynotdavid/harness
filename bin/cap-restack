@@ -68,6 +68,7 @@ if [ "$undo" = 1 ]; then
 	}
 
 	n=0
+	partial=0
 	while read -r a b c d; do
 		[ -n "${a:-}" ] || continue
 
@@ -75,6 +76,7 @@ if [ "$undo" = 1 ]; then
 			child=$b
 			if ! task_try_lock "$child"; then
 				warn "$child is locked by another cap command; left $c as it was"
+				partial=1
 				continue
 			fi
 			if task_owner_free "$child"; then
@@ -84,6 +86,7 @@ if [ "$undo" = 1 ]; then
 			else
 				warn "$child is owned by pid $(task_field "$child" CAP_OWNER 2>/dev/null | cut -d@ -f1); left $c as it was"
 				task_unlock "$child"
+				partial=1
 			fi
 			continue
 		fi
@@ -95,11 +98,13 @@ if [ "$undo" = 1 ]; then
 		if [ -n "$child" ]; then
 			if ! task_try_lock "$child"; then
 				warn "$child is locked by another cap command; left $ref as it was"
+				partial=1
 				continue
 			fi
 			if ! task_owner_free "$child"; then
 				warn "$child is owned by pid $(task_field "$child" CAP_OWNER 2>/dev/null | cut -d@ -f1); left $ref as it was"
 				task_unlock "$child"
+				partial=1
 				continue
 			fi
 		fi
@@ -125,6 +130,10 @@ if [ "$undo" = 1 ]; then
 	done <"$snapshot"
 
 	printf 'undid %s ref(s) from %s\n' "$n" "$snapshot"
+	if [ "$partial" = 1 ]; then
+		warn "one or more refs were locked or owned elsewhere and left as they were; rerun cap restack $slug --undo to retry them"
+		exit 1
+	fi
 	exit 0
 fi
 
