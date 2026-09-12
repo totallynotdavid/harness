@@ -795,9 +795,9 @@ pane_dispatch() {
   local tree=$1 label=$2 out=$3 err=$4
   shift 4
   require_herdr
-  local pane tabid script rc_file done_file waited=0
+  local pane script rc_file done_file waited=0
   local max=${CAP_ASK_MAX_WAIT:-3600}
-  read -r pane tabid <<<"$(herdr_open "$tree" "$label")"
+  read -r pane _ <<<"$(herdr_open "$tree" "$label")"
   rc_file=$(mktemp)
   done_file=$(mktemp)
   rm -f "$done_file"
