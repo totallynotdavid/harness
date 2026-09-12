@@ -753,32 +753,33 @@ queue_flush() {
     if pane_submit "$slug" "$text"; then
       printf 'working: sent by %s: %s\n' "$(session_label "$pid")" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$dir/status.log"
     else
-      # pane_submit already typed this one in; a later flush retrying it
-      # would type it again, which must never happen. Logged as unconfirmed
-      # and dropped here instead of requeued. Anything after it in $claimed
-      # was never typed at all, so it stays queued - prepended, not
-      # appended, since anything already in $spool arrived after the claim
-      # and so is newer than this.
       warn "$slug: a queued message from $(session_label "$pid") was typed but never confirmed; will not be retried - check by hand: cap peek $slug"
       printf 'unconfirmed: sent by %s: %s\n' "$(session_label "$pid")" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$dir/status.log"
-      tail -n "+$((n + 1))" "$claimed" >"$claimed.tail"
-      if [ -s "$claimed.tail" ]; then
-        if queue_prepend "$slug" "$claimed.tail"; then
-          rm -f "$claimed" "$claimed.tail"
-        else
-          # $claimed still holds 1..n, already resolved (delivered or
-          # dropped as unconfirmed) and logged. Left in place, the recovery
-          # block above would fold the whole thing back next flush and
-          # retype the unconfirmed one. Replace it with the tail alone.
-          mv "$claimed.tail" "$claimed"
-        fi
-      else
-        rm -f "$claimed" "$claimed.tail"
-      fi
+      queue_mark_untrusted "$slug"
+      queue_requeue_remainder "$slug" "$claimed" "$n"
       return 1
     fi
   done <"$claimed"
   rm -f "$claimed"
+}
+
+# Delivers what queue_send queued into a live pane, in order, then clears
+# the queue - called explicitly by cap-send before its own message, and
+# automatically from every locking command's EXIT trap on release. Returns
+# 0 only once empty; a non-zero return says the pane's state is not to be
+# trusted, or nothing here could be claimed for delivery right now.
+queue_flush() {
+  local slug=$1
+
+  [ -z "${CAP_QUEUE_UNTRUSTED[$slug]:-}" ] || return 1
+  queue_recover_stranded "$slug" || return 1
+
+  [ -s "$TASKS/$slug/send-queue" ] || return 0
+  pane_live "$slug" || return 0
+  pane_usable "$slug" || return 1
+
+  queue_claim "$slug" || return 0
+  queue_deliver_claimed "$slug"
 }
 
 task_children() {
