@@ -1332,14 +1332,21 @@ AI_TRAILER_RE='^(claude|codex)-session:|generated with \[(claude code|codex)\]|^
 # dropped along with everything else that did not match, and cap-commit and
 # cap-land shared that same blind format until this replaced both.
 ai_trailer_report() {
-  local tree=$1 base=$2 c
+  local tree=$1 base=$2 c hashes
+  # A process substitution's own failure (an invalid range, git missing)
+  # is invisible to the while loop that reads it - zero iterations reads
+  # exactly like a clean range with nothing to flag. Read it into a
+  # variable first so its exit status is this function's own.
+  hashes=$(git -C "$tree" log --format=%h "$base..HEAD") ||
+    die "could not list commits $base..HEAD in $tree; cannot check attribution"
+  [ -z "$hashes" ] && return 0
   while IFS= read -r c; do
     # grep exits 1 on the (usual) commit with nothing to flag; under set -e,
     # inherited from lib.sh, that would abort this loop at the first clean
     # commit instead of finishing the range.
     git -C "$tree" log -1 --format='%B' "$c" |
       { grep -inE "$AI_TRAILER_RE" || true; } | sed "s/^/$c: /"
-  done < <(git -C "$tree" log --format=%h "$base..HEAD")
+  done <<<"$hashes"
 }
 
 git_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null || echo '-'; }
