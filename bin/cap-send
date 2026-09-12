@@ -152,7 +152,7 @@ if task_try_lock "$slug"; then
 	# ahead of this call's own text was typed but never confirmed, or a
 	# stranded claim could not be recovered - the pane's state is not to be
 	# trusted, so this call's own text goes in behind it, not out of order.
-	if queue_flush "$slug"; then
+	if queue_flush "$slug" && pane_usable "$slug"; then
 		# Typed but never confirmed a turn started, on failure: must never
 		# be typed again by anyone, so it is logged as unconfirmed rather
 		# than queued for a later flush to retry.
@@ -179,7 +179,13 @@ if task_try_lock "$slug"; then
 		fi
 	else
 		queue_send "$slug" "$text"
-		printf 'queued for %s: an earlier message in its queue did not deliver; delivered once the pane accepts input\n' "$slug"
+		if [ -n "${CAP_QUEUE_UNTRUSTED[$slug]:-}" ]; then
+			printf 'queued for %s: an earlier message in its queue was typed but never confirmed; check by hand: cap peek %s\n' "$slug" "$slug"
+		elif ! pane_usable "$slug"; then
+			printf 'queued for %s: the agent is waiting on a prompt; delivered once a later command on it finds the pane free\n' "$slug"
+		else
+			printf 'queued for %s: an earlier message in its queue could not be recovered; check by hand: cap peek %s\n' "$slug" "$slug"
+		fi
 	fi
 else
 	[ "$take" = 1 ] || task_owner_check "$slug"
