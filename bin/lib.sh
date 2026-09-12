@@ -630,6 +630,14 @@ task_owner_claim() {
   task_owner_take "$1"
 }
 
+# What every command with a --take flag does right after task_lock: take
+# unconditionally, or check-then-claim, depending on how the caller parsed
+# its own flag. One helper instead of the same if/else at nine call sites.
+task_owner_claim_or_take() {
+  local slug=$1 take=$2
+  if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
+}
+
 # Non-dying counterpart to task_owner_claim: returns 1 on a live conflict
 # instead of exiting, so stack_sync_task can report a contended descendant
 # through STACK_CONFLICT the way it already does a rebase conflict, rather

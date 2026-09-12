@@ -21,7 +21,7 @@ while [ $# -gt 0 ]; do
   case $1 in
   --again) again=1; shift ;;
   --take) take=1; shift ;;
-  --repo) repo=1; project=${2:?$usage}; shift 2 ;;
+  --repo) repo=1; [ -n "${2:-}" ] || die "$usage"; project=$2; shift 2 ;;
   -*) die "$usage" ;;
   *)
     [ -z "$slug" ] || die "$usage"
@@ -47,7 +47,7 @@ else
   [ -n "$slug" ] || die "$usage"
   task_load "$slug"
   task_lock "$slug"
-  if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
+  task_owner_claim_or_take "$slug" "$take"
 fi
 
 cd "$CAP_TREE" || die "$slug: no worktree at $CAP_TREE"
