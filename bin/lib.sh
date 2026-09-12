@@ -896,8 +896,7 @@ pane_wait_working() {
 
 # The full verified send both cap-send's direct delivery and queue_flush's
 # backlog delivery need: submit, and if no turn started, resend once before
-# reporting failure - the compensating control exists because a silent
-# non-delivery happened for real, and both delivery paths need it equally.
+# reporting failure.
 pane_deliver() {
   local slug=$1 text=$2
   pane_submit "$slug" "$text" && return 0
@@ -1174,6 +1173,15 @@ gate_fingerprint() {
   } | sha256sum | cut -d' ' -f1
 }
 
+# The markdown-decoration strip gate_report_lines finishes each surviving
+# line with: list markers, heading/blockquote/bold/italic markers, trailing
+# punctuation. Factored out so gate_has_evidence can test a raw line for
+# being a verdict the same way gate_verdict does, instead of a stricter
+# literal match that a decorated verdict line fails.
+gate_strip_markdown() {
+  sed -E 's/^[[:space:]]*[0-9]+[.)][[:space:]]*//; s/^[[:space:]#>*_-]*//; s/[[:space:]#*_.]*$//'
+}
+
 # The cleaned line stream gate_verdict and gate_has_evidence both read, so
 # the two never disagree about what a report says. Skips fenced code (```
 # or ~~~, 3+, matched by character and length per CommonMark) and indented
@@ -1224,7 +1232,7 @@ gate_report_lines() {
         print
       }
     ' |
-    sed -E 's/^[[:space:]]*[0-9]+[.)][[:space:]]*//; s/^[[:space:]#>*_-]*//; s/[[:space:]#*_.]*$//'
+    gate_strip_markdown
 }
 
 # The exact-line GATE: PASS / GATE: FAIL verdict from a gate report. Last
@@ -1234,17 +1242,17 @@ gate_verdict() {
     grep -oE 'PASS|FAIL' || printf 'UNKNOWN'
 }
 
-# Whether a report is more than the verdict line gate_verdict just read off
-# it. A session can spend its whole budget in tool calls and hand back
-# nothing but "GATE: FAIL" - a stated verdict with nothing behind it, PASS
-# or FAIL alike, is a run that produced no review. Not a byte count: a
-# legitimate short PASS ("Nothing wrong.\n\nGATE: PASS") still has one
-# cleaned line beyond its own verdict; a bare verdict has none.
+# Whether a report is more than the bare verdict gate_verdict just read off
+# it. Reads raw, blank-filtered lines, not gate_report_lines' cleaned stream
+# (rules/code.md wants failing output shown fenced or indented, which that
+# stream strips), and tests each for being a verdict through
+# gate_strip_markdown, the same normalisation gate_verdict itself reads through.
 gate_has_evidence() {
+  [ -f "$1" ] || return 1
   local lines total verdicts
-  lines=$(gate_report_lines "$1")
-  total=$(printf '%s\n' "$lines" | grep -c .)
-  verdicts=$(printf '%s\n' "$lines" | grep -cE '^GATE: (PASS|FAIL)$')
+  lines=$(grep -v '^[[:space:]]*$' "$1" || true)
+  total=$(printf '%s\n' "$lines" | grep -c . || true)
+  verdicts=$(printf '%s\n' "$lines" | gate_strip_markdown | grep -cE '^GATE: (PASS|FAIL)$' || true)
   [ "$total" -gt "$verdicts" ]
 }
 
