@@ -29,14 +29,14 @@ AGENTS
   cap watch [--timeout S] [--interval S]      wait until an agent needs input
 
 REVIEW AND DELIVERY
-  cap check <slug>                             run checks for an agent
+  cap check <slug>                            run checks for an agent
   cap check --repo <project> [--base REF]     run checks for a project
   cap verify <slug> [--take]                  run the project's own tests/lint/typecheck
   cap cleanup <slug> [profile] [--take]       clean up comments and readability
   cap gate <slug> [--full] [--take]           review changes (B only, or A+B with --full)
   cap commit <slug> [profile] [--take]        stage and commit changes
   cap land <slug> [--merge] [--take]          push, open a PR, merge, or file a scout report
-  cap restack <slug> [--undo [SNAPSHOT]] [--take]  move stacked tasks onto this task's tip
+  cap restack <slug> [--undo [SNAPSHOT]] [--take] move stacked tasks onto this task's tip
   cap drop <slug> [--force] [--take]          stop an agent; keep unlanded work by default
 
 CONSULT
