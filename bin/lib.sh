@@ -390,9 +390,19 @@ task_lock() {
 # has somewhere else to put the work - cap-send's queue - can choose that
 # instead of failing outright.
 declare -A CAP_LOCK_FDS
+declare -A CAP_LOCK_DEPTH
 task_try_lock() {
   local slug=$1
   local dir=$TASKS/$slug
+  # Same process already holds the real fd: one more frame is sharing it,
+  # so task_unlock must see one more release before it actually closes
+  # anything. Depth is process-local on purpose - CAP_LOCK_FDS never
+  # survives into a child process either, so a child re-checking its
+  # inherited CAP_LOCKS below has no depth of its own to track.
+  if [ -n "${CAP_LOCK_FDS[$slug]:-}" ]; then
+    CAP_LOCK_DEPTH[$slug]=$(( ${CAP_LOCK_DEPTH[$slug]:-1} + 1 ))
+    return 0
+  fi
   # Re-entrant: cap land can release via cap drop without deadlocking. The
   # marker is exported, so only the holder's children inherit it.
   case " ${CAP_LOCKS:-} " in *" $slug "*) return 0 ;; esac
@@ -404,6 +414,7 @@ task_try_lock() {
   CAP_LOCKS="${CAP_LOCKS:-} $slug"
   export CAP_LOCKS
   CAP_LOCK_FDS[$slug]=$fd
+  CAP_LOCK_DEPTH[$slug]=1
 
   # Pinned here, not inside session_identity: x=$(session_identity) always
   # runs in a subshell, so an export inside it never reaches the caller.
@@ -441,11 +452,18 @@ task_flush_locks_on_exit() {
 task_unlock() {
   local slug=$1 fd
   fd=${CAP_LOCK_FDS[$slug]:-}
-  # No fd recorded means task_try_lock's re-entrant branch fired: some other
-  # still-active frame holds the real lock, not this call. Stripping
-  # CAP_LOCKS here would make that frame believe its lock is gone while the
-  # kernel flock stays held underneath it.
+  # No fd recorded means task_try_lock's re-entrant branch fired without
+  # ever sharing this process's own fd: some other still-active frame
+  # holds the real lock, not this call, so there is nothing here to release.
   [ -n "$fd" ] || return 0
+  # A depth above 1 means another frame in this same process is still
+  # sharing that fd (task_try_lock's same-process re-entrant branch) - only
+  # the frame that brings depth back to 0 actually closes it.
+  if [ "${CAP_LOCK_DEPTH[$slug]:-1}" -gt 1 ]; then
+    CAP_LOCK_DEPTH[$slug]=$(( CAP_LOCK_DEPTH[$slug] - 1 ))
+    return 0
+  fi
+  unset 'CAP_LOCK_DEPTH[$slug]'
   exec {fd}>&-
   unset 'CAP_LOCK_FDS[$slug]'
   CAP_LOCKS=" ${CAP_LOCKS:-} "
