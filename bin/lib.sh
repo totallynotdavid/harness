@@ -1072,16 +1072,18 @@ task_state() {
       fi
       ;;
     esac
-  fi
 
-  # herdr has now settled *whether* it stopped; the log is read only for
-  # *why*, and only for the three verbs that carry one - a bare "done" or
-  # nothing logged at all is not a reason, so it falls through to ready
-  # (git/gate.json) or the bare stopped state below.
-  verb=$(task_status_latest "$slug" 2>/dev/null || true)
-  case $verb in
-    blocked | needs-input | failed) printf '%s' "$verb"; return ;;
-  esac
+    # herdr has now settled *whether* it stopped; the log is read only for
+    # *why*, and only for the three verbs that carry one - a bare "done" or
+    # nothing logged at all is not a reason, so it falls through to ready
+    # (git/gate.json) or the bare stopped state below. Only reached with the
+    # pane still live: a dead pane's old log verb never gets to override
+    # herdr's own account of the agent being gone.
+    verb=$(task_status_latest "$slug" 2>/dev/null || true)
+    case $verb in
+      blocked | needs-input | failed) printf '%s' "$verb"; return ;;
+    esac
+  fi
 
   tree=$(task_field "$slug" CAP_TREE 2>/dev/null || true)
   base=$(task_field "$slug" CAP_BASE 2>/dev/null || true)
