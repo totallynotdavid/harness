@@ -85,7 +85,7 @@ if ! pane_live "$slug"; then
 	# task_lock's own release flush still delivers anything already queued
 	# for the dead session once this process exits below.
 	task_lock "$slug"
-	task_owner_claim_or_take "$slug" "$take"
+	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 	revive
 	pane_wait_working "$slug" ||
 		die "$slug: restarted the session but no turn began - check by hand: cap peek $slug"
@@ -144,7 +144,7 @@ fi
 # queued, not refused, but ownership is still checked first: momentarily
 # free is not the same as this session having any right to the task.
 if task_try_lock "$slug"; then
-	task_owner_claim_or_take "$slug" "$take"
+	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 	# Flushed explicitly here, ahead of this call's own message, so an
 	# older queued correction always lands before a newer one instead of
@@ -153,11 +153,14 @@ if task_try_lock "$slug"; then
 	# message first and the backlog only after, at exit.
 	queue_flush "$slug" || true
 
-	# Queued, not dropped, on a failed delivery: pane_send may already have
-	# typed the text into the pane, but a confirmed turn is what pane_deliver
-	# actually checked for, and every other failure in this subsystem leaves
-	# the message queued rather than losing it.
+	# Queued, not dropped, on a failed delivery: pane_submit has already
+	# typed the text by this point, and a confirmed turn is what
+	# pane_deliver actually checked for. Unlocked before queuing so this
+	# call's own exit does not immediately flush and retype the very text
+	# it just failed to confirm - task_flush_locks_on_exit only flushes
+	# slugs still in CAP_LOCKS, and task_unlock strips this one first.
 	pane_deliver "$slug" "$text" || {
+		task_unlock "$slug"
 		queue_send "$slug" "$text"
 		die "$slug: sent but the agent never started a turn; queued for delivery once the pane accepts input - check by hand: cap peek $slug"
 	}
