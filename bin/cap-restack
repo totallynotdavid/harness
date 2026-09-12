@@ -2,32 +2,42 @@
 # cap-restack - move the tasks stacked on a task onto its current tip.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap restack <slug> [--undo [SNAPSHOT]] [--take]}
-shift || true
-
+usage="usage: cap restack <slug> [--undo [SNAPSHOT]] [--take]"
 undo=0
 take=0
 snapshot=""
+slug=""
 while [ $# -gt 0 ]; do
 	case $1 in
 	--undo)
 		undo=1
 		shift
-		case ${1:-} in
-		'' | -*) ;;
-		*)
-			snapshot=$1
-			shift
-			;;
-		esac
+		# A snapshot argument only follows --undo once the slug is already
+		# known, matching the documented <slug> ... --undo [SNAPSHOT] order.
+		# Before that, the next bare word is the slug, not a snapshot id.
+		if [ -n "$slug" ]; then
+			case ${1:-} in
+			'' | -*) ;;
+			*)
+				snapshot=$1
+				shift
+				;;
+			esac
+		fi
 		;;
 	--take)
 		take=1
 		shift
 		;;
-	*) die "usage: cap restack <slug> [--undo [SNAPSHOT]] [--take]" ;;
+	-*) die "$usage" ;;
+	*)
+		[ -z "$slug" ] || die "$usage"
+		slug=$1
+		shift
+		;;
 	esac
 done
+[ -n "$slug" ] || die "$usage"
 
 task_load "$slug"
 task_lock "$slug"
