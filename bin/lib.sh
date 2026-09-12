@@ -344,27 +344,24 @@ CAP_EXIT_FNS=()
 # inherited CAP_EXIT_FNS at its own exit; one that does starts its own list.
 CAP_EXIT_PID=""
 trap() {
-  # Composes for EXIT specifically, however it arrives - alongside other
-  # signals (`trap cmd EXIT INT`) or with `-` (`trap - EXIT`), not only
-  # the exact two-argument `trap cmd EXIT` shape.
+  # Composes only the one unambiguous form, `trap CMD SIG...` where CMD is
+  # a real command and EXIT is among SIG. Anything else - `trap - EXIT`,
+  # `trap -p ...`, `trap -l`, a bare query - goes straight to the builtin
+  # so it behaves exactly as it always did, including actually disarming.
   local sig has_exit=0 other=()
-  if [ "$#" -ge 2 ]; then
+  if [ "$#" -ge 2 ] && [ "$1" != - ] && [ "${1:0:1}" != - ]; then
     for sig in "${@:2}"; do
       if [ "$sig" = EXIT ]; then has_exit=1; else other+=("$sig"); fi
     done
   fi
 
   if [ "$has_exit" = 1 ]; then
-    if [ "$1" != - ]; then
-      if [ "${CAP_EXIT_PID:-}" != "$BASHPID" ]; then
-        CAP_EXIT_FNS=()
-        CAP_EXIT_PID=$BASHPID
-      fi
-      CAP_EXIT_FNS+=("$1")
-      builtin trap cap_run_exit_fns EXIT
+    if [ "${CAP_EXIT_PID:-}" != "$BASHPID" ]; then
+      CAP_EXIT_FNS=()
+      CAP_EXIT_PID=$BASHPID
     fi
-    # `trap - EXIT` can't remove just the caller's entry, so the EXIT side
-    # is left as-is; any other named signal is still set directly.
+    CAP_EXIT_FNS+=("$1")
+    builtin trap cap_run_exit_fns EXIT
     # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
     [ "${#other[@]}" -eq 0 ] || builtin trap "$1" "${other[@]}"
   else
