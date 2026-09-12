@@ -34,7 +34,7 @@ REVIEW AND DELIVERY
   cap gate <slug> [--full] [--take]           review changes (B only, or A+B with --full)
   cap commit <slug> [profile] [--take]        stage and commit changes
   cap land <slug> [--merge] [--take]          push, open a PR, merge, or file a scout report
-  cap restack <slug> [--undo [SNAPSHOT]] [--take] move stacked tasks onto this task's tip
+  cap restack <slug> [--undo [SNAP]] [--take] move stacked tasks onto this task's tip
   cap drop <slug> [--force] [--take]          stop an agent; keep unlanded work by default
 
 CONSULT
