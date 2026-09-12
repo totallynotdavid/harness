@@ -9,7 +9,7 @@ export CAP_HOME
 
 # CAP_BIN: which code is running, always this file's own directory -
 # distinct from CAP_HOME, which may point elsewhere in a worktree.
-CAP_BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+CAP_BIN=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 export CAP_BIN
 
 # shellcheck source=config/captain.conf
