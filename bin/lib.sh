@@ -725,7 +725,15 @@ queue_flush() {
   # message - only cap-send/task_try_lock ever call this for a given
   # slug's lock, so nothing else can be claiming the same file right now.
   if [ -f "$claimed" ]; then
-    queue_prepend "$slug" "$claimed" && rm -f "$claimed"
+    if queue_prepend "$slug" "$claimed"; then
+      rm -f "$claimed"
+    else
+      # queue_prepend already left $claimed on disk for the next attempt.
+      # Claiming $spool onto $claimed below would overwrite that undelivered
+      # batch instead of recovering it - stop here and retry on the next flush.
+      warn "$slug: could not recover queued messages in $claimed; left in place, will retry on the next flush"
+      return 1
+    fi
   fi
 
   [ -s "$spool" ] || return 0
