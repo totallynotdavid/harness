@@ -1400,12 +1400,6 @@ harness_trust() {
 STACK_MOVED=0
 STACK_CONFLICT=""
 
-# Slugs stack_cascade/stack_cascade_landed actually finished syncing, in the
-# order they finished. task_unlock only releases a lock; the top-level
-# caller flushes each of these once the whole cascade returns, rather than
-# per child while siblings are still being rebased.
-STACK_SYNCED=""
-
 # Store branch refs under state/restacks so --undo can restore them.
 stack_snapshot_new() {
   mkdir -p "$CAP_HOME/state/restacks"
@@ -1512,9 +1506,14 @@ stack_cascade() {
     tree=$(task_field "$child" CAP_TREE)
 
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
-    STACK_SYNCED="${STACK_SYNCED:+$STACK_SYNCED }$child"
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
+
+    # Flushed here, at the end of this child's own work, while its lock is
+    # still held - not after task_unlock, which is queue_flush's own
+    # invariant, and not deferred to the top-level caller, which would run
+    # unlocked and race a concurrent cap-send over the same *.flushing file.
+    queue_flush "$child" || true
     task_unlock "$child"
     [ "$rc" = 0 ] || return "$rc"
   done
@@ -1532,7 +1531,6 @@ stack_cascade_landed() {
     tree=$(task_field "$child" CAP_TREE)
 
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
-    STACK_SYNCED="${STACK_SYNCED:+$STACK_SYNCED }$child"
 
     stack_snapshot_field "$snap" "$child" CAP_BASE
     task_env_set "$child" CAP_BASE "$up_base"
@@ -1547,6 +1545,11 @@ stack_cascade_landed() {
 
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
+
+    # Flushed here, at the end of this child's own work, while its lock is
+    # still held - see stack_cascade for why not after task_unlock and not
+    # deferred to the top-level caller.
+    queue_flush "$child" || true
     task_unlock "$child"
     [ "$rc" = 0 ] || return "$rc"
   done

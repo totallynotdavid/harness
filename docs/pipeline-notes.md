@@ -277,13 +277,12 @@ leftover `.flushing` file on every call and folds it back in front of the live q
 claiming again, so the next flush - by any locking command - picks the backlog up rather than
 leaving it orphaned.
 
-Delivery from the queue goes through `pane_deliver`, one confirmed attempt - typing the text
+Delivery from the queue goes through `pane_submit`, one confirmed attempt - typing the text
 in and checking a turn actually started - not a bare `pane_send` trusted to have worked. A
-message that fails to start a turn stays in the queue instead of being logged as sent and
-lost, and anything queued behind it stays too. The send queue is what retries a failed
-delivery, on the next flush, not `pane_deliver` itself: a second attempt there on top of that
-let a delivery that had actually landed, but was only slow to show as working, repeat the
-same instruction. Queued text is stored
+message that fails to confirm is logged to `status.log` as unconfirmed and dropped from the
+queue, not retried: `pane_submit` may already have typed it in, and a later flush retrying it
+would type it a second time. Anything still queued behind it was never typed at all, so it
+stays queued and is tried on the next flush. Queued text is stored
 base64-encoded rather than flattened with `tr '\n' ' '`, so a multi-line message arrives
 exactly as typed whether the lock happened to be free or not.
 
