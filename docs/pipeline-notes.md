@@ -189,9 +189,9 @@ wrong verb, picked by the agent, and the hook only reacts to `done`, `blocked`,
 column reads herdr, not the log). Two readers of the same state disagreeing, because one of
 them trusted a word an agent typed instead of asking whether it was actually true.
 
-`task_state` (`bin/lib.sh`) is the one place that question gets answered now. `bin/cap-crew`'s
-`status_of`, `bin/hooks/crew-status.sh`, and `bin/cap-spawn`'s reclaimable-task check all call
-it instead of reading `task_status_latest` themselves. Ground truth only: herdr says whether
+`task_state` (`bin/lib.sh`) is the one place that question gets answered now. `bin/cap-crew`,
+`bin/hooks/crew-status.sh`, and `bin/cap-spawn`'s reclaimable-task check all call it instead
+of reading `task_status_latest` themselves. Ground truth only: herdr says whether
 the agent is running - that answer is never talked around by a log line claiming otherwise -
 `gate.json` says whether the work is ready to land (see below), and the log is read only to
 name *why* a task stopped, and only for `blocked`, `needs-input`, and `failed`, the three
@@ -199,7 +199,8 @@ verbs that carry a reason. A bare `done`, or nothing logged at all, is not a rea
 through to `ready` when `gate.json` says so, and otherwise to `idle` (still live, stopped,
 nothing to report) or `exited` (pane gone). herdr itself answering neither `working` nor
 `idle` falls back to whether the pane's visible output has changed recently
-(`task_idle_age`), the same signal `cap send` already trusts for this exact question.
+(`task_state_stale_age`), tracked in its own file so this poll never eats the
+change-edge `task_idle_age` and `cap-watch` depend on.
 
 `cap gate` records each profile's verdict in `state/tasks/<slug>/gate.json`, tagged with a
 fingerprint of exactly what was reviewed (`git diff <base>` plus any uncommitted change).
