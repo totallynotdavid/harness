@@ -84,10 +84,18 @@ for pair in "${profiles[@]}"; do
 
   # No verdict means failed gate, not silent pass. Review session can die
   # mid-read leaving zero-byte report. Recording UNKNOWN would claim a result
-  # nobody reached.
+  # nobody reached. A stated verdict with nothing behind it - a session that
+  # spent its whole budget in tool calls and handed back three words - is the
+  # same failure to reach a result, whichever word it said: a bare "GATE:
+  # PASS" shaped exactly like that would send gate_ready green having
+  # reviewed nothing.
   verdict=$(gate_verdict "$tmp")
-  if [ "$verdict" = UNKNOWN ]; then
-    warn "gate $label ($profile) reached no verdict for $slug ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
+  if [ "$verdict" = UNKNOWN ] || ! gate_has_evidence "$tmp"; then
+    if [ "$verdict" = UNKNOWN ]; then
+      warn "gate $label ($profile) reached no verdict for $slug ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
+    else
+      warn "gate $label ($profile) said $verdict for $slug with nothing behind it ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
+    fi
     rm -f "$tmp"
     incomplete=1
     continue
