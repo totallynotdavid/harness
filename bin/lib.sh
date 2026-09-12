@@ -628,8 +628,13 @@ task_owner_free() {
   local slug=$1 owner me
   task_dispatched_here "$slug" && return 0
   owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
-  [ -n "$owner" ] && agent_cwd_matches "$slug" "${owner%@*}" && return 0
   me=$(session_identity)
+  # session_alive is the only thing that compares the recorded start-time
+  # against whatever is actually running at that pid now. A cwd match on
+  # the bare pid alone - dropped from here - proves nothing: a reused pid
+  # whose cwd happens to be the task's worktree, the task's own freshly
+  # launched agent or a shell someone cd'd there, is not the recorded
+  # owner just because it occupies the same pid number.
   [ -n "$owner" ] && [ "$owner" != "$me" ] && session_alive "$owner" || return 0
   return 1
 }
@@ -1508,7 +1513,6 @@ stack_sync_task() {
       STACK_CONFLICT=$task
       warn "$task conflicts with its new base; its branch was left where it was"
       warn "resolve by hand: cd $tree && git rebase --onto $new_tip $old_tip"
-      task_release "$task"
       return 1
     fi
 
@@ -1520,18 +1524,34 @@ stack_sync_task() {
   task_env_set "$task" CAP_PARENT_TIP "$new_tip"
 }
 
-# The caller holds the child's lock across every field it rewrites, not
-# just the rebase: stack_cascade_landed's CAP_BASE/CAP_PARENT/gh pr edit
-# on this same child, right after stack_sync_task, is the same
-# read-modify-write task_lock exists to serialize.
+# Locks each child before stack_sync_task touches it and releases it exactly
+# once when this pass on that child is done, on every path: a locked-out
+# child is never touched at all, an owned-elsewhere child (stack_sync_task
+# returns 2) gets a bare task_unlock since no work was done on it, and every
+# other outcome - rebase conflict or success, including the recursive call
+# below - gets task_release since this session did work under that lock.
 stack_cascade() {
   local slug=$1 new_tip=$2 snap=$3
-  local child tree rc
+  local child tree rc sync_rc
 
   for child in $(task_children "$slug"); do
-    tree=$(task_field "$child" CAP_TREE)
+    if ! task_try_lock "$child"; then
+      STACK_CONFLICT=$child
+      warn "$child is locked by another cap command; its branch was left where it was"
+      return 1
+    fi
 
-    stack_sync_task "$child" "$new_tip" "$snap" || return 1
+    sync_rc=0
+    stack_sync_task "$child" "$new_tip" "$snap" || sync_rc=$?
+    if [ "$sync_rc" = 2 ]; then
+      task_unlock "$child"
+      return 1
+    elif [ "$sync_rc" != 0 ]; then
+      task_release "$child"
+      return 1
+    fi
+
+    tree=$(task_field "$child" CAP_TREE)
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
     task_release "$child"
@@ -1539,18 +1559,32 @@ stack_cascade() {
   done
 }
 
-# After a parent lands, descendants inherit its base and PR target.
+# After a parent lands, descendants inherit its base and PR target. Same
+# lock discipline as stack_cascade: one task_try_lock per child, released
+# exactly once by whichever exit the child's pass takes.
 stack_cascade_landed() {
   local slug=$1 new_tip=$2 snap=$3
-  local child tree up_base up_parent pr rc
+  local child tree up_base up_parent pr rc sync_rc
 
   up_base=$(task_field "$slug" CAP_BASE)
   up_parent=$(task_field "$slug" CAP_PARENT)
 
   for child in $(task_children "$slug"); do
-    tree=$(task_field "$child" CAP_TREE)
+    if ! task_try_lock "$child"; then
+      STACK_CONFLICT=$child
+      warn "$child is locked by another cap command; its branch was left where it was"
+      return 1
+    fi
 
-    stack_sync_task "$child" "$new_tip" "$snap" || return 1
+    sync_rc=0
+    stack_sync_task "$child" "$new_tip" "$snap" || sync_rc=$?
+    if [ "$sync_rc" = 2 ]; then
+      task_unlock "$child"
+      return 1
+    elif [ "$sync_rc" != 0 ]; then
+      task_release "$child"
+      return 1
+    fi
 
     stack_snapshot_field "$snap" "$child" CAP_BASE
     task_env_set "$child" CAP_BASE "$up_base"
@@ -1563,6 +1597,7 @@ stack_cascade_landed() {
         warn "could not retarget $pr to $up_base; set its base by hand"
     fi
 
+    tree=$(task_field "$child" CAP_TREE)
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
     task_release "$child"
