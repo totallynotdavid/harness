@@ -116,7 +116,7 @@ compact_pane() {
 	while [ "$waited" -lt "$deadline" ]; do
 		sleep 10
 		waited=$((waited + 10))
-		now=$(pane_context_pct "$slug")
+		now=$(pane_context_pct "$slug" || true)
 		if [ -n "$now" ] && [ "$now" -lt "$CAP_SEND_CTX_MAX" ] 2>/dev/null; then
 			ctx=$now
 			return 0
@@ -125,13 +125,13 @@ compact_pane() {
 	return 1
 }
 
-ctx=$(pane_context_pct "$slug")
+ctx=$(pane_context_pct "$slug" || true)
 if [ "$force" = 0 ] && [ -n "$ctx" ] && [ "$ctx" -ge "$CAP_SEND_CTX_MAX" ] 2>/dev/null; then
 	if compact_pane; then
 		printf 'compacted %s to %s%% context\n' "$slug" "$ctx"
 	else
 		printf 'cap: %s is at %s%% context and compacting it did not bring it under %s%%.\n' \
-			"$slug" "$(pane_context_pct "$slug")" "$CAP_SEND_CTX_MAX" >&2
+			"$slug" "$(pane_context_pct "$slug" || true)" "$CAP_SEND_CTX_MAX" >&2
 		printf 'The live conversation is genuinely that large. Either finish the task\n' >&2
 		printf '(cap check / cap commit / cap land), restart it clean (cap drop %s then\n' "$slug" >&2
 		printf 'cap spawn with an updated brief), or send anyway:\n' >&2
@@ -151,7 +151,7 @@ if task_try_lock "$slug"; then
 	# racing the automatic release flush every locking command now gets
 	# (see task_try_lock) - that one alone would deliver this call's
 	# message first and the backlog only after, at exit.
-	queue_flush "$slug"
+	queue_flush "$slug" || true
 
 	pane_deliver "$slug" "$text" ||
 		die "$slug: sent but the agent never started a turn - check by hand: cap peek $slug"
