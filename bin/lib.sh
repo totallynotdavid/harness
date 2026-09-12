@@ -1161,14 +1161,12 @@ gate_fingerprint() {
   } | sha256sum | cut -d' ' -f1
 }
 
-# The exact-line GATE: PASS / GATE: FAIL verdict from a gate report. Skips
-# fenced code (``` or ~~~, 3+, matched by character and length per
-# CommonMark - an opener never closed swallows the rest of the report) and
-# four-or-more-space or tab-indented lines, then strips markdown structure -
-# heading (# on both ends), list, blockquote, bold/italic, trailing period -
-# never quote marks or backticks. Last matching line wins.
-gate_verdict() {
-  [ -f "$1" ] || { printf 'UNKNOWN'; return; }
+# The cleaned line stream gate_verdict and gate_has_evidence both read, so
+# the two never disagree about what a report says. Skips fenced code (```
+# or ~~~, 3+, matched by character and length per CommonMark) and indented
+# lines, then strips markdown structure - never quote marks or backticks.
+gate_report_lines() {
+  [ -f "$1" ] || return 0
   local body
   # grep -v exits 1, not just prints nothing, on a zero-byte report - what
   # cap-gate feeds this after a session-limit rejection. Harmless today only
@@ -1213,9 +1211,28 @@ gate_verdict() {
         print
       }
     ' |
-    sed -E 's/^[[:space:]]*[0-9]+[.)][[:space:]]*//; s/^[[:space:]#>*_-]*//; s/[[:space:]#*_.]*$//' |
-    grep -E '^GATE: (PASS|FAIL)$' | tail -1 |
+    sed -E 's/^[[:space:]]*[0-9]+[.)][[:space:]]*//; s/^[[:space:]#>*_-]*//; s/[[:space:]#*_.]*$//'
+}
+
+# The exact-line GATE: PASS / GATE: FAIL verdict from a gate report. Last
+# matching cleaned line wins.
+gate_verdict() {
+  gate_report_lines "$1" | grep -E '^GATE: (PASS|FAIL)$' | tail -1 |
     grep -oE 'PASS|FAIL' || printf 'UNKNOWN'
+}
+
+# Whether a report is more than the verdict line gate_verdict just read off
+# it. A session can spend its whole budget in tool calls and hand back
+# nothing but "GATE: FAIL" - a stated verdict with nothing behind it, PASS
+# or FAIL alike, is a run that produced no review. Not a byte count: a
+# legitimate short PASS ("Nothing wrong.\n\nGATE: PASS") still has one
+# cleaned line beyond its own verdict; a bare verdict has none.
+gate_has_evidence() {
+  local lines total verdicts
+  lines=$(gate_report_lines "$1")
+  total=$(printf '%s\n' "$lines" | grep -c .)
+  verdicts=$(printf '%s\n' "$lines" | grep -cE '^GATE: (PASS|FAIL)$')
+  [ "$total" -gt "$verdicts" ]
 }
 
 # Record one profile's verdict for a task at the fingerprint it reviewed.
