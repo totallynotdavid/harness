@@ -80,10 +80,11 @@ if [ "$undo" = 1 ]; then
 			if task_owner_free "$child"; then
 				task_env_set "$child" "$c" "$d"
 				printf 'restored %s %s to %s\n' "$child" "$c" "$d"
+				task_release "$child"
 			else
 				warn "$child is owned by pid $(task_field "$child" CAP_OWNER 2>/dev/null | cut -d@ -f1); left $c as it was"
+				task_unlock "$child"
 			fi
-			task_unlock "$child"
 			continue
 		fi
 
@@ -120,7 +121,7 @@ if [ "$undo" = 1 ]; then
 			fi
 		fi
 
-		[ -n "$child" ] && task_unlock "$child"
+		[ -n "$child" ] && task_release "$child"
 	done <"$snapshot"
 
 	printf 'undid %s ref(s) from %s\n' "$n" "$snapshot"

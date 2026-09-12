@@ -475,9 +475,11 @@ task_flush_locks_on_exit() {
   for slug in ${CAP_LOCKS:-}; do queue_flush "$slug" || true; done
 }
 
-# Releases a lock task_try_lock took, as soon as a caller is done with the
-# task - stack_sync_task's own failure paths, and its cascade callers once
-# a descendant's per-child work is finished.
+# Releases a lock task_try_lock took, bare - no flush. For a path that
+# never did any work on the task (task_owner_free said no), so a message
+# queued against it waits for that task's own live owner instead of being
+# typed by a session that just declined to touch it. Every path that did
+# do the work calls task_release below instead, never this directly.
 task_unlock() {
   local slug=$1 fd
   fd=${CAP_LOCK_FDS[$slug]:-}
@@ -499,6 +501,16 @@ task_unlock() {
   CAP_LOCKS=${CAP_LOCKS/ $slug / }
   CAP_LOCKS=${CAP_LOCKS# }
   CAP_LOCKS=${CAP_LOCKS% }
+}
+
+# The one place that pairs flush with unlock, for every site that held
+# this task's own lock to do its own real work on it: releasing without
+# flushing first strands a message queued while the work was in progress,
+# since task_unlock strips the slug from CAP_LOCKS before the exit trap
+# ever gets a look at it.
+task_release() {
+  queue_flush "$1" || true
+  task_unlock "$1"
 }
 
 # Read a task field without sourcing its record.
@@ -1496,7 +1508,7 @@ stack_sync_task() {
       STACK_CONFLICT=$task
       warn "$task conflicts with its new base; its branch was left where it was"
       warn "resolve by hand: cd $tree && git rebase --onto $new_tip $old_tip"
-      task_unlock "$task"
+      task_release "$task"
       return 1
     fi
 
@@ -1522,13 +1534,7 @@ stack_cascade() {
     stack_sync_task "$child" "$new_tip" "$snap" || return 1
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
-
-    # Flushed here, at the end of this child's own work, while its lock is
-    # still held - not after task_unlock, which is queue_flush's own
-    # invariant, and not deferred to the top-level caller, which would run
-    # unlocked and race a concurrent cap-send over the same *.flushing file.
-    queue_flush "$child" || true
-    task_unlock "$child"
+    task_release "$child"
     [ "$rc" = 0 ] || return "$rc"
   done
 }
@@ -1559,12 +1565,7 @@ stack_cascade_landed() {
 
     rc=0
     stack_cascade "$child" "$(git -C "$tree" rev-parse HEAD)" "$snap" || rc=$?
-
-    # Flushed here, at the end of this child's own work, while its lock is
-    # still held - see stack_cascade for why not after task_unlock and not
-    # deferred to the top-level caller.
-    queue_flush "$child" || true
-    task_unlock "$child"
+    task_release "$child"
     [ "$rc" = 0 ] || return "$rc"
   done
 }
