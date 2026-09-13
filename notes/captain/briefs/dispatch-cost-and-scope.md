@@ -1,6 +1,10 @@
 # Attribute cost per dispatch, and stop re-reviewing what already passed
 
-Four changes. They are independent; land them in this order.
+Five changes. Sections 3 and 5 depend on nothing else here and land first.
+Sections 1, 2 and 4 depend on `interactive-dispatch.md` landing first: it
+removes the `stream-json` parsing that section 1 would otherwise be built on,
+and section 2's concurrency and section 4's `--effort` wiring both belong in
+the dispatch path that brief replaces, not the one it deletes.
 
 ## 1. Record what each dispatch cost
 
