@@ -1171,12 +1171,9 @@ task_state() {
 
 git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
 
-# git_dirty's untracked count, scoped to a shared checkout instead of a
-# task's own worktree: a project hub several sessions merge into with no
-# locking, where any session's stray untracked file blocks every session's
-# land and the blocked session can't tell whose file it is. A merge already
-# aborts before touching anything it would overwrite untracked, so the hub
-# only needs to know about tracked changes.
+# Like git_dirty, but ignores untracked files - for a checkout several
+# sessions share with no locking, where a stray untracked file must not
+# block another session's land.
 git_dirty_tracked() { git -C "$1" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' '; }
 
 # Sync a worktree onto the current tip of its base branch before review, so
@@ -1380,6 +1377,37 @@ gate_last_commit() {
   local f=$TASKS/$slug/gate.json
   [ -f "$f" ] || return 0
   jq -r --arg l "$label" '.[$l].commit // empty' "$f" 2>/dev/null || true
+}
+
+# Where a plain (non-full) round should review from: $label's last
+# commit, narrowed to only when that commit is still a trustworthy
+# checkpoint. Falls back to the full range (this branch's fork point from
+# $base) otherwise.
+gate_review_since() {
+  local slug=$1 label=$2 tree=$3 base=$4
+  local full since verdict head mb_now mb_then
+  full=$(diff_base "$tree" "$base")
+
+  since=$(gate_last_commit "$slug" "$label")
+  [ -n "$since" ] || { printf '%s' "$full"; return; }
+  git -C "$tree" cat-file -e "$since" 2>/dev/null || { printf '%s' "$full"; return; }
+  # An ancestor is not enough on its own: a FAIL is not a checkpoint to
+  # increment from, and syncing $base into this branch moves its fork
+  # point, which would otherwise pull $base's own commits into the diff
+  # as if this branch had written them.
+  git -C "$tree" merge-base --is-ancestor "$since" HEAD 2>/dev/null || { printf '%s' "$full"; return; }
+
+  verdict=$(jq -r --arg l "$label" '.[$l].verdict // empty' "$TASKS/$slug/gate.json" 2>/dev/null || true)
+  [ "$verdict" = PASS ] || { printf '%s' "$full"; return; }
+
+  head=$(git -C "$tree" rev-parse HEAD)
+  [ "$since" != "$head" ] || { printf '%s' "$full"; return; }
+
+  mb_now=$(git -C "$tree" merge-base "$base" HEAD 2>/dev/null || true)
+  mb_then=$(git -C "$tree" merge-base "$base" "$since" 2>/dev/null || true)
+  [ "$mb_now" = "$mb_then" ] || { printf '%s' "$full"; return; }
+
+  printf '%s' "$since"
 }
 
 # Whether a task is ready to land: both A and B last passed, and both did so
