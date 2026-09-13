@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# lint-revlist-topo - find a `git rev-list --reverse` without --topo-order.
+# --reverse alone orders commits by commit date, so a rewrite that looks up
+# each commit's rebuilt parent in traversal order sees a side branch before
+# the commit it forked from whenever a merge is in range.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+mapfile -t files < <(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lint-* bin/hooks/*.sh)
+
+status=0
+for f in "${files[@]}"; do
+	mapfile -t hits < <(grep -nE 'rev-list.*--reverse' "$f" | grep -v -- '--topo-order' || true)
+	for hit in "${hits[@]}"; do
+		[ -n "$hit" ] || continue
+		printf '%s:%s\n' "$f" "$hit" >&2
+		status=1
+	done
+done
+
+[ "$status" = 0 ] && printf 'lint-revlist-topo: no rev-list --reverse without --topo-order\n'
+exit "$status"

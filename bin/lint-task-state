@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# lint-task-state - fail if cap-crew or crew-status.sh decide a task's
+# stopped/running state from a status.log verb instead of task_state.
+# herdr is the ground truth for whether a task has stopped; a status.log
+# verb only names a reason, never the state itself (see
+# docs/pipeline-notes.md, "Task state is not a log word").
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+files=(bin/cap-crew bin/hooks/crew-status.sh)
+
+status=0
+for f in "${files[@]}"; do
+	grep -q 'task_state\b' "$f" || {
+		printf '%s: does not call task_state; herdr is no longer consulted\n' "$f" >&2
+		status=1
+	}
+	if grep -qE 'task_status_latest|task_status_verb' "$f"; then
+		printf '%s: reads the status.log verb directly; task_state is the only ground truth for whether a task has stopped\n' "$f" >&2
+		status=1
+	fi
+done
+
+[ "$status" = 0 ] && printf 'lint-task-state: cap-crew and crew-status.sh both derive state from task_state\n'
+exit "$status"

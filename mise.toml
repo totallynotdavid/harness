@@ -1,9 +1,5 @@
-# Captain runs its own gates on itself. Two shell defects surfaced in one day:
-# `local a=$1 b=$a`, which fails under set -u because local expands every word
-# before it assigns any of them, and a bare `[ cond ] && cmd` in tail position,
-# which turns a false test into a failed exit status. shellcheck catches the
-# first as SC2318 and has no diagnostic at all for the second, so check:andlist
-# exists to cover it.
+# Captain gates itself. lint tools cover defects shellcheck misses: local var
+# expansion order (SC2318) and bare `[ ] && cmd` in tail position.
 
 [tools]
 shellcheck = "0.11.0"
@@ -25,6 +21,22 @@ run = "bin/lint-gate-verdict"
 [tasks."check:usage-shape"]
 description = "assert usage_write and bin/cap-statusline agree on the state/usage record shape and rounding"
 run = "bin/lint-usage-shape"
+
+[tasks."check:procsub"]
+description = "find a `while ... done < <(cmd)` whose producer's exit status is never checked"
+run = "bin/lint-procsub"
+
+[tasks."check:revlist-topo"]
+description = "find a `git rev-list --reverse` without --topo-order"
+run = "bin/lint-revlist-topo"
+
+[tasks."check:dead-flag"]
+description = "find a flag parsed into a variable nothing after the parsing loop reads"
+run = "bin/lint-dead-flag"
+
+[tasks."check:task-state"]
+description = "fail if cap-crew or crew-status.sh read status.log as the sole evidence a task is running"
+run = "bin/lint-task-state"
 
 [tasks."check:syntax"]
 description = "parse every shell script without running it"
