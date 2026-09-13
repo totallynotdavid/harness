@@ -51,7 +51,14 @@ fi
 cd "$CAP_TREE" || die "$slug: no worktree at $CAP_TREE"
 
 sha=$(git -C "$CAP_TREE" rev-parse HEAD 2>/dev/null || true)
-dirty=$(git_dirty "$CAP_TREE")
+# --repo mode's $CAP_TREE is the project hub, shared by every session with
+# no locking; an untracked file dropped there by another session must not
+# read as this checkout being dirty.
+if [ "$repo" = 1 ]; then
+  dirty=$(git_dirty_tracked "$CAP_TREE")
+else
+  dirty=$(git_dirty "$CAP_TREE")
+fi
 
 # Which scripts already passed at this commit, so a run that dies partway
 # through resumes instead of starting over. The build is both the most

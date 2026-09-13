@@ -63,7 +63,7 @@ local)
 	git -C "$CAP_REPO" rev-parse --verify "$CAP_BASE" >/dev/null 2>&1 ||
 		die "no base branch $CAP_BASE"
 
-	[ "$(git_dirty "$CAP_REPO")" = 0 ] ||
+	[ "$(git_dirty_tracked "$CAP_REPO")" = 0 ] ||
 		die "$CAP_REPO has uncommitted changes"
 
 	# Trial-merge before touching the base. A real merge that conflicts leaves
