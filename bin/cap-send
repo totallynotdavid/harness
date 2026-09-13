@@ -2,14 +2,29 @@
 # cap-send - send a message to a running agent.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap send <slug> [--force] "<text>"}
+slug=${1:?usage: cap send <slug> [--force] [--take] "<text>"}
 shift
 
 force=0
-[ "${1:-}" = --force ] && { force=1; shift; }
+take=0
+while :; do
+	case ${1:-} in
+	--force) force=1; shift ;;
+	--take) take=1; shift ;;
+	*) break ;;
+	esac
+done
 
 text=$*
 [ -n "$text" ] || die "nothing to send"
+
+task_load "$slug"
+
+# Checked before anything else below, including the context ceiling and any
+# compaction it triggers: compacting another session's agent is the one
+# irreversible thing this command can do. task_owner_claim (the write)
+# still only happens under the lock further down; this is read-only.
+[ "$take" = 1 ] || task_owner_check "$slug"
 
 # A dead pane used to end the command here, which left the captain holding
 # work the agent should be doing: local-env's pane died mid-round and the
@@ -23,6 +38,7 @@ text=$*
 # exactly when the message arrived.
 revive() {
   local dir=$TASKS/$slug kick margs=() scrub cmd
+  local -a es
   task_load "$slug"
   [ -f "$dir/contract.md" ] || die "$slug: pane is not live and there is no contract to restart it from"
 
@@ -37,7 +53,8 @@ Then carry out this instruction from the captain:
 $text"
 
   if [ "$CAP_MODEL" != '-' ]; then margs=(--model "$CAP_MODEL"); fi
-  scrub=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
+  mapfile -t es < <(cap_env_scrub)
+  scrub=(env "${es[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
   case $CAP_HARNESS in
     claude)
       if [ -n "${CAP_EFFORT:-}" ]; then margs+=(--effort "$CAP_EFFORT"); fi
@@ -58,42 +75,22 @@ $text"
   pane_launch "$pane" "${cmd[@]}"
   task_env_set "$slug" CAP_PANE "$pane"
   task_env_set "$slug" CAP_TAB "$tabid"
+  # A fresh pane has a fresh input box - whatever the old one may have had
+  # sitting unsent in it died with it.
+  queue_clear_untrusted "$slug"
   warn "$slug: pane was not live; restarted the session on $CAP_MODEL and delivered the message in its opening prompt"
 }
 
 
-deliver() {
-	pane_send "$slug" "$text"
-	for _ in 1 2 3; do
-		sleep 0.4
-		pane_enter "$slug"
-		sleep 0.6
-		# Stop retrying once the message has left the input box. Check the
-		# END of the text, not the start: pane_tail returns the last N
-		# lines of the pane, which for an unsubmitted multi-line message is
-		# its tail, not its head. Anchoring on the first 40 chars made this
-		# check pass (falsely, "it's gone") for any message longer than the
-		# tail window, because the start had simply scrolled out of view
-		# while the message sat there unsubmitted - found by hand against
-		# relq-executor-ergonomics after wait_working correctly caught the
-		# resulting no-turn-started failure twice in a row.
-		pane_tail "$slug" 6 | grep -qF "${text: -40}" || break
-	done
-}
-
-wait_working() {
-		local i
-	# shellcheck disable=SC2034 # a counted retry, the body does not read i
-	for i in 1 2 3 4 5 6; do
-		sleep 1
-		[ "$(pane_agent_status "$slug")" = working ] && return 0
-	done
-	return 1
-}
-
 if ! pane_live "$slug"; then
+	# Reviving starts a whole new session, rare and disruptive enough to die
+	# loudly on contention rather than queue this call's own message.
+	# task_lock's own release flush still delivers anything already queued
+	# for the dead session once this process exits below.
+	task_lock "$slug"
+	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 	revive
-	wait_working ||
+	pane_wait_working "$slug" ||
 		die "$slug: restarted the session but no turn began - check by hand: cap peek $slug"
 	printf 'restarted %s and sent (working, fresh session)\n' "$slug"
 	exit 0
@@ -101,21 +98,19 @@ fi
 
 # A session near its limit is the failure that made aula-integrate report tests
 # passing while seven files errored: it ran out of context mid-verification and
-# summarised optimistically. So the ceiling is checked before delivering, not
-# after, back when this printed an advisory *below* the `deliver` call the
-# message was already in the agent's input box by the time the captain read it.
+# summarised optimistically. The ceiling is checked before delivering, so the
+# message never reaches an agent already too full to act on it.
 #
-# The recovery is compaction, and cap-ask already does exactly this before it
-# resumes a large session. Doing it here too keeps it off the captain's hands.
-# The alternatives this replaces were both worse: --force fills the session the
-# ceiling exists to protect, and cap drop throws away the worktree.
+# The recovery is compaction, matching what cap-ask already does before it
+# resumes a large session. --force fills the session the ceiling exists to
+# protect; cap drop throws away the worktree - both worse than compacting.
 compact_pane() {
 	local deadline waited=0 now
 	warn "$slug: at $ctx% context; compacting before the message goes in"
 	pane_send "$slug" "/compact"
 	sleep 0.4
 	pane_enter "$slug"
-	wait_working || return 1
+	pane_wait_working "$slug" || return 1
 
 	# Wait on the context reading, not on the agent status. Compacting a full
 	# session runs for minutes behind a progress bar, and the status line keeps
@@ -124,7 +119,7 @@ compact_pane() {
 	while [ "$waited" -lt "$deadline" ]; do
 		sleep 10
 		waited=$((waited + 10))
-		now=$(pane_context_pct "$slug")
+		now=$(pane_context_pct "$slug" || true)
 		if [ -n "$now" ] && [ "$now" -lt "$CAP_SEND_CTX_MAX" ] 2>/dev/null; then
 			ctx=$now
 			return 0
@@ -133,13 +128,13 @@ compact_pane() {
 	return 1
 }
 
-ctx=$(pane_context_pct "$slug")
+ctx=$(pane_context_pct "$slug" || true)
 if [ "$force" = 0 ] && [ -n "$ctx" ] && [ "$ctx" -ge "$CAP_SEND_CTX_MAX" ] 2>/dev/null; then
 	if compact_pane; then
 		printf 'compacted %s to %s%% context\n' "$slug" "$ctx"
 	else
 		printf 'cap: %s is at %s%% context and compacting it did not bring it under %s%%.\n' \
-			"$slug" "$(pane_context_pct "$slug")" "$CAP_SEND_CTX_MAX" >&2
+			"$slug" "$(pane_context_pct "$slug" || true)" "$CAP_SEND_CTX_MAX" >&2
 		printf 'The live conversation is genuinely that large. Either finish the task\n' >&2
 		printf '(cap check / cap commit / cap land), restart it clean (cap drop %s then\n' "$slug" >&2
 		printf 'cap spawn with an updated brief), or send anyway:\n' >&2
@@ -147,33 +142,59 @@ if [ "$force" = 0 ] && [ -n "$ctx" ] && [ "$ctx" -ge "$CAP_SEND_CTX_MAX" ] 2>/de
 	fi
 fi
 
-deliver
-started=0
-wait_working && started=1
+# Held only around the delivery itself, never waited for - see
+# docs/pipeline-notes.md, "cap-send and the task lock", for why. Busy means
+# queued, not refused, but ownership is still checked first: momentarily
+# free is not the same as this session having any right to the task.
+if task_try_lock "$slug"; then
+	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
-# A message leaving the input box only proves it was submitted, not that a
-# turn began - this has happened for real: the text sat in the pane with no
-# response and the agent read idle minutes later (see docs/pipeline-notes.md,
-# "Gate A frequency" era investigation). Retry the whole delivery once before
-# giving up, rather than reporting success on a guess.
-if [ "$started" = 0 ]; then
-	warn "$slug: no turn started after the first send; retrying once"
-	deliver
-	wait_working && started=1
-fi
+	# Flushed explicitly here, ahead of this call's own message, so an older
+	# queued correction lands first instead of racing the exit-time flush
+	# every locking command now gets. A non-zero return means something
+	# ahead of this call's own text was typed but never confirmed, or a
+	# stranded claim could not be recovered - the pane's state is not to be
+	# trusted, so this call's own text goes in behind it, not out of order.
+	if queue_flush "$slug" && pane_usable "$slug"; then
+		# Typed but never confirmed a turn started, on failure: must never
+		# be typed again by anyone, so it is logged as unconfirmed rather
+		# than queued for a later flush to retry.
+		pane_submit "$slug" "$text" || {
+			queue_mark_untrusted "$slug"
+			printf 'unconfirmed: sent by %s: %s\n' \
+				"$(session_label "$(session_identity)")" "$(printf '%s' "$text" | tr '\n' ' ')" >>"$TASKS/$slug/status.log"
+			die "$slug: typed into the pane but never confirmed a turn started; will not be retried automatically - check by hand: cap peek $slug"
+		}
 
-[ "$started" = 1 ] || die "$slug: sent twice but the agent never started a turn - check by hand: cap peek $slug"
+		# A turn has started, so the task is not done, and cap send is the one
+		# place that knows this for certain. Named by pid, not "the captain":
+		# with more than one captain, only the pid tells them apart. Flattened
+		# to one line (task_status_verb/task_status_latest treat one line as
+		# one event) but kept in full: a truncated message hides what was asked.
+		sent_by=$(session_label "$(session_identity)")
+		sent=$(printf '%s' "$text" | tr '\n' ' ')
+		printf 'working: sent by %s: %s\n' "$sent_by" "$sent" >>"$TASKS/$slug/status.log"
 
-# A turn has started, so the task is not done, and cap send is the one place
-# that knows this for certain. The verb used to depend on the agent choosing
-# to log `working:` itself, so cap crew reported done for a task mid-round and
-# the reminder hook listed it as waiting to land. Record the fact here instead
-# of inferring it from the screen.
-printf 'working: sent by the captain: %s\n' "$(printf '%s' "${text%%$'\n'*}" | cut -c1-120)" \
-	>>"$TASKS/$slug/status.log"
-
-if [ "$force" = 1 ] && [ -n "$ctx" ]; then
-	printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"
+		if [ "$force" = 1 ] && [ -n "$ctx" ]; then
+			printf 'sent to %s (working, ctx %s%% used, forced past the ceiling)\n' "$slug" "$ctx"
+		else
+			printf 'sent to %s (working, ctx %s%% used)\n' "$slug" "${ctx:-?}"
+		fi
+	else
+		queue_send "$slug" "$text"
+		if queue_untrusted "$slug"; then
+			printf 'queued for %s: an earlier message in its queue was typed but never confirmed; check by hand: cap peek %s\n' "$slug" "$slug"
+		elif ! pane_live "$slug"; then
+			printf 'queued for %s: the session is not live; delivered once it is revived\n' "$slug"
+		elif ! pane_usable "$slug"; then
+			printf 'queued for %s: the agent is waiting on a prompt; delivered once a later command on it finds the pane free\n' "$slug"
+		else
+			printf 'queued for %s: an earlier message in its queue could not be recovered; check by hand: cap peek %s\n' "$slug" "$slug"
+		fi
+	fi
 else
-	printf 'sent to %s (working, ctx %s%% used)\n' "$slug" "${ctx:-?}"
+	[ "$take" = 1 ] || task_owner_check "$slug"
+	queue_send "$slug" "$text"
+	printf 'queued for %s: busy (%s); delivered once whoever holds it exits cleanly\n' \
+		"$slug" "$(cat "$TASKS/$slug/.lock" 2>/dev/null || echo 'held by another cap command')"
 fi

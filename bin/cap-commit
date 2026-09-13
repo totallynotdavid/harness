@@ -2,10 +2,24 @@
 # cap-commit - commit a task with a separate agent.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap commit <slug> [profile]}
-profile=${2:-@chore}
+usage="usage: cap commit <slug> [profile] [--take]"
+take=0
+slug=""
+profile=""
+while [ $# -gt 0 ]; do
+  case $1 in
+  --take) take=1; shift ;;
+  -*) die "$usage" ;;
+  *)
+    if [ -z "$slug" ]; then slug=$1; elif [ -z "$profile" ]; then profile=$1; else die "$usage"; fi
+    shift ;;
+  esac
+done
+[ -n "$slug" ] || die "$usage"
+profile=${profile:-@chore}
 task_load "$slug"
 task_lock "$slug"
+if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 [ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to commit"
 
@@ -30,7 +44,7 @@ is normal, not a grouping signal. Unstage everything first (git restore
 worktree yourself. Use git add -p to split unrelated changes into separate
 commits. Do not edit files. Do not push."
 
-"$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
+"$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
 
 # shellcheck disable=SC1083 # HEAD^{tree} is git syntax, not a brace group
 final_tree=$(git -C "$CAP_TREE" rev-parse HEAD^{tree})
@@ -38,4 +52,73 @@ if [ "$final_tree" = "$snap_tree" ]; then
   git -C "$CAP_TREE" branch -D "$snap_ref" >/dev/null 2>&1
 else
   die "$slug's history no longer matches its code: HEAD's tree differs from the snapshot at $snap_ref. Compare with: git -C $CAP_TREE diff $snap_ref HEAD"
+fi
+
+# ai_trailer_report (bin/lib.sh) is the one reader cap-land also uses.
+# Rebuilt with commit-tree, not git filter-branch, which drops -S.
+bad_trailers=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
+if [ -n "$bad_trailers" ]; then
+  warn "$slug: stripping AI attribution rules/commits.md forbids:"
+  printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
+  declare -A remap
+  new=""
+  rewriting=0
+  while IFS= read -r old; do
+    # Read once into a variable and matched with a here-string, not piped
+    # into grep: a large message piped into grep -q lets grep exit at its
+    # first match before git log finishes writing, git log dies of SIGPIPE,
+    # and pipefail turns that into a failure indistinguishable from no match.
+    body=$(git -C "$CAP_TREE" log -1 --format='%B' "$old")
+
+    if [ "$rewriting" = 0 ]; then
+      # Untouched until the first commit that actually carries a trailer:
+      # everything before it keeps its own sha, and the parent lookup below
+      # falls back to that unchanged sha with no remap entry to find.
+      grep -qiE "$AI_TRAILER_RE" <<<"$body" || continue
+      rewriting=1
+    fi
+
+    tree=$(git -C "$CAP_TREE" rev-parse "$old^{tree}")
+    msg=$(grep -viE "$AI_TRAILER_RE" <<<"$body" || true)
+    [ -n "$msg" ] ||
+      die "$slug: $old's message is nothing but AI attribution; fix it by hand"
+
+    # Every parent is looked up in remap, not assumed to be whatever was
+    # last rebuilt: a merge commit's second (and any later) parent is
+    # base-side history outside this range, so it has no remap entry and
+    # is kept as-is - rebuilding it with only the first parent would
+    # silently flatten the merge into a regular commit that quietly
+    # absorbs the base side's changes under its own message.
+    parent_args=()
+    read -ra orig_parents <<<"$(git -C "$CAP_TREE" log -1 --format='%P' "$old")"
+    for p in "${orig_parents[@]}"; do parent_args+=(-p "${remap[$p]:-$p}"); done
+
+    # Signs the rebuilt commit only if the one it replaces was itself
+    # signed (%G? is anything but N, "no signature") - mirroring rather
+    # than always passing -S, so this neither force-signs a repo that
+    # never signs nor hard-fails one where the key just isn't loaded.
+    sign_flag=()
+    [ "$(git -C "$CAP_TREE" log -1 --format='%G?' "$old")" = N ] || sign_flag=(-S)
+
+    new=$(
+      GIT_AUTHOR_NAME=$(git -C "$CAP_TREE" log -1 --format='%an' "$old") \
+        GIT_AUTHOR_EMAIL=$(git -C "$CAP_TREE" log -1 --format='%ae' "$old") \
+        GIT_AUTHOR_DATE=$(git -C "$CAP_TREE" log -1 --format='%aI' "$old") \
+        GIT_COMMITTER_NAME=$(git -C "$CAP_TREE" log -1 --format='%cn' "$old") \
+        GIT_COMMITTER_EMAIL=$(git -C "$CAP_TREE" log -1 --format='%ce' "$old") \
+        GIT_COMMITTER_DATE=$(git -C "$CAP_TREE" log -1 --format='%cI' "$old") \
+        git -C "$CAP_TREE" commit-tree "${sign_flag[@]}" "${parent_args[@]}" "$tree" -m "$msg"
+    ) || die "$slug: could not strip AI attribution automatically; fix it by hand"
+    remap[$old]=$new
+  done < <(git -C "$CAP_TREE" rev-list --reverse --topo-order "$CAP_BASE..HEAD")
+
+  [ -n "$new" ] ||
+    die "$slug: found attribution to strip but rewrote no commit; this should not happen - report it"
+  git -C "$CAP_TREE" update-ref HEAD "$new"
+
+  # A rewrite that silently leaves the thing it was asked to remove must not exit 0.
+  still_bad=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
+  [ -z "$still_bad" ] ||
+    die "$slug: AI attribution survived the rewrite:
+$(printf '%s\n' "$still_bad" | sed 's/^/  /')"
 fi

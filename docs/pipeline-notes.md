@@ -180,17 +180,37 @@ for an answer a deterministic command already gives for free. It complements gat
 not replace it: passing tests do not by themselves rule out the logic/security classes of
 defect gate exists to catch.
 
-## Ready-to-land is now tracked, not inferred
+## Task state is not a log word
+
+On 2026-09-11 `bin/hooks/crew-status.sh` stayed silent for ten minutes on a task that had
+gone idle, because the last thing its agent logged was `working: round 5 done - ...` - the
+wrong verb, picked by the agent, and the hook only reacts to `done`, `blocked`,
+`needs-input`, `failed`. `cap crew` showed `idle` for the same task at the same time (that
+column reads herdr, not the log). Two readers of the same state disagreeing, because one of
+them trusted a word an agent typed instead of asking whether it was actually true.
+
+`task_state` (`bin/lib.sh`) is the one place that question gets answered now. `bin/cap-crew`,
+`bin/hooks/crew-status.sh`, and `bin/cap-spawn`'s reclaimable-task check all call it instead
+of reading `task_status_latest` themselves. Ground truth only: herdr says whether
+the agent is running - that answer is never talked around by a log line claiming otherwise -
+`gate.json` says whether the work is ready to land (see below), and the log is read only to
+name *why* a task stopped, and only for `blocked`, `needs-input`, and `failed`, the three
+verbs that carry a reason. A bare `done`, or nothing logged at all, is not a reason: it falls
+through to `ready` when `gate.json` says so, and otherwise to `idle` (still live, stopped,
+nothing to report) or `exited` (pane gone). herdr itself answering neither `working` nor
+`idle` falls back to whether the pane's visible output has changed recently
+(`task_state_stale_age`), tracked in its own file so this poll never eats the
+change-edge `task_idle_age` and `cap-watch` depend on.
 
 `cap gate` records each profile's verdict in `state/tasks/<slug>/gate.json`, tagged with a
 fingerprint of exactly what was reviewed (`git diff <base>` plus any uncommitted change).
-`cap crew` reads that file: a task whose agent reports `done` shows as `ready` instead only
-when **both** A and B last passed **at the fingerprint the tree has right now** - a stale
-pass (code changed since), a FAIL, or a profile that never ran at all all fall back to
-plain `done`. This exists because `done` alone was indistinguishable from "still needs
-another round": one task went through 6+ fix-verify rounds, each one reported `done`, and
-none of them ever got `cap commit`/`cap land` run against it. `ready` in `cap crew` is the
-signal that was missing - see it, land it, don't start another round on it.
+`task_state` reads that file directly: a stopped task shows `ready` only when **both** A and
+B last passed **at the fingerprint the tree has right now** - a stale pass (code changed
+since), a FAIL, or a profile that never ran at all all fall back to `idle`/`exited` instead.
+This exists because `done` alone was indistinguishable from "still needs another round": one
+task went through 6+ fix-verify rounds, each one reported `done`, and none of them ever got
+`cap commit`/`cap land` run against it. `ready` is the signal that was missing - see it, land
+it, don't start another round on it.
 
 `cap send <slug> "<text>"` injects text into an *already-running* agent pane. The agent
 keeps its accumulated session context, so sending another round of findings costs only
@@ -199,18 +219,89 @@ dropping and respawning a task whenever the existing agent can pick up where it 
 Only `cap drop` + fresh `cap spawn` when the task's direction has fundamentally changed
 (e.g. redoing the brief) or the worktree is in a state not worth preserving.
 
-## Orphaned panes and processes from killed background calls
+## cap-send and the task lock
 
-When the harness kills a `run_in_background` Bash call (e.g. for memory pressure), the
-process it started is not always killed with it. It can keep running as an orphan. This
-has been observed as duplicate leftover `claude --model sonnet` processes still consuming
-memory well after the call that started them was reported killed - a `cap gate`/`cap ask`
-review runs headless now, so this is a bare process with no pane to notice it is gone;
-periodically check `ps aux --sort=-%mem | grep -E "claude|codex"` for duplicates and
-`kill -9` genuine orphans. A `cap spawn` agent is the other shape this takes: its process
-lives inside a herdr pane, so `herdr pane list` also needs checking for panes with
-`"agent_status":"unknown"` (a leftover shell with no tracked agent, from a call that
-crashed or never got its `herdr pane close`); `herdr pane close <pane_id>` clears those.
+Delivering into a worktree `cap gate` is mid-rebase (`sync_base`) is unsafe, so `cap send`
+has to respect the same lock `cap gate`, `cap verify`, `cap cleanup`, `cap commit`, and
+`cap land` take for their whole run. Two designs were tried and rejected before the current
+one:
+
+A bounded wait (`flock -w`) cannot work at any bound: `cap verify` loops its own
+`CAP_VERIFY_MAX` ceiling over every script it runs, so it can hold the lock for roughly an
+hour; `cap gate`'s review runs through `pane_dispatch`, bounded only by `CAP_ASK_MAX_WAIT`
+(3600s by default) - well past the timeout (commonly 600s) of any tool a captain drives
+`cap` through, so that tool kills the wait before a bound matching either ceiling ever
+resolves, losing the message with no sign it happened.
+
+Holding the lock across the whole command, including `compact_pane`'s wait for the agent's
+own context to shrink (up to `CAP_SEND_COMPACT_SECS`, 600s by default), is also wrong: that
+step has nothing to do with the worktree, so it has no business holding the same lock every
+other command dies against at once.
+
+`cap send` now holds the lock only around the actual delivery (`task_try_lock`, never
+blocking) and does the ctx check and any compaction beforehand, unlocked. When the lock is
+free, delivery happens exactly as before. When it is not, the message is appended to
+`state/tasks/<slug>/send-queue` (`queue_send`) and the command returns at once - it is never
+refused, and the captain never has to retype it.
+
+Flushing that queue (`queue_flush`) went through two more designs before landing. Running it
+inside `task_try_lock` itself meant `cap gate`'s review and the stack-cascade rebase also
+typed the pending message into the agent's pane the moment either happened to acquire the
+lock first, mid-review or mid-rebase. Moving the flush into `cap send` alone fixed that but
+opened a different gap: a message queued while `cap gate` or `cap land` held the lock then
+sat until someone happened to run `cap send` on that task again - nothing else would ever
+deliver it, and nothing surfaced that it was waiting.
+
+The queue now flushes on the lock's *release*, for every locking command, not just `cap
+send`. `task_try_lock` arms one `EXIT` trap the first time a process locks anything
+(`task_flush_locks_on_exit`), and that trap composes with whatever `trap ... EXIT` the
+command sets afterwards (`bin/cap-spawn`, `bin/cap-verify`) rather than being overwritten by
+it - see the `trap` wrapper above `task_lock` in `bin/lib.sh`. A gate review or a rebase now
+flushes the moment it finishes and exits, after its own work is done, never mid-review or
+mid-rebase. `cap send` additionally flushes explicitly before its own message, so an older
+queued correction still lands ahead of a newer one instead of racing the exit-time flush.
+
+If a holder is killed instead of exiting cleanly, its `EXIT` trap never runs, so its flush
+does not happen - but the flock it held still releases at the kernel level as it always has,
+so this costs nothing beyond a delay: the message waits for whichever later command locks
+that task and exits cleanly, the same as it would if nothing had died. `cap send` reports
+this precisely (`queued for <slug>: busy (...); delivered once whoever holds it exits
+cleanly`) rather than naming a specific command, since the holder that finally releases the
+lock is not always the one holding it when the message was queued.
+
+A kill before the flush starts and a kill *during* it are different failures, and both now
+cost only that same delay. `queue_flush` claims its batch by renaming `send-queue` to
+`send-queue.flushing` before reading it; a holder killed after that rename but before
+delivery finishes left that file behind, unread by anything. `queue_flush` now checks for a
+leftover `.flushing` file on every call and folds it back in front of the live queue before
+claiming again, so the next flush - by any locking command - picks the backlog up rather than
+leaving it orphaned.
+
+Delivery from the queue goes through `pane_submit`, one confirmed attempt - typing the text
+in and checking a turn actually started - not a bare `pane_send` trusted to have worked. A
+message that fails to confirm is logged to `status.log` as unconfirmed and dropped from the
+queue, not retried: `pane_submit` may already have typed it in, and a retry would type it a
+second time, merging with whatever it left sitting unsent in the input box. That risk
+outlives the process that hit it, so the pane is marked untrusted with a marker on disk
+beside the queue (`queue_mark_untrusted`/`queue_untrusted`), not a variable - every later
+`queue_flush`, by any command, in any process, refuses that pane outright. Anything still
+queued behind the failed message, never typed at all, waits there until the marker clears,
+which only happens when `cap send` revives a dead pane: a new pane has a new input box.
+Queued text is stored base64-encoded rather than flattened with `tr '\n' ' '`, so a
+multi-line message arrives exactly as typed whether the lock happened to be free or not.
+
+## Every agent session runs in a pane
+
+`cap-spawn` opens a herdr pane and starts the session inside it. `cap-ask` runs the harness
+through `pane_dispatch`, which opens a pane the same way, so no session runs as a bare
+background child.
+
+The sessions `cap-ask` starts are still print mode: `claude -p --output-format stream-json`
+and `codex exec --json`. A print-mode session cannot be typed into, `cap-send` cannot reach
+it, and a permission prompt inside it hangs until `CAP_ASK_MAX_WAIT` is exceeded and the
+pane is left open. The pane shows its output; it does not make it a session.
+
+Removing print mode is the open work.
 
 ## Dispatch sizing: quota routes work, it does not cheapen it
 

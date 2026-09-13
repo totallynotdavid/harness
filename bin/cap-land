@@ -2,15 +2,26 @@
 # cap-land - deliver a finished task.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap land <slug> [--merge]}
-shift || true
-
+usage="usage: cap land <slug> [--merge] [--take]"
+slug=""
 do_merge=0
 landed=0
-[ "${1:-}" = --merge ] && do_merge=1
+take=0
+while [ $# -gt 0 ]; do
+	case $1 in
+	--merge) do_merge=1; shift ;;
+	--take) take=1; shift ;;
+	-*) die "$usage" ;;
+	*)
+		[ -z "$slug" ] || die "$usage"
+		slug=$1; shift ;;
+	esac
+done
+[ -n "$slug" ] || die "$usage"
 
 task_load "$slug"
 task_lock "$slug"
+if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 dirty=$(git_dirty "$CAP_TREE")
 [ "$dirty" = 0 ] || die "$slug has $dirty uncommitted change(s); commit them first"
@@ -27,24 +38,13 @@ fi
 commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD")
 [ "$commits" -gt 0 ] || die "$slug has no commits to land"
 
-# rules/commits.md, enforced rather than described. An agent told to read a rule
-# still writes the trailer; five had to be stripped with filter-branch before
-# this existed.
-bad_trailers=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" \
-	--format='%h %s%n%b' |
-	grep -inE '^(co-authored-by|claude-session):|generated with \[claude code\]' || true)
+# rules/commits.md, enforced rather than described. ai_trailer_report
+# (bin/lib.sh) is the one reader cap-commit also uses.
+bad_trailers=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
 [ -z "$bad_trailers" ] || {
 	printf 'cap: %s carries AI attribution, which rules/commits.md forbids:\n' "$slug" >&2
 	printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
 	die "strip them, then land again"
-}
-
-long_summaries=$(git -C "$CAP_TREE" log "$CAP_BASE..HEAD" --format='%h %s' |
-	awk '{ s = substr($0, index($0, " ") + 1); if (length(s) > 50) printf "%s (%d chars)\n", $0, length(s) }')
-[ -z "$long_summaries" ] || {
-	printf 'cap: %s has summaries over the 50-character limit:\n' "$slug" >&2
-	printf '%s\n' "$long_summaries" | sed 's/^/  /' >&2
-	die "reword them, then land again"
 }
 
 # A branch that shares no ancestor with its base is not a change to the base,
@@ -192,6 +192,6 @@ esac
 # thrashed and every other build slowed to a crawl.
 if [ "$landed" = 1 ] && pane_live "$slug"; then
 	printf 'releasing %s\n' "$slug"
-	"$CAP_HOME/bin/cap-drop" "$slug" --force ||
+	"$CAP_BIN/cap-drop" "$slug" --force ||
 		warn "could not release $slug; run cap drop $slug"
 fi

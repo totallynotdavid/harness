@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # cap - run Captain commands.
 set -euo pipefail
-CAP_HOME=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+
+# CAP_HOME respects an inherited override, same as lib.sh (which this
+# script does not source). CAP_BIN never does: always this script's own
+# directory, so the dispatch below runs the sibling that shipped with it.
+CAP_HOME=${CAP_HOME:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}
 export CAP_HOME
+CAP_BIN=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+export CAP_BIN
 
 usage() {
 cat <<'EOF'
@@ -17,19 +23,19 @@ AGENTS
   cap sessions                                show every agent session on this box
   cap wave [list|check|spawn] <name>          dispatch a partitioned set of tasks
   cap peek <slug> [lines]                     show recent agent output
-  cap send <slug> "<text>"                    send a message to an agent
+  cap send <slug> [--take] "<text>"           send a message to an agent
   cap watch [--timeout S] [--interval S]      wait until an agent needs input
 
 REVIEW AND DELIVERY
   cap check <slug>                            run checks for an agent
   cap check --repo <project> [--base REF]     run checks for a project
-  cap verify <slug>                           run the project's own tests/lint/typecheck
-  cap cleanup <slug> [profile]                clean up comments and readability
-  cap gate <slug> [--full]                    review changes (B only, or A+B with --full)
-  cap commit <slug> [profile]                 stage and commit changes
-  cap land <slug> [--merge]                   push, open a PR, merge, or file a scout report
-  cap restack <slug> [--undo [SNAPSHOT]]      move stacked tasks onto this task's tip
-  cap drop <slug> [--force]                   stop an agent; keep unlanded work by default
+  cap verify <slug> [--take]                  run the project's own tests/lint/typecheck
+  cap cleanup <slug> [profile] [--take]       clean up comments and readability
+  cap gate <slug> [--full] [--take]           review changes (B only, or A+B with --full)
+  cap commit <slug> [profile] [--take]        stage and commit changes
+  cap land <slug> [--merge] [--take]          push, open a PR, merge, or file a scout report
+  cap restack <slug> [--undo [SNAP]] [--take] move stacked tasks onto this task's tip
+  cap drop <slug> [--force] [--take]          stop an agent; keep unlanded work by default
 
 CONSULT
   cap ask <profile|@role> "<prompt>" [--dir D] run a one-shot agent
@@ -48,6 +54,8 @@ REPO
   cap explore --list | --rm <slug>            manage cloned repos
   cap history --repo <name>|--task <slug> [opts]  search agent history
 
+--take (above) claims a task a live session other than yours owns.
+
 Projects: config/projects.tsv
 Config:   config/captain.conf
 EOF
@@ -56,7 +64,7 @@ EOF
 cmd=${1:-help}; shift || true
 case $cmd in
   spawn|crew|peek|send|watch|land|restack|drop|ask|budget|models|cleanup|commit|gate|map|reconcile|papercut|project|skills|check|verify|conventions|explore|history|sessions|wave)
-    exec "$CAP_HOME/bin/cap-$cmd" "$@" ;;
+    exec "$CAP_BIN/cap-$cmd" "$@" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 1 ;;
 esac

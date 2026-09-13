@@ -6,6 +6,9 @@ repo=""
 base=""
 project=""
 
+# Locked for read consistency against a concurrent mutator, but never
+# claims ownership: an inspection is not the session-length commitment
+# --take makes elsewhere.
 if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
 	task_load "$1"
 	task_lock "$1"
@@ -37,8 +40,6 @@ git -C "$repo" rev-parse --verify -q "$base" >/dev/null || die "no base ref '$ba
 
 conv=$CAP_HOME/cases/$project/conventions.md
 
-# diff_base: where this branch left base, not base's current tip. See its
-# own comment in bin/lib.sh for why.
 diff_from=$(diff_base "$repo" "$base")
 
 changed=$({

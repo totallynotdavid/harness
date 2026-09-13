@@ -19,52 +19,59 @@ lines=""
 add() { lines="$lines$1"$'\n'; }
 
 for slug in $(task_slugs); do
-	status=$(task_status_latest "$slug" 2>/dev/null || true)
+	(task_load "$slug") 2>/dev/null || continue
+
+	# A task free for this session (task_owner_free: unowned, dead-owned,
+	# owned by this session or its own dispatched agent, see bin/lib.sh)
+	# is safe to report on; one held by another live session is that
+	# session's to watch, not this one's to nag about.
+	task_owner_free "$slug" || continue
+
+	# task_state settles *whether* the task has stopped from herdr and
+	# *whether* it is ready from gate.json - never from a word the agent
+	# logged. The log names a reason only for the three verbs that carry
+	# one; anything else that has stopped just needs a look.
+	state=$(task_state "$slug" 2>/dev/null || true)
 	project=$(task_field "$slug" CAP_PROJECT 2>/dev/null || true)
 
-	case $status in
-	done)
-		add "  $slug ($project) is done and unlanded: cap check $slug"
-		;;
-	blocked | needs-input | failed)
-		note=$(grep -E "^$status:" "$TASKS/$slug/status.log" 2>/dev/null | tail -1 || true)
-		add "  $slug ($project) is $status: ${note#*: }"
-		;;
-	working)
-		# A task can stop existing without saying so. relq-lower-floor read as
-		# "working" in cap crew while its pane was absent from herdr's registry
-		# entirely, and the captain noticed before the harness did.
-		if ! pane_live "$slug" 2>/dev/null; then
-			add "  $slug ($project) says working but its pane is gone: cap peek $slug"
+	case $state in
+	ready)
+		# gate_fingerprint hashes the working tree, so a task fresh off a
+		# passing gate is normally still dirty and cap land refuses that.
+		tree=$(task_field "$slug" CAP_TREE 2>/dev/null || true)
+		if [ -n "$tree" ] && [ "$(git_dirty "$tree")" != 0 ]; then
+			add "  $slug ($project) is ready to land: cap commit $slug && cap land $slug"
+		else
+			add "  $slug ($project) is ready to land: cap land $slug"
 		fi
 		;;
+	blocked | needs-input | failed)
+		# A reason the agent logged before its last delivered message is
+		# from a turn that has already ended - herdr can report the same
+		# verb again for an unrelated prompt with nothing new logged, and
+		# naming the old reason then points the captain at the wrong one.
+		note=$(awk -v state="$state:" '
+			index($0, "working:") == 1 { working = NR }
+			index($0, state) == 1 { line = NR; text = $0 }
+			END { if (line != "" && (working == "" || line > working)) print text }
+		' "$TASKS/$slug/status.log" 2>/dev/null || true)
+		if [ -n "$note" ]; then
+			add "  $slug ($project) is $state: ${note#*: }"
+		else
+			add "  $slug ($project) is $state"
+		fi
+		;;
+	idle)
+		add "  $slug ($project) has stopped and is waiting on you: cap peek $slug"
+		;;
+	exited)
+		add "  $slug ($project) exited: cap land $slug or cap drop $slug"
+		;;
 	esac
-done
 
-# Captain's own state directory has no locks. Three sessions were live in this
-# hub at once on 2026-09-09, and two concurrent cap-gate runs on local-env each
-# overwrote the other's report.
-#
-# Walk up to this hook's own session so it does not count itself, and skip the
-# harness's own sessions: cap ask and cap spawn pass the whole brief as the last
-# argument, which an interactive session never has.
-self_pid=$$
-while [ "$self_pid" -gt 1 ]; do
-	if [ "$(cat "/proc/$self_pid/comm" 2>/dev/null || true)" = claude ]; then break; fi
-	self_pid=$(awk '{print $4}' "/proc/$self_pid/stat" 2>/dev/null || echo 1)
+	queue_pending "$slug" 2>/dev/null &&
+		add "  $slug ($project) has a message queued that has not gone in yet"
 done
-
-others=0
-for pid in $(pgrep -x claude 2>/dev/null || true); do
-	[ "$pid" != "$self_pid" ] || continue
-	[ "$(readlink "/proc/$pid/cwd" 2>/dev/null || true)" = "$CAP_HOME" ] || continue
-	last=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | tail -1 || true)
-	case $last in -*) ;; *) [ "${#last}" -lt 40 ] || continue ;; esac
-	others=$((others + 1))
-done
-if [ "$others" -gt 0 ]; then
-	add "  $others other captain session(s) share this hub with no locking: cap sessions"
-fi
 
 if [ -n "$lines" ]; then
 	printf 'Waiting on you:\n%s' "$lines"

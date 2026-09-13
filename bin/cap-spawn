@@ -133,7 +133,10 @@ if [ "$avail" -lt "$need" ]; then
 	printf 'cap: %s MB available, %s peaked at %s MB\n' "$avail" "$project" "$need" >&2
 	reclaimable=""
 	for t in $(task_slugs); do
-		[ "$(task_status_latest "$t" 2>/dev/null)" = "done" ] || continue
+		# ready, from task_state, not a logged "done": gate.json is the
+		# ground truth for finished, and a task an agent only claims to
+		# have finished is not safe to suggest dropping.
+		[ "$(task_state "$t" 2>/dev/null)" = "ready" ] || continue
 		reclaimable="$reclaimable $t"
 	done
 	[ -z "$reclaimable" ] || printf 'cap: finished tasks still holding their panes:%s\n' "$reclaimable" >&2
@@ -141,8 +144,14 @@ if [ "$avail" -lt "$need" ]; then
 fi
 
 dir=$(task_dir "$slug")
-[ -e "$dir" ] && die "task '$slug' already exists (cap drop $slug first)"
-pane_live "$slug" && die "a pane named '$slug' is already live"
+
+# Locked before checking existence, not after: a check made first can go
+# stale if the winner of a race finishes and releases before the loser
+# even looks, and the loser would then overwrite task.env and open a
+# second pane. task.env, not the directory, is the check: task_lock's own
+# mkdir makes the directory exist regardless of who has spawned here.
+task_lock "$slug"
+[ -f "$dir/task.env" ] && die "task '$slug' already exists (cap drop $slug first)"
 
 mkdir -p "$dir"
 dir=$(cd "$dir" && pwd)
@@ -197,6 +206,7 @@ CAP_MODEL=$model
 CAP_EFFORT=$effort
 CAP_HARNESS=$harness
 CAP_STARTED=$(now)
+CAP_OWNER=$(session_identity)
 EOF
 
 # The ownership guard travels on the session's command line, not in the
@@ -209,6 +219,8 @@ if [ -n "$owns" ]; then
   read -r -a owns_list <<<"$owns"
   owns_write "$slug" "${owns_list[@]}"
 
+  # Deliberately $CAP_HOME: this path outlives the worktree it may be spawned
+  # from, and must stay outside the reach of the agent it guards.
   guard_settings=$(jq -nc --arg cmd "$CAP_HOME/bin/hooks/guard-task-paths.sh" --arg slug "$slug" '{
     hooks: {
       PreToolUse: [{
@@ -286,7 +298,8 @@ EOF
 
 harness_trust "$harness" "$tree"
 
-scrub=(env "${CAP_ENV_SCRUB[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
+mapfile -t env_scrub < <(cap_env_scrub)
+scrub=(env "${env_scrub[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
 kick="Read $dir/contract.md and carry it out."
 
 margs=()

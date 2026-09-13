@@ -2,11 +2,25 @@
 # cap-cleanup - clean up comments and readability with a separate model.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap cleanup <slug> [profile]}
-profile=${2:-@chore}
+usage="usage: cap cleanup <slug> [profile] [--take]"
+take=0
+slug=""
+profile=""
+while [ $# -gt 0 ]; do
+  case $1 in
+  --take) take=1; shift ;;
+  -*) die "$usage" ;;
+  *)
+    if [ -z "$slug" ]; then slug=$1; elif [ -z "$profile" ]; then profile=$1; else die "$usage"; fi
+    shift ;;
+  esac
+done
+[ -n "$slug" ] || die "$usage"
+profile=${profile:-@chore}
 
 task_load "$slug"
 task_lock "$slug"
+if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 # Refuse on a worktree with nothing to review, not on one with nothing
 # uncommitted. The prompt below works against $CAP_BASE, which is well defined
@@ -47,4 +61,6 @@ code. Do not change behavior, run tests, or commit. Leave all edits unstaged.
 
 If a section does not need changes, leave it alone."
 
-exec "$CAP_HOME/bin/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
+# Not exec: that would discard task_lock's EXIT trap, so a message queued
+# while this command holds the lock would never flush.
+"$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
