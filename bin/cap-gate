@@ -32,17 +32,11 @@ dirty=$(git_dirty "$CAP_TREE")
 # since gate B's own last PASS, so a task 24 rounds in re-reviews the
 # round's own diff, not machinery two rounds already passed unchanged.
 # Only gate B ever runs a plain round (below), so only its last commit
-# matters; a first run, or a since-commit a rebase dropped, falls back to
-# the full range.
+# matters here.
 if [ "$full" = 1 ]; then
   since=$(diff_base "$CAP_TREE" "$CAP_BASE")
 else
-  since=$(gate_last_commit "$slug" B)
-  if [ -z "$since" ] ||
-    ! git -C "$CAP_TREE" cat-file -e "$since" 2>/dev/null ||
-    ! git -C "$CAP_TREE" merge-base --is-ancestor "$since" HEAD 2>/dev/null; then
-    since=$(diff_base "$CAP_TREE" "$CAP_BASE")
-  fi
+  since=$(gate_review_since "$slug" B "$CAP_TREE" "$CAP_BASE")
 fi
 
 prompt="Read $CAP_HOME/rules/code.md, then review every change in this
@@ -77,11 +71,9 @@ if [ -z "$gate_b" ]; then
 fi
 profiles+=("B $gate_b")
 
-# Scoped to $since, not always the full branch: gate_ready still compares
-# against the full-branch fingerprint, so a plain round's fingerprint here
-# can only match it (and unlock landing) when $since already was the full
-# range - never on a genuine increment. That is what makes "cap land
-# requires a --full verdict" true without cap-land checking it itself.
+# Scoped to $since, not always the full branch. gate_ready compares
+# against the full-branch fingerprint, so this only matches it when
+# $since was the full range.
 fp=$(gate_fingerprint_from "$CAP_TREE" "$since")
 
 # Iterate an array, never a pipe or a here-string. cap-ask launches a harness
@@ -134,10 +126,14 @@ if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
   exit 0
 fi
 
-# Print the status on every path, not just when --full.
 printf 'NOT ready to land: %s (see reports above)\n' "$slug"
 if [ "$incomplete" != 0 ]; then
-  warn "$slug: a gate did not complete; re-run cap gate $slug"
+  # A plain re-run can never satisfy gate_ready after an incomplete --full
+  # round: it only ever fingerprints B's increment, never the full branch
+  # both profiles need to match. Re-run with the same scope that failed.
+  retry="cap gate $slug"
+  [ "$full" = 1 ] && retry="$retry --full"
+  warn "$slug: a gate did not complete; re-run $retry"
   exit 2
 fi
 exit 1
