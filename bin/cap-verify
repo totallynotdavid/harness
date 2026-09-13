@@ -51,11 +51,9 @@ fi
 cd "$CAP_TREE" || die "$slug: no worktree at $CAP_TREE"
 
 sha=$(git -C "$CAP_TREE" rev-parse HEAD 2>/dev/null || true)
-# Always the full count, untracked files included: both uses below - the
-# resumption cache and verified_record - trust a pass as describing $sha,
-# so both need the tree that actually ran to be fully clean. A hub
-# untracked file legitimately excused elsewhere (cap-land's land-blocking
-# check) has no such excuse here.
+# Both uses below - the resumption cache and verified_record - trust a
+# pass as describing $sha, so both require the tree that actually ran to
+# be fully clean, untracked files included.
 dirty_count=$(git_dirty "$CAP_TREE")
 
 # Which scripts already passed at this commit, so a run that dies partway
