@@ -14,9 +14,8 @@ status=0
 for f in "${files[@]}"; do
 	# Every assignment in a flag-labeled arm (never the bare `*)` arm),
 	# paired with its own loop's end so two flag loops don't share a
-	# boundary. The label is stripped only on the line that carries it, so
-	# a `$(...)` on a continuation line isn't mistaken for it; every
-	# "name=" on what remains is matched, not just the first.
+	# boundary. Each "name=" must start the line or follow a space or `;`,
+	# so "tokens=" inside `${1#--max-tokens=}` is not mistaken for one.
 	mapfile -t records < <(awk '
 		/while \[ \$# -gt 0 \]/ { inloop = 1; flagarm = 0; n = 0; delete names; next }
 		inloop && /^[ \t]*done[ \t;]*$/ {
@@ -35,9 +34,12 @@ for f in "${files[@]}"; do
 				if (paren > 0) line = substr(line, paren + 1)
 			}
 			pos = 1
-			while (match(substr(line, pos), /[A-Za-z_][A-Za-z0-9_]*=/)) {
+			while (match(substr(line, pos), /(^|[ \t;])[A-Za-z_][A-Za-z0-9_]*=/)) {
+				full = substr(line, pos + RSTART - 1, RLENGTH)
+				sub(/^[ \t;]/, "", full)
+				sub(/=$/, "", full)
 				n++
-				names[n] = substr(line, pos + RSTART - 1, RLENGTH - 1)
+				names[n] = full
 				pos += RSTART + RLENGTH - 1
 			}
 		}
