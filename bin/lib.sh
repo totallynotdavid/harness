@@ -1060,7 +1060,7 @@ task_state_stale_age() {
 
 # Read complete status lines appended since the task's last status check.
 task_status_lines() {
-  local f=$TASKS/$1/status.log cursor start line bytes pid
+  local f=$TASKS/$1/status.log cursor start line bytes pid read_from
   local LC_ALL=C
 
   [ -f "$f" ] || return 0
@@ -1076,16 +1076,17 @@ task_status_lines() {
 
   bytes=$(wc -c <"$f")
   [ "$start" -le "$bytes" ] || start=0
+  read_from=$start
 
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line"
     start=$((start + ${#line} + 1))
-  done < <(tail -c +$((start + 1)) "$f")
+  done < <(tail -c +$((read_from + 1)) "$f")
   pid=$!
   # A failed tail is invisible to the loop above: zero iterations reads the
   # same as nothing new logged. Caught here instead of moving the cursor
   # past a read that never happened.
-  wait "$pid" || { warn "$1: could not read status.log past byte $start"; return 0; }
+  wait "$pid" || { warn "$1: could not read status.log past byte $read_from"; return 0; }
 
   printf '%s\n' "$start" >"$cursor"
 }
