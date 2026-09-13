@@ -430,7 +430,10 @@ pane_agent_status() {
 # harness's format it is in ("Context 46% used" from codex, "ctx 37% used"
 # from claude). Empty if none is visible yet.
 pane_context_pct() {
-  pane_tail "$1" 8 | grep -oiE '(context|ctx) [0-9]+% used' | tail -1 | grep -oE '[0-9]+'
+  # Under set -e/pipefail, an unmatched grep here would fail the whole
+  # pipeline and kill the caller's script, not just return empty as the
+  # comment above promises.
+  pane_tail "$1" 8 | grep -oiE '(context|ctx) [0-9]+% used' | tail -1 | grep -oE '[0-9]+' || true
 }
 
 # A task is idle when its recent output stops changing.
