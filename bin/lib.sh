@@ -1382,8 +1382,9 @@ gate_last_commit() {
 
 # Where a plain (non-full) round should review from: $label's last
 # commit, narrowed to only when that commit is still a trustworthy
-# checkpoint. Falls back to the full range (this branch's fork point from
-# $base) otherwise.
+# checkpoint. Falls back to the full range otherwise, or prints nothing
+# when nothing has changed since - a clean tree at that same commit has no
+# new content to review at all.
 gate_review_since() {
   local slug=$1 label=$2 tree=$3 base=$4
   local full since verdict head mb_now mb_then
@@ -1392,21 +1393,28 @@ gate_review_since() {
   since=$(gate_last_commit "$slug" "$label")
   [ -n "$since" ] || { printf '%s' "$full"; return; }
   git -C "$tree" cat-file -e "$since" 2>/dev/null || { printf '%s' "$full"; return; }
-  # An ancestor is not enough on its own: a FAIL is not a checkpoint to
-  # increment from, and syncing $base into this branch moves its fork
-  # point, which would otherwise pull $base's own commits into the diff
-  # as if this branch had written them.
   git -C "$tree" merge-base --is-ancestor "$since" HEAD 2>/dev/null || { printf '%s' "$full"; return; }
 
+  # A FAIL is not a checkpoint to increment from, and syncing $base into
+  # this branch moves its fork point, which would otherwise pull $base's
+  # own commits into the diff as if this branch had written them.
   verdict=$(jq -r --arg l "$label" '.[$l].verdict // empty' "$TASKS/$slug/gate.json" 2>/dev/null || true)
   [ "$verdict" = PASS ] || { printf '%s' "$full"; return; }
-
-  head=$(git -C "$tree" rev-parse HEAD)
-  [ "$since" != "$head" ] || { printf '%s' "$full"; return; }
-
   mb_now=$(git -C "$tree" merge-base "$base" HEAD 2>/dev/null || true)
   mb_then=$(git -C "$tree" merge-base "$base" "$since" 2>/dev/null || true)
   [ "$mb_now" = "$mb_then" ] || { printf '%s' "$full"; return; }
+
+  head=$(git -C "$tree" rev-parse HEAD)
+  if [ "$since" = "$head" ]; then
+    # git diff $since already includes any uncommitted change, so a dirty
+    # tree still has something to review from here. A clean one has
+    # nothing new at all: printing nothing tells the caller to keep the
+    # last verdict instead of paying for an empty review.
+    if [ "$(git_dirty "$tree")" != 0 ]; then
+      printf '%s' "$since"
+    fi
+    return
+  fi
 
   printf '%s' "$since"
 }
