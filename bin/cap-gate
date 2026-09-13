@@ -76,6 +76,12 @@ profiles+=("B $gate_b")
 # $since was the full range.
 fp=$(gate_fingerprint_from "$CAP_TREE" "$since")
 
+# Captured here, not after the review returns: task_lock only blocks
+# cap-commit/cap-send, never the task's own live agent, which is free to
+# add a commit while cap-ask is still running. Recording that later HEAD
+# would claim a commit as reviewed that closed after the diff did.
+reviewed_commit=$(git -C "$CAP_TREE" rev-parse HEAD)
+
 # Iterate an array, never a pipe or a here-string. cap-ask launches a harness
 # that inherits the loop's stdin and eats the remaining profiles, so every
 # gate after the first silently never runs while the command still exits 0.
