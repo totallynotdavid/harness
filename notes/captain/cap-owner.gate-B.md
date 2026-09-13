@@ -1,37 +1,25 @@
-## Review against fb2db4fa1866e3bea5ad07a6b2b1bba8920ae8b9
+Now I have everything I need. Let me summarize what I checked and found.
 
-Working tree is clean; all changes are the five commits already on the branch (`49af05a`…`27831be`). Reviewed the full diff plus `rules/code.md`.
+**What I checked and verified as working:**
+- `bash -n` and `shellcheck -S warning` pass clean on every changed file — no syntax errors, no new warnings.
+- The custom `trap` override (`bin/lib.sh`) composes correctly for every `trap CMD EXIT` call site in the tree (`cap-map`, `cap-verify`'s `on_exit`, `cap-spawn`'s `cleanup`), verified by tracing `CAP_EXIT_PID`/`CAP_EXIT_FNS` reset/append logic against each call site's ordering relative to `task_lock`.
+- `task_try_lock`/`task_unlock`/`task_release` reentrancy (same-process depth counting and cross-process `CAP_LOCKS` inheritance) — traced every call site in `stack_cascade`, `stack_cascade_landed`, `cap-restack --undo`; every acquired lock has exactly one matching release on every exit path, no leaks found.
+- `queue_send`/`queue_claim`/`queue_deliver_claimed`/`queue_recover_stranded`/`queue_flush` — traced the claim-before-read, drop-before-attempt, and untrusted-pane invariants; consistent with the design documented in `docs/pipeline-notes.md`.
+- `cap_env_scrub` conversion from array to function: all four call sites (`cap-ask`, `cap-spawn`, `cap-send`) correctly updated to `mapfile -t`.
+- `cap-commit`'s new AI-trailer-stripping rewrite (`commit-tree`-based): parent remapping through `remap[]`, per-commit sign mirroring via `%G?`, and the post-rewrite `still_bad` safety check are all logically sound for linear and merge histories in the range.
+- `task_state`/`task_agent_state` refactor (shared by `cap-crew`, `hooks/crew-status.sh`, `cap-spawn`'s reclaim check) correctly fixes the "stale log verb" bug described in `docs/pipeline-notes.md` by checking herdr's live status before the log.
+- `gate_verdict`/`gate_strip_markdown`/`gate_has_evidence` split preserves the original verdict-parsing behavior while adding the new evidence check.
 
-### 1. `cap-send` can hold the task lock for up to ~25 minutes, blocking every other mutating command on that task
+**Defect found:**
 
-`bin/cap-send:27-28` acquires `task_lock "$slug" "${CAP_SEND_LOCK_WAIT:-900}"` and `task_owner_claim` before doing anything else, and per `task_lock`'s contract (`bin/lib.sh:305-306`, unchanged) the lock is held until the process exits. Before this diff, `cap-send` never touched the lock at all.
+`bin/cap-ask:109-123` and `bin/cap-ask:284-292`, via `pane_dispatch` in `bin/lib.sh:879`
 
-If the pane's context is over `CAP_SEND_CTX_MAX`, `cap-send` calls `compact_pane` (`bin/cap-send:132-154`), which polls for up to `CAP_SEND_COMPACT_SECS` (default 600s, `config/captain.conf:118`) — all while still holding the lock it may itself have waited up to 900s (`CAP_SEND_LOCK_WAIT`) to acquire. So a single `cap send` can occupy the task lock for close to 25 minutes.
+`pane_dispatch` opens a herdr pane and, inside it, runs `claude -p --output-format stream-json --verbose` (line 114) and `codex exec --json --output-last-message` (line 288) — i.e., headless print-mode/JSON sessions wrapped in a pane. This is precisely the design the captain rejected and recorded in the pinned memory `crew-must-be-visible.md`: "I treated 'runs in a pane' as the whole requirement and built `pane_dispatch` to put a herdr pane around `claude -p --output-format stream-json --verbose`. That passes the letter of the earlier rule and fails its point... The captain has now rejected that reading directly. Do not reach for it again." The memory also names the concrete failure this causes: the pane shows a JSON firehose, not a session — nobody can steer it, `cap-send` cannot reach it, and (absent the `bypassPermissions`/`--dangerously-bypass-approvals-and-sandbox` flags this repo happens to set) a permission prompt inside it would hang unanswered.
 
-Every other mutating command (`cap-gate`, `cap-verify`, `cap-commit`, `cap-land`, `cap-cleanup`, `cap-restack`, `cap-drop`) calls `task_lock "$slug"` with the default `wait=0`, which refuses immediately (`bin/lib.sh:312-317`) rather than waiting. So while one captain's `cap send` is compacting a near-full session, a `cap gate`/`cap land`/etc. from anyone else on that same task dies immediately with "already held by pid …", for a duration that has nothing to do with review or delivery. This is a new failure mode the diff introduces, not present before it (`cap-send` was previously lock-free).
+The diff's own `docs/pipeline-notes.md` addition admits this directly: "The sessions `cap-ask` starts are still print mode... A print-mode session cannot be typed into, `cap-send` cannot reach it... Removing print mode is the open work." So this is shipped as a known-incomplete state, reintroducing a pattern the captain explicitly told a prior session not to reach for again.
 
-The lock should be released (or re-acquired only around the parts of `cap-send` that actually need exclusivity — the `status.log`/ownership write) before entering `compact_pane`'s long poll, not held across it.
+The `pane_dispatch` polling/done-file machinery itself is sound and is in fact the piece the memory says the fix should reuse ("`pane_dispatch` already polls for a done file, so the waiting machinery exists") — but it's wired to the wrong invocation (`-p`/`--json` print mode) instead of an ordinary interactive session with file-based output, which is what the memory prescribes as the actual replacement.
 
-### 2. `session_alive` treats an unreadable `/proc` entry the same as "process is dead"
-
-`bin/lib.sh:398-403`:
-```
-live=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)
-[ -n "$live" ] && [ "$live" = "$stamp" ]
-```
-If the `/proc/$pid/stat` read fails for any transient reason (permission, timing, sandboxing), `live` is empty and the function reports "not alive" — the same result as a genuinely dead process. `task_owner_claim` (`bin/lib.sh:415-418`) then silently reclaims ownership without requiring `--take`:
-```
-if [ -n "$owner" ] && [ "$owner" != "$me" ] && session_alive "$owner"; then
-  [ "$take" = 1 ] || die ...
-fi
-task_env_set "$slug" CAP_OWNER "$me"
-```
-This is exactly the "two live sessions stomp on each other" scenario the ownership feature (commit `2bac72b`) exists to prevent — conflating "I couldn't confirm liveness" with "confirmed dead" reopens it silently instead of failing loud.
-
-### 3. `session_identity`'s `/proc/[pid]/stat` parsing is fragile, and now backs an access-control decision
-
-`bin/lib.sh:372,378,382,388,401` all split `/proc/$pid/stat` on whitespace with plain `awk '{print $N}'` to read ppid (field 4) and start time (field 22). Field 2 of that file (`comm`) can contain spaces or parentheses (renamed processes, wrapper scripts), which shifts every subsequent field and yields a wrong ppid/start-time silently — a well-known pitfall of parsing this file. The same pattern existed before this diff only in `bin/hooks/crew-status.sh`, where a wrong answer just skewed an advisory nag count. This diff moves it into `lib.sh` and makes it the basis for `task_owner_claim`'s lock/ownership decisions across every mutating `cap-*` command, so a misparse here now risks a wrongful "already owned" refusal or, worse, a wrong session being treated as the same identity as another. Low probability given `claude`/`codex` comm names are unlikely to contain such characters, but the blast radius of a wrong answer changed materially and the code doesn't guard against it (e.g. by stripping `.*)\s*` before field-splitting, the standard fix).
-
-Everything else — the `task_owner_claim`/`--take` wiring across `cap-gate/verify/commit/land/cleanup/restack/drop`, the `cap_env_scrub` function replacing the frozen `CAP_ENV_SCRUB` array at the two call sites that export new `CAP_*` vars mid-process (`cap-spawn`, `cap-send`), the `cap-spawn` lock-before-mkdir race fix, and the `crew-status.sh`/`cap-sessions` simplification — is internally consistent and I could not find a defect in it.
+I checked for concrete crash/data-loss bugs across the full 2361-line diff (lib.sh, all bin/cap-* scripts, the hook, and the two docs/rules files) and found none — the locking, queueing, and ownership machinery is unusually well-reasoned and internally consistent. The one substantive defect is this reintroduction of headless print-mode sessions against explicit, previously-corrected captain policy.
 
 GATE: FAIL
