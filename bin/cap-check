@@ -171,13 +171,19 @@ long=$(printf '%s\n' "$diff_text" | awk '
 # Check related files that should change together.
 printf '\n## surfaces\n'
 if [ -f "$conv" ] && grep -q '^```surfaces' "$conv"; then
+	# Read once into a variable, not through a process substitution: sed
+	# failing on a readable file is unlikely, but a `while ... done < <(sed
+	# ...)` loop can't tell that apart from a fence with nothing inside it,
+	# and either way this reports "ok" if it silently skips the check.
+	surfaces=$(sed -n '/^```surfaces/,/^```$/p' "$conv") ||
+		note "could not read the surface map in $conv"
 	while read -r trigger _arrow required; do
-		case ${trigger:-} in '' | '#'*) continue ;; esac
+		case ${trigger:-} in '' | '#'* | '```'*) continue ;; esac
 		[ -n "${required:-}" ] || continue
 		printf '%s\n' "$changed" | grep -qE "$trigger" || continue
 		printf '%s\n' "$changed" | grep -qE "$required" ||
 			note "changed $trigger without $required"
-	done < <(sed -n '/^```surfaces/,/^```$/p' "$conv" | grep -v '^```')
+	done <<<"$surfaces"
 
 	[ "$findings" = 0 ] && echo "  ok"
 else
