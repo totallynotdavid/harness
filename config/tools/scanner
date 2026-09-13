@@ -1,0 +1,35 @@
+# checkin (event scan-in desktop app) is Go + Wails v2, with a WebKitGTK
+# webview on Linux. Nothing here is installed by default in a fresh worktree.
+#
+# Go is pinned per-project via mise.toml (go = "1.26.8" — Wails v2.15.0
+# requires go >= 1.25; mise's core go plugin handles the actual download).
+#
+# The Wails CLI has no mise plugin, so it's installed straight from its own
+# install instructions (https://wails.io/docs/gettingstarted/installation)
+# via `go install`, then symlinked into ~/.local/bin so it's on PATH — mise's
+# shell-activation hook recomputes PATH from mise-managed tools only and
+# silently drops plain `export PATH=...` appends made earlier in ~/.bashrc,
+# so anything installed via `go install` (GOPATH/bin) needs to land in a
+# directory mise won't touch, e.g. ~/.local/bin, not a raw PATH export.
+#
+# This distro (Ubuntu 26.04) only ships libwebkit2gtk-4.1-dev, not the older
+# 4.0 that `wails doctor` looks for by name — it's fine, just build/dev with
+# `-tags webkit2_41` (the CGO webview backend links against whichever
+# webkit2gtk pkg-config finds under that tag). `wails doctor` will still
+# report libwebkit as "Not Found"; that's a doctor limitation, not a real
+# missing dependency, once libwebkit2gtk-4.1-dev is installed.
+#
+# nsis is only needed to produce the Windows installer, and only actually
+# works when run on Windows (see this task's final report for why the Linux
+# build here can only sanity-check the `wails build -nsis` flags, not
+# produce a working installer).
+
+mise go@1.26.8
+sh   go install github.com/wailsapp/wails/v2/cmd/wails@latest
+sh   ln -sf ~/go/bin/wails ~/.local/bin/wails
+sh   sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential nsis
+
+# xdotool drives the native GTK "Select guest list CSV" file-picker window
+# that ImportGuestList opens (a real OS dialog, not a web element), so a
+# Playwright-driven UI test can pick a file without a human at the keyboard.
+sh   sudo apt-get install -y xdotool
