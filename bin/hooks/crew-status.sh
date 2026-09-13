@@ -46,7 +46,15 @@ for slug in $(task_slugs); do
 		fi
 		;;
 	blocked | needs-input | failed)
-		note=$(grep -E "^$state:" "$TASKS/$slug/status.log" 2>/dev/null | tail -1 || true)
+		# A reason the agent logged before its last delivered message is
+		# from a turn that has already ended - herdr can report the same
+		# verb again for an unrelated prompt with nothing new logged, and
+		# naming the old reason then points the captain at the wrong one.
+		note=$(awk -v state="$state:" '
+			index($0, "working:") == 1 { working = NR }
+			index($0, state) == 1 { line = NR; text = $0 }
+			END { if (line != "" && (working == "" || line > working)) print text }
+		' "$TASKS/$slug/status.log" 2>/dev/null || true)
 		if [ -n "$note" ]; then
 			add "  $slug ($project) is $state: ${note#*: }"
 		else
