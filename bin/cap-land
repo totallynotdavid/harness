@@ -81,7 +81,12 @@ local)
 		die "rebase $CAP_BRANCH onto $CAP_BASE and resolve these first"
 	}
 
-	git -C "$CAP_REPO" checkout "$CAP_BASE" >/dev/null 2>&1
+	# An untracked file left in $CAP_REPO (tolerated above, since only
+	# tracked changes block a hub landing) can still collide with a path
+	# $CAP_BASE's tree wants to create, which git refuses rather than
+	# overwrite. Captured and shown, not left to a bare set -e death.
+	checkout_err=$(git -C "$CAP_REPO" checkout "$CAP_BASE" 2>&1 >/dev/null) ||
+		die "could not check out $CAP_BASE in $CAP_REPO: $checkout_err"
 	git -C "$CAP_REPO" merge --no-ff -m "merge $CAP_BRANCH ($slug)" "$CAP_BRANCH"
 
 	printf 'merged %s into %s (%s commits)\n' "$CAP_BRANCH" "$CAP_BASE" "$commits"
