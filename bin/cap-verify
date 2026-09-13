@@ -60,6 +60,12 @@ else
   dirty=$(git_dirty "$CAP_TREE")
 fi
 
+# verified_record below marks $sha safe for other tasks to fork from, so
+# it must never fire on the strength of an untracked file this hub
+# happens to hold right now - unlike $dirty above, which only gates
+# whether to trust the resumption cache.
+fully_clean=$(git_dirty "$CAP_TREE")
+
 # Which scripts already passed at this commit, so a run that dies partway
 # through resumes instead of starting over. The build is both the most
 # expensive script and the first thing a constrained box kills, which is the
@@ -173,9 +179,10 @@ on_exit() {
     project_peak_record "$CAP_PROJECT" "$((peak_kb / 1024))"
     printf 'peak %s MB for %s\n' "$((peak_kb / 1024))" "$CAP_PROJECT"
   fi
-  # Only a clean tree earns the record. A pass with uncommitted changes says
-  # nothing about the commit anyone else would fork from.
-  if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$dirty" = 0 ]; then
+  # Only a fully clean tree earns the record. A pass with uncommitted or
+  # untracked changes says nothing about the commit anyone else would fork
+  # from.
+  if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$fully_clean" = 0 ]; then
     verified_record "$CAP_PROJECT" "$sha"
     [ -z "$progress" ] || rm -f "$progress"
     printf '%s verified at %s\n' "$CAP_PROJECT" "${sha:0:12}"
