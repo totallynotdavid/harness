@@ -1,5 +1,6 @@
-# Captain gates itself. lint tools cover defects shellcheck misses: local var
-# expansion order (SC2318) and bare `[ ] && cmd` in tail position.
+# Captain gates itself. shellcheck already catches SC2318 (local var
+# expansion order); the check: tasks below cover shapes it has no
+# diagnostic for.
 
 [tools]
 shellcheck = "0.11.0"
