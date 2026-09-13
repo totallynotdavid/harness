@@ -117,7 +117,7 @@ for pair in "${profiles[@]}"; do
     continue
   fi
   mv "$tmp" "$out"
-  gate_record "$slug" "$label" "$verdict" "$fp" "$(git -C "$CAP_TREE" rev-parse HEAD)"
+  gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit"
 done
 
 printf 'reports: %s/%s.gate-A.md %s/%s.gate-B.md\n' "$out_dir" "$slug" "$out_dir" "$slug"
