@@ -28,10 +28,25 @@ commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || e
 dirty=$(git_dirty "$CAP_TREE")
 [ "$commits" -gt 0 ] || [ "$dirty" != 0 ] || die "$slug has no changes against $CAP_BASE"
 
-diff_from=$(diff_base "$CAP_TREE" "$CAP_BASE")
+# --full reviews the whole branch. A plain round reviews only what changed
+# since gate B's own last PASS, so a task 24 rounds in re-reviews the
+# round's own diff, not machinery two rounds already passed unchanged.
+# Only gate B ever runs a plain round (below), so only its last commit
+# matters; a first run, or a since-commit a rebase dropped, falls back to
+# the full range.
+if [ "$full" = 1 ]; then
+  since=$(diff_base "$CAP_TREE" "$CAP_BASE")
+else
+  since=$(gate_last_commit "$slug" B)
+  if [ -z "$since" ] ||
+    ! git -C "$CAP_TREE" cat-file -e "$since" 2>/dev/null ||
+    ! git -C "$CAP_TREE" merge-base --is-ancestor "$since" HEAD 2>/dev/null; then
+    since=$(diff_base "$CAP_TREE" "$CAP_BASE")
+  fi
+fi
 
 prompt="Read $CAP_HOME/rules/code.md, then review every change in this
-worktree against $diff_from (git diff $diff_from, plus any uncommitted change).
+worktree since $since (git diff $since, plus any uncommitted change).
 Report concrete defects: what is wrong, where, and the failure it causes. State
 what you checked and what you verified as working, whether or not you found a
 defect. Do not edit files. End with a single line, exactly: GATE: PASS or
@@ -62,7 +77,12 @@ if [ -z "$gate_b" ]; then
 fi
 profiles+=("B $gate_b")
 
-fp=$(gate_fingerprint "$CAP_TREE" "$CAP_BASE")
+# Scoped to $since, not always the full branch: gate_ready still compares
+# against the full-branch fingerprint, so a plain round's fingerprint here
+# can only match it (and unlock landing) when $since already was the full
+# range - never on a genuine increment. That is what makes "cap land
+# requires a --full verdict" true without cap-land checking it itself.
+fp=$(gate_fingerprint_from "$CAP_TREE" "$since")
 
 # Iterate an array, never a pipe or a here-string. cap-ask launches a harness
 # that inherits the loop's stdin and eats the remaining profiles, so every
@@ -99,7 +119,7 @@ for pair in "${profiles[@]}"; do
     continue
   fi
   mv "$tmp" "$out"
-  gate_record "$slug" "$label" "$verdict" "$fp"
+  gate_record "$slug" "$label" "$verdict" "$fp" "$(git -C "$CAP_TREE" rev-parse HEAD)"
 done
 
 printf 'reports: %s/%s.gate-A.md %s/%s.gate-B.md\n' "$out_dir" "$slug" "$out_dir" "$slug"
@@ -114,8 +134,7 @@ if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
   exit 0
 fi
 
-# Say this on every path. It used to print only under --full, so a plain
-# B-only round that produced nothing looked exactly like a clean one.
+# Print the status on every path, not just when --full.
 printf 'NOT ready to land: %s (see reports above)\n' "$slug"
 if [ "$incomplete" != 0 ]; then
   warn "$slug: a gate did not complete; re-run cap gate $slug"
