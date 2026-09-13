@@ -280,11 +280,15 @@ leaving it orphaned.
 Delivery from the queue goes through `pane_submit`, one confirmed attempt - typing the text
 in and checking a turn actually started - not a bare `pane_send` trusted to have worked. A
 message that fails to confirm is logged to `status.log` as unconfirmed and dropped from the
-queue, not retried: `pane_submit` may already have typed it in, and a later flush retrying it
-would type it a second time. Anything still queued behind it was never typed at all, so it
-stays queued and is tried on the next flush. Queued text is stored
-base64-encoded rather than flattened with `tr '\n' ' '`, so a multi-line message arrives
-exactly as typed whether the lock happened to be free or not.
+queue, not retried: `pane_submit` may already have typed it in, and a retry would type it a
+second time, merging with whatever it left sitting unsent in the input box. That risk
+outlives the process that hit it, so the pane is marked untrusted with a marker on disk
+beside the queue (`queue_mark_untrusted`/`queue_untrusted`), not a variable - every later
+`queue_flush`, by any command, in any process, refuses that pane outright. Anything still
+queued behind the failed message, never typed at all, waits there until the marker clears,
+which only happens when `cap send` revives a dead pane: a new pane has a new input box.
+Queued text is stored base64-encoded rather than flattened with `tr '\n' ' '`, so a
+multi-line message arrives exactly as typed whether the lock happened to be free or not.
 
 ## Every agent session runs in a pane
 

@@ -723,13 +723,15 @@ queue_prepend() {
   return 1
 }
 
-# Once a pane goes untrusted in this process it stays that way for the
-# rest of it: an unconfirmed pane_submit may have left text sitting unsent
-# in the input box, and the EXIT trap calls queue_flush again on its own,
-# so nothing short of a process-lifetime flag stops that next call from
-# typing more text in behind it.
-declare -A CAP_QUEUE_UNTRUSTED
-queue_mark_untrusted() { CAP_QUEUE_UNTRUSTED[$1]=1; }
+# Once a pane goes untrusted it stays that way for every process, not just
+# this one: an unconfirmed pane_submit may have left text sitting unsent in
+# the input box, and a later cap-send has no way to tell that apart from an
+# empty one - typing into it merges the two and one Enter submits both. A
+# marker on disk beside the queue survives past this process's own exit;
+# only reviving the pane (a genuinely fresh input box) clears it.
+queue_mark_untrusted() { : >"$TASKS/$1/.queue-untrusted"; }
+queue_untrusted() { [ -f "$TASKS/$1/.queue-untrusted" ]; }
+queue_clear_untrusted() { rm -f "$TASKS/$1/.queue-untrusted"; }
 
 # Recovers a batch a holder killed mid-flush left behind in *.flushing,
 # which nothing else ever reads back, by folding it in front of the live
@@ -826,7 +828,7 @@ queue_deliver_claimed() {
 queue_flush() {
   local slug=$1
 
-  [ -z "${CAP_QUEUE_UNTRUSTED[$slug]:-}" ] || return 1
+  ! queue_untrusted "$slug" || return 1
   queue_recover_stranded "$slug" || return 1
 
   [ -s "$TASKS/$slug/send-queue" ] || return 0

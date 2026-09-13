@@ -75,6 +75,9 @@ $text"
   pane_launch "$pane" "${cmd[@]}"
   task_env_set "$slug" CAP_PANE "$pane"
   task_env_set "$slug" CAP_TAB "$tabid"
+  # A fresh pane has a fresh input box - whatever the old one may have had
+  # sitting unsent in it died with it.
+  queue_clear_untrusted "$slug"
   warn "$slug: pane was not live; restarted the session on $CAP_MODEL and delivered the message in its opening prompt"
 }
 
@@ -179,7 +182,7 @@ if task_try_lock "$slug"; then
 		fi
 	else
 		queue_send "$slug" "$text"
-		if [ -n "${CAP_QUEUE_UNTRUSTED[$slug]:-}" ]; then
+		if queue_untrusted "$slug"; then
 			printf 'queued for %s: an earlier message in its queue was typed but never confirmed; check by hand: cap peek %s\n' "$slug" "$slug"
 		elif ! pane_live "$slug"; then
 			printf 'queued for %s: the session is not live; delivered once it is revived\n' "$slug"
