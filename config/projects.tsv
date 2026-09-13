@@ -3,6 +3,7 @@ acueducto-recon	/home/dubu/git/acueducto-recon	pr	-
 asistencia	/home/dubu/git/asistencia	pr	-
 atu	/home/dubu/git/atu	pr	-
 atu-p2p-frontend	/home/dubu/git/atu-p2p-frontend	pr	-
+aula	/home/dubu/git/aula	local	sonnet
 captain	/home/dubu/git/captain	local	-
 chatbot	/home/dubu/git/chatbot	pr	-
 chimes	/home/dubu/git/chimes	pr	-
@@ -23,9 +24,11 @@ firstmate	/home/dubu/git/firstmate	pr	-
 galaxia	/home/dubu/git/galaxia	pr	-
 gmcan	/home/dubu/git/gmcan	pr	-
 lima-limpia	/home/dubu/git/lima-limpia	pr	-
+linear.app	/home/dubu/git/linear.app	pr	-
 machines	/home/dubu/git/machines	pr	-
 matrix	/home/dubu/git/matrix	pr	-
 megaloader	/home/dubu/git/megaloader	pr	-
+mockup	/home/dubu/git/mockup	local	-
 motion	/home/dubu/git/motion	pr	-
 nativewind	/home/dubu/git/nativewind	pr	-
 npmx.dev	/home/dubu/git/npmx.dev	pr	-
@@ -41,6 +44,7 @@ posthog.com	/home/dubu/git/posthog.com	pr	-
 qly	/home/dubu/git/qly	pr	-
 real-state	/home/dubu/git/real-state	pr	-
 relq	/home/dubu/git/relq	pr	-
+scanner	/home/dubu/git/scanner	pr	-
 scraping	/home/dubu/git/scraping	pr	-
 terminal	/home/dubu/git/terminal	pr	-
 test	/home/dubu/git/test	pr	-
@@ -54,4 +58,3 @@ video-chunker	/home/dubu/git/video-chunker	pr	-
 vision	/home/dubu/git/vision	pr	-
 vulf	/home/dubu/git/vulf	pr	-
 yt_utils	/home/dubu/git/yt_utils	pr	-
-aula	/home/dubu/git/aula	local	sonnet
