@@ -155,8 +155,8 @@ was never written.
 `bump`'s `enqueue_simulation` sets **both** Procrastinate locks:
 
 ```python
-queueing_lock=f"simulation:{compute_job_id}",
-lock=f"compute-job:{compute_job_id}",
+queueing_lock = (f"simulation:{compute_job_id}",)
+lock = (f"compute-job:{compute_job_id}",)
 ```
 
 The prior report argued against adding a `concurrency_key`, but its codebase
@@ -296,7 +296,9 @@ def _fail_exhausted(compute_job_id: str) -> None:
     ...
     if row is None or row["status"] in {COMPLETED, FAILED}:
         return
-    repository.fail_job(conn, job_uuid, row["simulation_id"], CRASH_BUDGET_EXHAUSTED_ERROR)
+    repository.fail_job(
+        conn, job_uuid, row["simulation_id"], CRASH_BUDGET_EXHAUSTED_ERROR
+    )
 ```
 
 Deleting that task was right for the queue-state half: rqueue's `Worker._tick`

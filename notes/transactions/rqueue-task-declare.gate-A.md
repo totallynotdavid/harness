@@ -13,7 +13,9 @@ Baseline: `mise run lint`, the 158-test fast suite, and the 102-test integration
 ```python
 resolved = self.default_retry if retry is None else retry
 if resolved.retry_if is not None or tuple(resolved.retry_on) != (Exception,):
-    raise ConfigurationError("declare_task retry may only configure numeric settings; ...")
+    raise ConfigurationError(
+        "declare_task retry may only configure numeric settings; ..."
+    )
 ```
 
 `default_retry` is a public constructor parameter (`queue.py:96`). Any queue built with one that narrows `retry_on` — the normal reason to pass it — cannot declare a task at all, and the error blames an argument the caller never supplied. `register()` on the same queue handles the identical value by *stripping* the hooks (`_new_registration_declaration`, `queue.py:246-265`), so the two entry points disagree.

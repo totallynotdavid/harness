@@ -469,8 +469,12 @@ type-checked clean and then raised at runtime:
 ```python
 class PretendColumn:
     @property
-    def python_type(self) -> TypeForm[str] | Callable[..., str]: return str
-    def declared_name(self, attribute: str) -> str: return attribute
+    def python_type(self) -> TypeForm[str] | Callable[..., str]:
+        return str
+
+    def declared_name(self, attribute: str) -> str:
+        return attribute
+
 
 insert.on_conflict(PretendColumn())
 # basedpyright: clean
@@ -489,8 +493,7 @@ class ConflictTarget[T_co = object]:
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class Column[T](ConflictTarget[T], Expr[T]):
-    ...
+class Column[T](ConflictTarget[T], Expr[T]): ...
 ```
 
 `dml.py` now imports it rather than declaring it, and `on_conflict`
@@ -692,7 +695,8 @@ overrides `__init__` and simply declines to call `super().__init__`:
 
 ```python
 class Evasive(ConflictTarget[str]):
-    def __init__(self) -> None: pass
+    def __init__(self) -> None:
+        pass
 ```
 
 `Evasive()` constructs, type-checks clean under basedpyright strict (**0
@@ -716,7 +720,9 @@ hole, and a worse failure mode:
 
 ```python
 class SneakyColumn(Column[str]):
-    def __init__(self) -> None: pass
+    def __init__(self) -> None:
+        pass
+
 
 insert_into(users).from_select(select(users.email).from_(users), SneakyColumn())
 # basedpyright: 0 errors
@@ -1019,9 +1025,11 @@ class Coordinates(TypedDict):
     latitude: float
     longitude: float
 
+
 class Readings(Table):
     samples: Column[list[int]] = column(list[int])
     place: Column[Coordinates] = column(Coordinates)
+
 
 assert_type(column(list[int]), Column[list[int]])
 assert_type(column(Coordinates), Column[Coordinates])

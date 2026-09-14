@@ -21,9 +21,7 @@ of scope for this task.
 In `run_simulation_task`:
 
 ```python
-held, resume = await asyncio.to_thread(
-    claim_workspace, work_dir, context.attempt
-)
+held, resume = await asyncio.to_thread(claim_workspace, work_dir, context.attempt)
 claim = held
 ```
 
