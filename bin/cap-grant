@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# cap-grant - add a path to a task's ownership boundary.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+usage="usage: cap grant <slug> <path> [--take]"
+slug=${1:-}
+path=${2:-}
+shift 2 2>/dev/null || true
+take=0
+while [ $# -gt 0 ]; do
+	case $1 in
+	--take) take=1; shift ;;
+	*) die "$usage" ;;
+	esac
+done
+
+[ -n "$slug" ] && [ -n "$path" ] || die "$usage"
+case $path in
+	/* | . | .. | ./* | ../* | */../* | */./* | */.. | *[[:space:]]*)
+		die "path must be a repository-relative ownership glob without whitespace: $path"
+		;;
+esac
+
+task_load "$slug"
+task_lock "$slug"
+if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
+
+owns_file=$TASKS/$slug/owns
+if [ -f "$owns_file" ] && grep -Fxq -- "$path" "$owns_file"; then
+	printf 'already granted %s to %s\n' "$path" "$slug"
+	exit 0
+fi
+
+printf '%s\n' "$path" >>"$owns_file"
+printf 'granted %s to %s\n' "$path" "$slug"

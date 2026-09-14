@@ -453,6 +453,40 @@ def pane_type(pane, text):
 # --- sessions --------------------------------------------------------------
 
 
+def live_path(session):
+    return os.path.join(session.turn_dir, "live.json")
+
+
+def publish_live(session, profile, directory):
+    """Publish enough identity for another cap command to reach this pane."""
+    record = {
+        "directory": directory,
+        "harness": profile.harness,
+        "label": session.label,
+        "pane": session.pane,
+        "pid": os.getpid(),
+        "profile": profile.name,
+        "session_id": session.session_id,
+        "started": session.started,
+        "turn_dir": session.turn_dir,
+    }
+    path = live_path(session)
+    tmp = f"{path}.tmp-{os.getpid()}"
+    with open(tmp, "w") as fh:
+        json.dump(record, fh)
+    os.replace(tmp, path)
+
+
+def unpublish_live(session):
+    try_remove(live_path(session))
+
+
+def refresh_live(session, profile, directory):
+    path = live_path(session)
+    if os.path.exists(path):
+        publish_live(session, profile, directory)
+
+
 @dataclass
 class Session:
     harness: str
@@ -512,6 +546,7 @@ def untrack(session):
 def close_live_sessions():
     for session in list(_live_sessions.values()):
         warn(f"{session.label}: stopped; closing pane {session.pane}")
+        unpublish_live(session)
         pane_close(session.pane)
     _live_sessions.clear()
 
@@ -940,10 +975,12 @@ def ask(profile, prompt, directory, *, label=None, validate=None, repairs=2, gua
     session.session_id = sid or resume or ""
     transcript = ""
     try:
+        publish_live(session, profile, directory)
         attempt = 0
         while True:
             payload = wait_turn(session)
             transcript = payload.get("transcript_path") or transcript
+            refresh_live(session, profile, directory)
             classify(payload)
             text = turn_answer(profile.harness, payload)
             problems = validate(text) if validate else ([] if text.strip() else ["the answer was empty"])
@@ -969,6 +1006,7 @@ def ask(profile, prompt, directory, *, label=None, validate=None, repairs=2, gua
         start = session_start(session)
         session.session_id = session.session_id or start.get("session_id") or ""
         record_cost(session, profile, window_start, transcript or start.get("transcript_path") or "")
+        unpublish_live(session)
         untrack(session)
         pane_close(session.pane)
 

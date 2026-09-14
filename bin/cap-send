@@ -2,8 +2,12 @@
 # cap-send - send a message to a running agent.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:?usage: cap send <slug> [--force] [--take] "<text>"}
+slug=${1:?usage: cap send <slug|session> [--force] [--take] "<text>"}
 shift
+
+if [ ! -f "$TASKS/$slug/task.env" ]; then
+	exec "$CAP_BIN/cap-ask-send" "$slug" "$@"
+fi
 
 force=0
 take=0

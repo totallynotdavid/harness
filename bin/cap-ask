@@ -8,7 +8,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import caplib  # noqa: E402
 
-USAGE = 'usage: cap ask <profile|@role> "<prompt>"|- [--dir D]'
+USAGE = 'usage: cap ask <profile|@role> "<prompt>"|- [--dir D] [--label L]'
 
 
 def list_profiles():
@@ -25,9 +25,13 @@ def parse(argv):
         raise caplib.CapError(USAGE)
     spec, prompt, rest = argv[0], argv[1], argv[2:]
     directory = os.getcwd()
+    label = None
     while rest:
         if rest[0] == "--dir" and len(rest) > 1:
             directory = rest[1]
+            rest = rest[2:]
+        elif rest[0] == "--label" and len(rest) > 1:
+            label = rest[1]
             rest = rest[2:]
         else:
             raise caplib.CapError(USAGE)
@@ -37,14 +41,14 @@ def parse(argv):
         raise caplib.CapError("nothing to ask")
     if not os.path.isdir(directory):
         raise caplib.CapError(f"no such directory {directory}")
-    return spec, prompt, directory
+    return spec, prompt, directory, label
 
 
 def main():
     argv = sys.argv[1:]
     if argv[:1] == ["--list"]:
         return list_profiles()
-    spec, prompt, directory = parse(argv)
+    spec, prompt, directory, label = parse(argv)
     profile = caplib.resolve_profile(spec)
     caplib.check_profile(profile)
 
@@ -57,7 +61,7 @@ def main():
         if not os.path.isfile(os.path.join(caplib.TASKS, slug, "owns")):
             slug = None
 
-    answer = caplib.ask(profile, prompt, directory, guard_slug=slug)
+    answer = caplib.ask(profile, prompt, directory, label=label, guard_slug=slug)
     print(answer.text)
     return 0
 

@@ -23,7 +23,7 @@ AGENTS
   cap sessions                                show every agent session on this box
   cap wave [list|check|spawn] <name>          dispatch a partitioned set of tasks
   cap peek <slug> [lines]                     show recent agent output
-  cap send <slug> [--take] "<text>"           send a message to an agent
+  cap send <slug|session> [--take] "<text>"   send a message to an agent
   cap watch [--timeout S] [--interval S]      wait until an agent needs input
 
 REVIEW AND DELIVERY
@@ -40,7 +40,7 @@ REVIEW AND DELIVERY
   cap drop <slug> [--force] [--take]          stop an agent; keep unlanded work by default
 
 CONSULT
-  cap ask <profile|@role> "<prompt>" [--dir D] run a one-shot agent
+  cap ask <profile|@role> "<prompt>" [--dir D] [--label L] run a one-shot agent
   cap ask --list                              list profiles
   cap budget                                  show what can be dispatched now
   cap models [--refresh]                      show what each harness offers
@@ -51,6 +51,7 @@ REPO
   cap reconcile [--remote]                    show open work across all projects
   cap papercut add <subject> "<text>"         log a problem in Captain (cap papercut subjects)
   cap project <name> [mode] [model]           show or change project settings
+  cap grant <slug> <path> [--take]             add a path to a task's ownership boundary
   cap skills list|add|rm|sync|diff            manage skill snapshots
   cap conventions <project>                   create project conventions
   cap explore <owner/repo> [--fresh]          clone a repo for inspection
@@ -66,7 +67,7 @@ EOF
 
 cmd=${1:-help}; shift || true
 case $cmd in
-  spawn|crew|peek|send|watch|land|restack|drop|ask|budget|doctor|models|cleanup|commit|gate|step|map|reconcile|papercut|project|skills|check|verify|conventions|explore|history|sessions|wave)
+  spawn|crew|peek|send|watch|land|restack|drop|ask|budget|doctor|models|cleanup|commit|gate|step|map|reconcile|papercut|project|grant|skills|check|verify|conventions|explore|history|sessions|wave)
     exec "$CAP_BIN/cap-$cmd" "$@" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 1 ;;

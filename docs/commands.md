@@ -12,7 +12,7 @@ Run `cap help` for all flags.
 | `cap crew` | Show all agents and their status. |
 | `cap sessions` | Show every agent session on this machine. |
 | `cap peek <slug> [lines]` | Show recent agent output. |
-| `cap send <slug> "<text>"` | Send a message to an agent. |
+| `cap send <slug\|session> "<text>"` | Send a message to a task agent or live ask session. Labels include `gate-A-<slug>`, `commit-<slug>`, and `cleanup-<slug>`. |
 | `cap watch` | Wait until an agent needs input. |
 
 ## Review and delivery
@@ -44,6 +44,7 @@ Pull requests use GitHub's rebase strategy by default. Use `--squash` or
 | `cap models [--refresh]` | Show what each harness offers, and check the profile table against it. |
 | `cap papercut add <subject> "<text>"` | Log a problem with Captain. The subject is a part of Captain (`cap papercut subjects`); a project is refused. |
 | `cap papercut close <id>` | Remove a fixed paper cut. |
+| `cap grant <slug> <path> [--take]` | Add a repository-relative path or glob to a task's ownership boundary. |
 | `cap explore <owner/repo> [--fresh]` | Clone a repo for inspection. |
 | `cap history --repo <name>\|--task <slug> [opts]` | Search past agent sessions. |
 | `cap conventions <project>` | Create project conventions. |
@@ -52,7 +53,7 @@ Pull requests use GitHub's rebase strategy by default. Use `--squash` or
 
 | Command | What it does |
 | --- | --- |
-| `cap ask <profile> "<prompt>" [--dir D]` | Run a one-shot agent. |
+| `cap ask <profile> "<prompt>" [--dir D] [--label L]` | Run a one-shot agent. |
 | `cap ask --list` | List profiles. |
 | `cap skills list [nick]` | List available skills. |
 | `cap skills add <nick>/<name>` | Add a skill. |
