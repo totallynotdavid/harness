@@ -1079,6 +1079,7 @@ def codex_limit(profile, reached):
 # --- structured findings ---------------------------------------------------
 
 SEVERITIES = ("blocker", "major", "minor")
+CONFIDENCE = ("confirmed", "suspected")
 FAILING = ("blocker", "major")
 FENCE = re.compile(r"```json[ \t]*\n(.*?)\n[ \t]*```", re.S)
 
@@ -1138,6 +1139,8 @@ def validate_findings(report, changed, tree):
                 problems.append(f"{where}.line {line_problem}")
         if f.get("severity") not in SEVERITIES:
             problems.append(f"{where}.severity must be one of {', '.join(SEVERITIES)}")
+        if f.get("confidence") not in CONFIDENCE:
+            problems.append(f"{where}.confidence must be one of {', '.join(CONFIDENCE)}")
         if not substantive(f.get("claim")):
             problems.append(f"{where}.claim must say what is wrong and the failure it causes")
     for i, c in enumerate(checked):
@@ -1183,7 +1186,11 @@ def check_line(line, path, tree):
 
 
 def verdict(report):
-    failing = [f for f in report.get("findings", []) if f.get("severity") in FAILING]
+    failing = [
+        f
+        for f in report.get("findings", [])
+        if f.get("severity") in FAILING and f.get("confidence") == "confirmed"
+    ]
     return "FAIL" if failing else "PASS"
 
 

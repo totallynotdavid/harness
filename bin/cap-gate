@@ -24,9 +24,10 @@ if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug";
 sync_base "$CAP_TREE" "$CAP_BASE" ||
   die "$slug: worktree is mid-conflict after syncing onto $CAP_BASE; resolve before gating (see docs/pipeline-notes.md)"
 
-commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
-dirty=$(git_dirty "$CAP_TREE")
-[ "$commits" -gt 0 ] || [ "$dirty" != 0 ] || die "$slug has no changes against $CAP_BASE"
+full_since=$(diff_base "$CAP_TREE" "$CAP_BASE")
+reviewable=$(reviewable_files "$CAP_TREE" "$full_since") ||
+  die "$slug: could not determine the reviewable diff"
+[ -n "$reviewable" ] || die "$slug has no reviewable changes against $CAP_BASE; the work is already in the base"
 
 # --full reviews the whole branch. A plain round reviews only what changed
 # since gate B's own last PASS, so a task 24 rounds in re-reviews the
@@ -35,7 +36,7 @@ dirty=$(git_dirty "$CAP_TREE")
 # matters here. Empty means nothing has changed since that PASS at all:
 # nothing to review, so this round runs no reviewer and touches no record.
 if [ "$full" = 1 ]; then
-  since=$(diff_base "$CAP_TREE" "$CAP_BASE")
+  since=$full_since
 else
   since=$(gate_review_since "$slug" B "$CAP_TREE" "$CAP_BASE")
 fi
@@ -47,32 +48,31 @@ mkdir -p "$out_dir" "$TASKS/$slug"
 if [ -z "$since" ]; then
   printf '%s: nothing has changed since gate B last passed; not re-reviewing\n' "$slug"
 else
-  # Gate B (cheap) runs every round; Gate A (expensive) only on --full (see
-  # docs/pipeline-notes.md). Both are roles, not models: each is sized
-  # against the account's current window. Resolve both here, not per
-  # reviewer, so Gate B picks a different peer when both would use the same
-  # profile.
+  # Gate B (cheap) runs every plain round; Gate A (expensive) joins a full
+  # round. A profile that already passed this exact full fingerprint can be
+  # reused, so --full does not pay for an identical review twice.
+  # Both are roles, not models: each is sized against the account's current
+  # window. Resolve them here, not per reviewer, so Gate B picks a different
+  # peer when both would use the same profile.
+  fp=$(gate_fingerprint_from "$CAP_TREE" "$since")
   reviewers=()
   gate_a=""
-  if [ "$full" = 1 ]; then
+  if [ "$full" = 1 ] && ! gate_passes_fingerprint "$slug" A "$fp"; then
     gate_a=$(role_profile_or_die gate-a)
     reviewers+=(--reviewer "A=$gate_a@gate-a")
   fi
-  gate_b=$(role_profile gate-b "$gate_a" || true)
-  if [ -z "$gate_b" ]; then
-    if [ -n "$gate_a" ]; then
-      warn "no second profile is available below $gate_a; running gate B on $gate_a too, which is one opinion, not two"
-      gate_b=$gate_a
-    else
-      gate_b=$(role_profile_or_die gate-b)
+  if [ "$full" = 0 ] || ! gate_passes_fingerprint "$slug" B "$fp"; then
+    gate_b=$(role_profile gate-b "$gate_a" || true)
+    if [ -z "$gate_b" ]; then
+      if [ -n "$gate_a" ]; then
+        warn "no second profile is available below $gate_a; running gate B on $gate_a too, which is one opinion, not two"
+        gate_b=$gate_a
+      else
+        gate_b=$(role_profile_or_die gate-b)
+      fi
     fi
+    reviewers+=(--reviewer "B=$gate_b@gate-b")
   fi
-  reviewers+=(--reviewer "B=$gate_b@gate-b")
-
-  # Scoped to $since, not always the full branch. gate_ready compares
-  # against the full-branch fingerprint, so this only matches it when
-  # $since was the full range.
-  fp=$(gate_fingerprint_from "$CAP_TREE" "$since")
 
   # Captured here, not after the review returns: task_lock only blocks
   # cap-commit/cap-send, never the task's own live agent, which is free to
@@ -84,32 +84,36 @@ else
   # Recording their verdicts is the only part that stays serial, in order.
   # CAP_ASK_KEY carries the fingerprint so a session a limit interrupted is
   # never resumed against different code.
-  results=$(mktemp)
-  full_flag=()
-  [ "$full" = 0 ] || full_flag=(--full)
-  CAP_ASK_KEY=$fp "$CAP_BIN/cap-review" --slug "$slug" --tree "$CAP_TREE" --since "$since" \
-    --commit "$reviewed_commit" --fingerprint "$fp" --out-dir "$out_dir" --results "$results" \
-    "${full_flag[@]}" "${reviewers[@]}" </dev/null ||
-    warn "the gate reviewers did not run"
+  if [ "${#reviewers[@]}" = 0 ]; then
+    printf '%s: both gate profiles already passed this exact full diff; not re-reviewing\n' "$slug"
+  else
+    results=$(mktemp)
+    full_flag=()
+    [ "$full" = 0 ] || full_flag=(--full)
+    CAP_ASK_KEY=$fp "$CAP_BIN/cap-review" --slug "$slug" --tree "$CAP_TREE" --since "$since" \
+      --commit "$reviewed_commit" --fingerprint "$fp" --out-dir "$out_dir" --results "$results" \
+      "${full_flag[@]}" "${reviewers[@]}" </dev/null ||
+      warn "the gate reviewers did not run"
 
-  # A reviewer with no validated findings block has no verdict. A verdict is
-  # computed from findings that cover the diff, so an answer that is only a
-  # verdict, or covers none of the changed files, never reaches this record.
-  reports=()
-  while IFS=$'\t' read -r label verdict; do
-    if [ -z "$verdict" ]; then
-      incomplete=1
-      continue
-    fi
-    gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit" "$since"
-    reports+=("$out_dir/$slug.gate-$label.md")
-  done < <(jq -r '[.label, (.verdict // "")] | @tsv' "$results")
-  pid=$!
-  wait "$pid" || { warn "$slug: could not read the gate results"; incomplete=1; }
-  [ -s "$results" ] || incomplete=1
-  rm -f "$results"
+    # A reviewer with no validated findings block has no verdict. A verdict is
+    # computed from findings that cover the diff, so an answer that is only a
+    # verdict, or covers none of the changed files, never reaches this record.
+    reports=()
+    while IFS=$'\t' read -r label verdict; do
+      if [ -z "$verdict" ]; then
+        incomplete=1
+        continue
+      fi
+      gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit" "$since"
+      reports+=("$out_dir/$slug.gate-$label.md")
+    done < <(jq -r '[.label, (.verdict // "")] | @tsv' "$results")
+    pid=$!
+    wait "$pid" || { warn "$slug: could not read the gate results"; incomplete=1; }
+    [ -s "$results" ] || incomplete=1
+    rm -f "$results"
 
-  [ "${#reports[@]}" = 0 ] || printf 'reports: %s\n' "${reports[*]}"
+    [ "${#reports[@]}" = 0 ] || printf 'reports: %s\n' "${reports[*]}"
+  fi
 fi
 
 # Exit status is the machine-readable verdict, so a caller can chain on it:

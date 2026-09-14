@@ -121,7 +121,9 @@ rounds, all attributed to Gate B findings in `status.log`, while Gate A ran in l
 every round anyway, each time paying for a full cold sonnet session to re-review a diff it
 had already found nothing wrong with. Gate A still catches real things B misses (that is
 why `--full` exists and matters before landing), but paying that cost on every intermediate
-round bought nothing most of the time.
+round bought nothing most of the time. A full round reuses a profile's PASS when its
+fingerprint still matches the complete diff, so requesting the final review does not
+repeat identical work.
 
 ## Verify directly before spending a gate round
 

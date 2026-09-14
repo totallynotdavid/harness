@@ -63,19 +63,19 @@ checked_all = [
 case("clean pass", block({"findings": [], "checked": checked_all}), accepted=True, verdict="PASS")
 case(
     "major fails",
-    block({"findings": [{"file": "bin/tool.sh", "line": 2, "severity": "major", "claim": "prints one where the caller parses two"}], "checked": checked_all[:1]}),
+    block({"findings": [{"file": "bin/tool.sh", "line": 2, "severity": "major", "confidence": "confirmed", "claim": "prints one where the caller parses two"}], "checked": checked_all[:1]}),
     accepted=True,
     verdict="FAIL",
 )
 case(
     "blocker fails",
-    block({"findings": [{"file": "bin/tool.sh", "line": None, "severity": "blocker", "claim": "the script exits before it writes anything"}], "checked": checked_all}),
+    block({"findings": [{"file": "bin/tool.sh", "line": None, "severity": "blocker", "confidence": "confirmed", "claim": "the script exits before it writes anything"}], "checked": checked_all}),
     accepted=True,
     verdict="FAIL",
 )
 case(
     "minor passes",
-    block({"findings": [{"file": "README.md", "line": 1, "severity": "minor", "claim": "readme is a single lowercase word"}], "checked": checked_all}),
+    block({"findings": [{"file": "README.md", "line": 1, "severity": "minor", "confidence": "confirmed", "claim": "readme is a single lowercase word"}], "checked": checked_all}),
     accepted=True,
     verdict="PASS",
 )
@@ -101,21 +101,27 @@ case(
 )
 case(
     "invented file",
-    block({"findings": [{"file": "src/app.py", "line": 3, "severity": "major", "claim": "this file does not exist here"}], "checked": checked_all}),
+    block({"findings": [{"file": "src/app.py", "line": 3, "severity": "major", "confidence": "confirmed", "claim": "this file does not exist here"}], "checked": checked_all}),
     accepted=False,
     problem="not a file in this worktree",
 )
 case(
     "line past end",
-    block({"findings": [{"file": "bin/tool.sh", "line": 40, "severity": "major", "claim": "a line the file does not have"}], "checked": checked_all}),
+    block({"findings": [{"file": "bin/tool.sh", "line": 40, "severity": "major", "confidence": "confirmed", "claim": "a line the file does not have"}], "checked": checked_all}),
     accepted=False,
     problem="past the end",
 )
 case(
     "unknown severity",
-    block({"findings": [{"file": "bin/tool.sh", "line": 2, "severity": "critical", "claim": "severity outside the scale"}], "checked": checked_all}),
+    block({"findings": [{"file": "bin/tool.sh", "line": 2, "severity": "critical", "confidence": "confirmed", "claim": "severity outside the scale"}], "checked": checked_all}),
     accepted=False,
     problem="severity must be",
+)
+case(
+    "suspected major is advice",
+    block({"findings": [{"file": "bin/tool.sh", "line": 2, "severity": "major", "confidence": "suspected", "claim": "the command may fail in an unavailable environment"}], "checked": checked_all[:1]}),
+    accepted=True,
+    verdict="PASS",
 )
 case("not an object", "```json\n[]\n```\n", accepted=False, problem="must be an object")
 
@@ -131,7 +137,7 @@ def round_(label, verdict, files, checked, findings=()):
     return {"label": label, "profile": "p", "commit": "c" * 40, "verdict": verdict, "files": files, "checked": [{"file": f, "note": "n n n"} for f in checked], "findings": list(findings)}
 
 
-major = {"file": "bin/tool.sh", "line": 2, "severity": "major", "claim": "a real defect here", "id": "f1"}
+major = {"file": "bin/tool.sh", "line": 2, "severity": "major", "confidence": "confirmed", "claim": "a real defect here", "id": "f1"}
 minor = dict(major, severity="minor", id="f2")
 passed = round_("B", "PASS", {"bin/tool.sh": "h1"}, ["bin/tool.sh"])
 checks = [

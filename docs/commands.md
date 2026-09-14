@@ -22,7 +22,7 @@ Run `cap help` for all flags.
 | `cap check <slug>` | Check an agent's changes. |
 | `cap check --repo <project> [--base REF]` | Check project changes without an agent. |
 | `cap cleanup <slug> [profile]` | Clean up comments and readability. |
-| `cap gate <slug> [--full]` | Review the changes: gate B, or gates A and B at once with `--full`. Each returns findings; Captain computes the verdict. |
+| `cap gate <slug> [--full]` | Review the changes: gate B, or a full A+B review with `--full`. An exact current PASS is reused. Suspected findings stay visible without failing the gate. |
 | `cap step <slug> [STEP]` | Advance a task: check, verify, cleanup, gate, commit. Stops at a gate FAIL and before landing. A named step is refused until the steps before it are done. |
 | `cap commit <slug> [profile]` | Stage and commit changes. |
 | `cap land <slug> [--merge] [--squash\|--rebase\|--merge-commit]` | Push, open a PR, or merge the work. |

@@ -85,5 +85,22 @@ pass_from "$(diff_base "$tree" main)"
 commit three
 expect "commit after PASS" previous
 
+fresh
+empty_fp=$(gate_fingerprint "$tree" main)
+gate_record t A PASS "$empty_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
+gate_record t B PASS "$empty_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
+if gate_ready t "$tree" main; then
+	printf 'lint-gate-since: empty diff incorrectly reported ready\n' >&2
+	status=1
+fi
+commit two
+full_fp=$(gate_fingerprint "$tree" main)
+gate_record t A PASS "$full_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
+gate_record t B PASS "$full_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
+if ! gate_ready t "$tree" main; then
+	printf 'lint-gate-since: reviewable diff incorrectly reported not ready\n' >&2
+	status=1
+fi
+
 [ "$status" = 0 ] && printf 'lint-gate-since: plain rounds review from where the last PASS left off\n'
 exit "$status"

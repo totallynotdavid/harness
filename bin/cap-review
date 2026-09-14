@@ -34,14 +34,18 @@ Say what you verified as working too, file by file.
 End your final message with one fenced json block, exactly this shape:
 
 ```json
-{{"findings": [{{"file": "path/from/repo/root", "line": 12, "severity": "blocker", "claim": "what is wrong and the failure it causes"}}],
+{{"findings": [{{"file": "path/from/repo/root", "line": 12, "severity": "blocker", "confidence": "confirmed", "claim": "what is wrong and the failure it causes"}}],
  "checked": [{{"file": "path/from/repo/root", "note": "what you verified in this file"}}]}}
 ```
 
 severity is blocker, major or minor. line may be null when a defect has no
-single line. Every changed file above must appear in findings or in checked.
-Captain computes the verdict from this block: any blocker or major finding
-fails the gate. Do not state a verdict yourself.
+single line. confidence is confirmed or suspected. Use confirmed only when
+the claim is established by source inspection or a check. Use suspected when
+the needed command or environment is unavailable and the claim remains
+uncertain. Every changed file above must appear in findings or in checked.
+Captain computes the verdict from this block: a confirmed blocker or major
+finding fails the gate. Suspected findings remain visible as advice. Do not
+state a verdict yourself.
 """
 
 
@@ -103,7 +107,7 @@ def render(slug, label, profile, args, report, answer):
         out.append("None.")
     for f in findings:
         where = f"{f['file']}:{f['line']}" if f.get("line") else f["file"]
-        out.append(f"- [{f['severity']}] `{where}` {f['claim']} (finding {caplib.finding_id(f)})")
+        out.append(f"- [{f['severity']}, {f['confidence']}] `{where}` {f['claim']} (finding {caplib.finding_id(f)})")
     out += ["", "## Checked", ""]
     for c in report.get("checked") or []:
         out.append(f"- `{c['file']}`: {c['note']}")

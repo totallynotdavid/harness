@@ -1179,6 +1179,16 @@ gate_fingerprint() {
   gate_fingerprint_from "$tree" "$base"
 }
 
+# Files that a reviewer would see from a range, including new untracked files.
+# An empty result means the branch's content is already in its base even when
+# its commit graph still contains commits.
+reviewable_files() {
+  local tree=$1 from=$2 tracked untracked
+  tracked=$(git -C "$tree" diff --name-only "$from") || return 1
+  untracked=$(git -C "$tree" ls-files --others --exclude-standard) || return 1
+  printf '%s\n%s\n' "$tracked" "$untracked" | sed '/^$/d' | sort -u
+}
+
 # A task's round is how many times its agent has reported done. A pipeline
 # step counts only for the round it ran in, so an agent sent back to fix
 # something makes every step after it due again.
@@ -1232,6 +1242,13 @@ gate_record() {
     rm -f "$tmp"
     warn "could not record gate verdict for $slug/$label"
   fi
+}
+
+gate_passes_fingerprint() {
+  local slug=$1 label=$2 fp=$3 f=$TASKS/$1/gate.json
+  [ -f "$f" ] || return 1
+  jq -e --arg l "$label" --arg fp "$fp" \
+    '.[$l].verdict == "PASS" and .[$l].fingerprint == $fp' "$f" >/dev/null 2>&1
 }
 
 # The commit a profile's review last covered, so a plain (non-full) round
@@ -1306,6 +1323,7 @@ gate_ready() {
   # having run, so a task missing either is settled before gate_fingerprint's
   # git diff and untracked-file scan is worth paying for.
   [ "$a_v" = PASS ] && [ "$b_v" = PASS ] || return 1
+  [ -n "$(reviewable_files "$tree" "$(diff_base "$tree" "$base")")" ] || return 1
   a_fp=$(jq -r '.A.fingerprint // empty' "$f" 2>/dev/null || true)
   b_fp=$(jq -r '.B.fingerprint // empty' "$f" 2>/dev/null || true)
   cur=$(gate_fingerprint "$tree" "$base")
