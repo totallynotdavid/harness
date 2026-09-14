@@ -9,7 +9,9 @@ project=""
 # Locked for read consistency against a concurrent mutator, but never
 # claims ownership: an inspection is not the session-length commitment
 # --take makes elsewhere.
+slug=""
 if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
+	slug=$1
 	task_load "$1"
 	task_lock "$1"
 	repo=$CAP_TREE
@@ -48,6 +50,7 @@ changed=$({
 } | sort -u)
 
 [ -n "$changed" ] || {
+	[ -z "$slug" ] || step_record "$slug" check 0
 	echo "no changes against $base"
 	exit 0
 }
@@ -259,4 +262,5 @@ done
 [ "$sib" = 0 ] && echo "  ok"
 
 printf '\n%s deterministic finding(s)\n' "$findings"
+[ -z "$slug" ] || step_record "$slug" check "$findings"
 [ "$findings" = 0 ]

@@ -64,3 +64,4 @@ If a section does not need changes, leave it alone."
 # Not exec: that would discard task_lock's EXIT trap, so a message queued
 # while this command holds the lock would never flush.
 "$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE"
+step_record "$slug" cleanup "done"

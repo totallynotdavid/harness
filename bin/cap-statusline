@@ -13,7 +13,9 @@
 #
 # This runs on every render. It must never fail and never block: a status line
 # that errors is a status line the user stops trusting.
-CAP_HOME=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+# A session Captain dispatched passes its own CAP_HOME, so the reading lands
+# in the Captain that is waiting on it.
+CAP_HOME=${CAP_HOME:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}
 export CAP_HOME
 
 exec python3 -c '
@@ -41,8 +43,8 @@ def window(name):
     if not isinstance(w, dict):
         return None
     pct = w.get("used_percentage")
-    # Explicit half-away-from-zero, matching usage_write in bin/lib.sh.
-    # mise run check:usage-shape asserts they agree.
+    # Explicit half-away-from-zero, not Python round, which rounds half to
+    # even. mise run check:usage-shape asserts the recorded values.
     if isinstance(pct, (int, float)):
         pct = math.floor(pct + 0.5)
     return {"pct": pct, "resets_at": w.get("resets_at")}
@@ -92,6 +94,9 @@ try:
         "five_hour": window("five_hour"),
         "seven_day": window("seven_day"),
         "spend_limit": window("spend_limit"),
+        # How full the context of this session is. cap ask reads it to decide
+        # whether a session a limit interrupted is small enough to resume.
+        "ctx_pct": math.floor(used + 0.5) if isinstance(used, (int, float)) else None,
     }
 
     d_usage = os.path.join(home, "state", "usage")
@@ -107,7 +112,7 @@ try:
     except Exception:
         prev = None
     if prev is not None:
-        same = all(prev.get(k) == snap[k] for k in ("five_hour", "seven_day", "spend_limit", "model_id"))
+        same = all(prev.get(k) == snap[k] for k in ("five_hour", "seven_day", "spend_limit", "model_id", "ctx_pct"))
         if same and snap["at"] - int(prev.get("at", 0)) < 20:
             sys.exit(0)
 

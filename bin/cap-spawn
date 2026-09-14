@@ -123,6 +123,9 @@ if [ "$harness_set" = 0 ] &&
   # -e on the command line beats the profile's own default.
   [ -n "$effort" ] || [ "$profile_effort" = '-' ] || effort=$profile_effort
 fi
+# A profile without an effort of its own runs at its role's, never at
+# whatever the harness defaults to.
+[ -n "$effort" ] || effort=$(role_effort "$role")
 
 # A spawn on an exhausted machine does not fail, it thrashes. Under swap
 # pressure a 17-second build runs for hours holding its whole working set,
@@ -209,32 +212,21 @@ CAP_STARTED=$(now)
 CAP_OWNER=$(session_identity)
 EOF
 
-# The ownership guard travels on the session's command line, not in the
-# worktree. A rule the agent is told costs context and can be ignored; a
-# PreToolUse hook cannot. claude's --settings takes the JSON itself, so
-# Captain's hook config never becomes a file the project could commit and
-# never needs an exclude entry in a file Captain does not own.
-guard_settings=""
+# The ownership guard travels on the session's command line (cap-launch), not
+# in the worktree. A rule the agent is told costs context and can be ignored;
+# a PreToolUse hook cannot.
+guard=()
 if [ -n "$owns" ]; then
   read -r -a owns_list <<<"$owns"
   owns_write "$slug" "${owns_list[@]}"
-
-  # Deliberately $CAP_HOME: this path outlives the worktree it may be spawned
-  # from, and must stay outside the reach of the agent it guards.
-  guard_settings=$(jq -nc --arg cmd "$CAP_HOME/bin/hooks/guard-task-paths.sh" --arg slug "$slug" '{
-    hooks: {
-      PreToolUse: [{
-        matcher: "Edit|Write|NotebookEdit|MultiEdit",
-        hooks: [{ type: "command", command: ($cmd + " " + $slug) }]
-      }]
-    }
-  }')
+  guard=(--guard)
 fi
 
-# Make the worktree usable before the agent is told it is ready. Best effort:
-# a project whose setup cannot be inferred is not a project to refuse, and a
-# failed install is often the very thing the task exists to fix, so both are
-# reported rather than fatal.
+# Make the worktree usable before the agent is told it is ready. A worktree
+# the project cannot install into is not ready, and an agent started in one
+# spends its session discovering that one failed turn at a time, so a failed
+# install refuses the spawn here. A project whose setup cannot be inferred
+# is not refused: nothing was tried, so nothing is known to be broken.
 preflight_note=""
 if [ "$kind" = ship ]; then
   preflight_tools "$project"
@@ -245,19 +237,18 @@ if [ "$kind" = ship ]; then
   if [ -f "$repo/.env" ] && [ ! -e "$tree/.env" ]; then
     cp "$repo/.env" "$tree/.env"
   fi
-  plog=$(mktemp)
-  if preflight_deps "$tree" >"$plog" 2>&1; then
-    preflight_note="Dependencies are installed. The worktree is ready to build."
-  elif [ -s "$plog" ]; then
-    preflight_note="Dependency install did not complete. Its output:
-
-\`\`\`
-$(tail -20 "$plog")
-\`\`\`"
-    warn "$slug: dependency install did not complete; see the contract"
-  else
-    preflight_note="Captain could not tell how to install this project's dependencies. Set it up yourself if the task needs it."
-  fi
+  plog=$dir/preflight.log
+  prc=0
+  preflight_deps "$tree" >"$plog" 2>&1 || prc=$?
+  case $prc in
+  0) preflight_note="Dependencies are installed. The worktree is ready to build." ;;
+  2) preflight_note="Captain could not tell how to install this project's dependencies. Set it up yourself if the task needs it." ;;
+  *)
+    printf 'cap: dependency install failed in %s:\n' "$tree" >&2
+    tail -20 "$plog" | sed 's/^/  /' >&2
+    die "$slug: not starting an agent in a worktree that cannot install; fix the install on $base first"
+    ;;
+  esac
   rm -f "$plog"
 fi
 
@@ -296,46 +287,12 @@ This protocol is the same for ship and scout tasks. It is in addition to, not in
 $(cat "$dir/brief.md")
 EOF
 
-harness_trust "$harness" "$tree"
-
-mapfile -t env_scrub < <(cap_env_scrub)
-scrub=(env "${env_scrub[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
 kick="Read $dir/contract.md and carry it out."
 
-margs=()
-[ "$model" != '-' ] && margs=(--model "$model")
-
-case $harness in
-  claude)
-    # claude's --effort accepts low|medium|high|xhigh|max and falls back to
-    # the active model's highest supported level on its own (confirmed:
-    # notes/captain/effort-levels.md) - no validation needed here.
-    [ -n "$effort" ] && margs+=(--effort "$effort")
-    [ -n "$guard_settings" ] && margs+=(--settings "$guard_settings")
-    # shellcheck disable=SC2206 # CAP_AGENT_FLAGS is a flag string, split on purpose
-    cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$kick")
-    ;;
-  codex)
-    # codex has no --effort flag; model_reasoning_effort is a config override,
-    # and which levels a model actually accepts varies by model (e.g. luna
-    # has no "ultra") with no clear client-side rejection of a bad value
-    # (notes/captain/effort-levels.md) - pass through and trust the caller.
-    [ -n "$effort" ] && margs+=(-c "model_reasoning_effort=$effort")
-    # The guard is a claude hook. codex has no equivalent, and a partition the
-    # captain asked for that is not actually in force has to be said out loud.
-    [ -z "$guard_settings" ] || warn "$slug: --owns is not enforced under codex; the guard is a claude hook"
-    cmd=("${scrub[@]}" codex "${margs[@]}"
-         --dangerously-bypass-approvals-and-sandbox "$kick")
-    ;;
-  *)
-    die "unknown harness '$harness'"
-    ;;
-esac
-
-require_herdr
-read -r pane tabid <<<"$(herdr_open "$tree" "$slug")"
-pane_launch "$pane" "${cmd[@]}"
-printf 'CAP_PANE=%s\nCAP_TAB=%s\n' "$pane" "$tabid" >> "$dir/task.env"
+read -r pane tabid session_id <<<"$("$CAP_BIN/cap-launch" --task "$slug" --dir "$tree" \
+  --harness "$harness" --model "$model" --effort "$effort" "${guard[@]}" "$kick")"
+[ -n "$pane" ] || die "$slug: could not start the agent session"
+printf 'CAP_PANE=%s\nCAP_TAB=%s\nCAP_SESSION_ID=%s\n' "$pane" "$tabid" "$session_id" >> "$dir/task.env"
 
 done=1
 printf 'spawned %s  project=%s  model=%s(%s)  kind=%s  pane=%s\n' \

@@ -40,6 +40,10 @@ case "$resolved" in
 esac
 
 case "$resolved" in
+"$hub"/paper-cuts.md | "$hub"/paper-cuts.jsonl)
+  printf 'BLOCKED: %s is the paper-cut ledger. Use cap papercut add <subject> "<text>" or cap papercut close <id> "<fix>".\n' "$path" >&2
+  exit 2
+  ;;
 "$hub"/*) exit 0 ;;
 "$work_root"/*)
   printf 'BLOCKED: %s cannot write to %s. This file belongs to an agent. Use cap send, cap land, or cap drop instead. Set CAP_ALLOW_HUB_WRITE=1 to override.\n' "$tool" "$path" >&2
