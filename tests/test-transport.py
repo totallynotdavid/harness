@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lint-transport - exercise transport, review ownership and completion state."""
+"""test-transport - exercise transport, review ownership and completion state."""
 
 import importlib.util
 import io
@@ -21,7 +21,7 @@ import caplib  # noqa: E402
 
 
 def fail(message):
-    raise SystemExit(f"lint-transport: {message}")
+    raise SystemExit(f"test-transport: {message}")
 
 
 def test_prompt_transport():
@@ -164,4 +164,4 @@ test_library_source_is_pure()
 test_review_manifest()
 if "cap_completion_report" not in (ROOT / "bin/hooks/crew-status.sh").read_text():
     fail("crew-status hook does not read completion state")
-print("lint-transport: prompts, review ownership and completions are durable")
+print("test-transport: prompts, review ownership and completions are durable")

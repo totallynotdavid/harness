@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lint-usage-shape - assert bin/cap-statusline writes the state/usage record
+# test-usage-shape - assert bin/cap-statusline writes the state/usage record
 # that usage_read and bin/caplib.py read.
 #
 # The status line is the only writer of a claude quota reading. A key rename
@@ -40,13 +40,13 @@ check_reading() {
 	reading "$sid" "$pct" 1 "$pct"
 	for key in .at .harness .five_hour.pct .five_hour.resets_at .seven_day.pct .ctx_pct; do
 		if [ "$(jq "$key == null" "$CAP_USAGE_DIR/$sid.json")" = true ]; then
-			printf 'lint-usage-shape: cap-statusline wrote no %s\n' "$key" >&2
+			printf 'test-usage-shape: cap-statusline wrote no %s\n' "$key" >&2
 			status=1
 		fi
 	done
 	got=$(jq .five_hour.pct "$CAP_USAGE_DIR/$sid.json")
 	if [ "$got" != "$want" ]; then
-		printf 'lint-usage-shape: %s%% recorded as %s, want %s\n' "$pct" "$got" "$want" >&2
+			printf 'test-usage-shape: %s%% recorded as %s, want %s\n' "$pct" "$got" "$want" >&2
 		status=1
 	fi
 	rm -f "$CAP_USAGE_DIR/$sid.json"
@@ -67,19 +67,19 @@ jq -n --argjson at "$(($(now) - ttl - 100))" '{at: $at, session_id: "stale", har
 reading fresh-low 2 3 10
 read -r pct _ _ <<<"$(usage_read claude)"
 if [ "$pct" = 93 ]; then
-	printf 'lint-usage-shape: a spend_limit older than CAP_USAGE_TTL (%ss) still won usage_read\n' "$ttl" >&2
+		printf 'test-usage-shape: a spend_limit older than CAP_USAGE_TTL (%ss) still won usage_read\n' "$ttl" >&2
 	status=1
 fi
 rm -f "$CAP_USAGE_DIR"/*.json
 
-reading live 2 3 10 40
-sleep 1
-reading newer 2 3 10
+at=$(now)
+jq -n --argjson at "$at" '{at: $at, session_id: "live", harness: "claude", five_hour: {pct: 2, resets_at: 1900000000}, seven_day: {pct: 3, resets_at: 1900003600}, spend_limit: {pct: 40, resets_at: 1900000000}}' >"$CAP_USAGE_DIR/live.json"
+jq -n --argjson at "$((at + 1))" '{at: $at, session_id: "newer", harness: "claude", five_hour: {pct: 2, resets_at: 1900000000}, seven_day: {pct: 3, resets_at: 1900003600}, spend_limit: null}' >"$CAP_USAGE_DIR/newer.json"
 read -r pct _ _ <<<"$(usage_read claude)"
 if [ "$pct" != 40 ]; then
-	printf 'lint-usage-shape: a still-fresh spend_limit (40) did not survive a newer record with none (got %s)\n' "$pct" >&2
+	printf 'test-usage-shape: a still-fresh spend_limit (40) did not survive a newer record with none (got %s)\n' "$pct" >&2
 	status=1
 fi
 
-[ "$status" = 0 ] && printf 'lint-usage-shape: %d readings recorded in the shape usage_read reads, spend_limit staleness holds\n' "$n"
+[ "$status" = 0 ] && printf 'test-usage-shape: %d readings recorded in the shape usage_read reads, spend_limit staleness holds\n' "$n"
 exit "$status"

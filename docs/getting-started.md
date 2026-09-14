@@ -13,6 +13,13 @@ is active, checks that its tools are installed, and validates the task graph. Ru
 `cap doctor` also installs a `~/.local/bin/cap` link to this checkout so later shells can
 find Captain.
 
+Run the behavior tests while developing, or run the full repository gate before landing:
+
+```sh
+mise run test
+mise run check
+```
+
 Point Claude Code's status line at Captain, in `~/.claude/settings.json`. Captain reads the
 account's rate-limit windows from what the harness already hands that line, and uses them
 to size every agent it dispatches:

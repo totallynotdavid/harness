@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# lint-gate-since - assert where a plain cap gate round reviews from, after
+# test-gate-since - assert where a plain cap gate round reviews from, after
 # each kind of earlier round. Every case records its PASS the way cap gate
 # does (fingerprint over the range reviewed, HEAD, and where the range began)
 # and checks gate_review_since's answer: nothing new, the last reviewed
 # commit, or the full branch.
 set -euo pipefail
 
-bin=$(dirname "$(readlink -f "$0")")
+bin=$(cd "$(dirname "$(readlink -f "$0")")/../bin" && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/home/config" "$scratch/home/state/tasks"
@@ -48,7 +48,7 @@ expect() {
 	head) [ "$got" = "$(git -C "$tree" rev-parse HEAD)" ] && return 0 ;;
 	previous) [ "$got" = "$(git -C "$tree" rev-parse HEAD~1)" ] && return 0 ;;
 	esac
-	printf 'lint-gate-since: %s: got <%s>, want %s\n' "$name" "$got" "$want" >&2
+	printf 'test-gate-since: %s: got <%s>, want %s\n' "$name" "$got" "$want" >&2
 	status=1
 }
 
@@ -90,7 +90,7 @@ empty_fp=$(gate_fingerprint "$tree" main)
 gate_record t A PASS "$empty_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
 gate_record t B PASS "$empty_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
 if gate_ready t "$tree" main; then
-	printf 'lint-gate-since: empty diff incorrectly reported ready\n' >&2
+	printf 'test-gate-since: empty diff incorrectly reported ready\n' >&2
 	status=1
 fi
 commit two
@@ -98,9 +98,9 @@ full_fp=$(gate_fingerprint "$tree" main)
 gate_record t A PASS "$full_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
 gate_record t B PASS "$full_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
 if ! gate_ready t "$tree" main; then
-	printf 'lint-gate-since: reviewable diff incorrectly reported not ready\n' >&2
+	printf 'test-gate-since: reviewable diff incorrectly reported not ready\n' >&2
 	status=1
 fi
 
-[ "$status" = 0 ] && printf 'lint-gate-since: plain rounds review from where the last PASS left off\n'
+[ "$status" = 0 ] && printf 'test-gate-since: plain rounds review from where the last PASS left off\n'
 exit "$status"

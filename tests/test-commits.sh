@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# lint-commits - exercise the shared commit message rules.
+# test-commits - exercise the shared commit message rules.
 set -euo pipefail
 
-bin=$(dirname "$(readlink -f "$0")")
+bin=$(cd "$(dirname "$(readlink -f "$0")")/../bin" && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/home/config"
@@ -23,7 +23,7 @@ git -C "$tree" commit -q -m 'Add a useful change' -m 'Why: Keep the fixture focu
 
 good=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_rule_report "$1" main' "$bin/lib.sh" "$tree")
 [ -z "$good" ] || {
-	printf 'lint-commits: valid message was rejected:\n%s\n' "$good" >&2
+	printf 'test-commits: valid message was rejected:\n%s\n' "$good" >&2
 	exit 1
 }
 
@@ -55,7 +55,7 @@ cat >"$plan" <<'EOF'
 EOF
 good_plan=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_report "$1" main "$2"' "$bin/lib.sh" "$planned" "$plan")
 [ -z "$good_plan" ] || {
-	printf 'lint-commits: valid commit plan was rejected:\n%s\n' "$good_plan" >&2
+	printf 'test-commits: valid commit plan was rejected:\n%s\n' "$good_plan" >&2
 	exit 1
 }
 
@@ -65,4 +65,4 @@ EOF
 bad_plan=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_report "$1" main "$2"' "$bin/lib.sh" "$planned" "$plan")
 grep -q 'group(s)' <<<"$bad_plan"
 
-printf 'lint-commits: cap commit and cap land share message checks\n'
+printf 'test-commits: cap commit and cap land share message checks\n'

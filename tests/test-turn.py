@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lint-turn - assert how a dispatcher reads a finished turn, across payload shapes.
+"""test-turn - assert how a dispatcher reads a finished turn, across payload shapes.
 
 Every case here is a turn shape a harness produced live or documents: an
 answer in last_assistant_message, a turn whose final message was a tool call,
@@ -15,7 +15,8 @@ import sys
 import tempfile
 
 sys.dont_write_bytecode = True
-BIN = os.path.dirname(os.path.realpath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+BIN = os.path.join(ROOT, "bin")
 
 # A scratch Captain, so profile blocks and resume records never land in the
 # real state/ a captain reads.
@@ -206,6 +207,6 @@ check("reviewer keys", (caplib.pending_resume(profile, key_a)[0], caplib.pending
 shutil.rmtree(scratch, ignore_errors=True)
 if failures:
     for f in failures:
-        print(f"lint-turn: {f}", file=sys.stderr)
+        print(f"test-turn: {f}", file=sys.stderr)
     sys.exit(1)
-print("lint-turn: turn payloads, fallbacks, failures and token counts read as what they are")
+print("test-turn: turn payloads, fallbacks, failures and token counts read as what they are")

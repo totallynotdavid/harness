@@ -44,7 +44,7 @@ def window(name):
         return None
     pct = w.get("used_percentage")
     # Explicit half-away-from-zero, not Python round, which rounds half to
-    # even. mise run check:usage-shape asserts the recorded values.
+    # even. mise run test asserts the recorded values.
     if isinstance(pct, (int, float)):
         pct = math.floor(pct + 0.5)
     return {"pct": pct, "resets_at": w.get("resets_at")}

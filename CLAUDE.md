@@ -40,9 +40,9 @@ live repro) and commit it. Reserve `cap send` for defects and design decisions t
 judgment.
 
 A recurring defect class - the same shape of bug a gate finds twice - becomes a
-deterministic check (`bin/lint-*`, wired into `mise.toml`), not a second reminder to look
-for it. A gate result is re-verified live (a real repro, not the diff read again) before
-it is trusted, every round, since a passing round can still be wrong.
+deterministic static check (`tests/static/lint-*`, wired into `mise.toml`), not a second
+reminder to look for it. A gate result is re-verified live (a real repro, not the diff read
+again) before it is trusted, every round, since a passing round can still be wrong.
 
 Land, commit, and push a task before starting the next one. Don't let a worktree sit
 finished-but-undelivered while attention moves elsewhere.

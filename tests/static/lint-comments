@@ -2,9 +2,9 @@
 # lint-comments - enforce current-contract comments.
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "$0")")/.."
+cd "$(dirname "$(readlink -f "$0")")/../.."
 
-files=(bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/lint-* bin/hooks/*.sh)
+files=(bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/hooks/*.sh)
 pattern='^[[:space:]]*#.*(used to|previously|no longer|before this|originally|was (failing|timing|broken)|had to be done|left over|historical|incident)'
 matches=$(grep -nE -i "$pattern" "${files[@]}" || true)
 

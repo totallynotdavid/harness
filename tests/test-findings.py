@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lint-findings - assert cap gate accepts a review only when it covers the diff,
+"""test-findings - assert cap gate accepts a review only when it covers the diff,
 and computes the verdict a reader would compute from its findings.
 
 A review that states a verdict with nothing behind it is the failure this
@@ -18,7 +18,8 @@ import sys
 import tempfile
 
 sys.dont_write_bytecode = True
-BIN = os.path.dirname(os.path.realpath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+BIN = os.path.join(ROOT, "bin")
 sys.path.insert(0, BIN)
 import caplib  # noqa: E402
 
@@ -182,6 +183,6 @@ shutil.rmtree(hub, ignore_errors=True)
 shutil.rmtree(tree, ignore_errors=True)
 if failures:
     for f in failures:
-        print(f"lint-findings: {f}", file=sys.stderr)
+        print(f"test-findings: {f}", file=sys.stderr)
     sys.exit(1)
-print("lint-findings: reports are accepted only with coverage, and verdicts follow findings")
+print("test-findings: reports are accepted only with coverage, and verdicts follow findings")

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# lint-resources - exercise stack teardown and decaying peak memory.
+# test-resources - exercise stack teardown and decaying peak memory.
 set -euo pipefail
 
-bin=$(dirname "$(readlink -f "$0")")
+bin=$(cd "$(dirname "$(readlink -f "$0")")/../bin" && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/home/config" "$scratch/fake-bin"
@@ -36,4 +36,4 @@ CAP_HOME="$scratch/home" bash -c '
   [ "$(cat "$PEAKS/sample")" = 3000 ]
 ' "$bin/lib.sh" "$scratch/peaks"
 
-printf 'lint-resources: dropped stacks stop and peak memory decays\n'
+printf 'test-resources: dropped stacks stop and peak memory decays\n'

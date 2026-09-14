@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Run Captain's behavior tests. Pass a test name to run a focused selection.
+set -euo pipefail
+
+root=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+verbose=0
+filters=()
+
+while [ "$#" -gt 0 ]; do
+  case $1 in
+  --verbose) verbose=1; shift ;;
+  --list)
+    find "$root/tests" -maxdepth 1 -type f \( -name 'test-*.sh' -o -name 'test-*.py' \) -printf '%f\n' | sort
+    exit 0
+    ;;
+  -*)
+    printf 'usage: tests/run [--verbose|--list] [test-name ...]\n' >&2
+    exit 2
+    ;;
+  *) filters+=("$1"); shift ;;
+  esac
+done
+
+mapfile -t all < <(find "$root/tests" -maxdepth 1 -type f \( -name 'test-*.sh' -o -name 'test-*.py' \) -print | sort)
+selected=()
+for path in "${all[@]}"; do
+  name=${path##*/}
+  [ "${#filters[@]}" -gt 0 ] || {
+    selected+=("$path")
+    continue
+  }
+  for filter in "${filters[@]}"; do
+    case $name in
+    "$filter" | "$filter.sh" | "$filter.py" | *"$filter"*)
+      selected+=("$path")
+      break
+      ;;
+    esac
+  done
+done
+
+[ "${#selected[@]}" -gt 0 ] || {
+  printf 'tests/run: no tests match the selection\n' >&2
+  exit 2
+}
+
+printf 'TAP version 13\n1..%s\n' "${#selected[@]}"
+status=0
+n=0
+for path in "${selected[@]}"; do
+  n=$((n + 1))
+  name=${path##*/}
+  case $path in
+  *.py) command=(python3 "$path") ;;
+  *) command=(bash "$path") ;;
+  esac
+
+  if output=$(PYTHONDONTWRITEBYTECODE=1 "${command[@]}" 2>&1); then
+    printf 'ok %s - %s\n' "$n" "$name"
+    [ "$verbose" = 1 ] && printf '%s\n' "$output"
+  else
+    rc=$?
+    printf 'not ok %s - %s (exit %s)\n' "$n" "$name" "$rc"
+    [ -z "$output" ] || printf '%s\n' "$output" | sed 's/^/# /'
+    status=1
+  fi
+done
+
+exit "$status"

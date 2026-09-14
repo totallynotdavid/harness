@@ -2,9 +2,8 @@
 """cap-papercut - log and list open friction in Captain itself.
 
 paper-cuts.jsonl is the ledger of open bugs. paper-cuts.md is generated from it,
-and mise run check:papercuts fails when the two disagree, so the markdown is
-never the place an entry is written. Closing an entry removes it from both
-files.
+and mise run test fails when the two disagree, so the markdown is never the
+place an entry is written. Closing an entry removes it from both files.
 """
 
 import contextlib

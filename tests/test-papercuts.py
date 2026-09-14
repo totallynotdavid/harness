@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lint-papercuts - fail when paper-cuts.md is not what paper-cuts.jsonl renders to.
+"""test-papercuts - fail when paper-cuts.md is not what paper-cuts.jsonl renders to.
 
 The markdown is output. An entry written into it by hand never reaches the
 ledger, so it would be lost the next time cap papercut writes, and this is
@@ -12,8 +12,9 @@ import os
 import sys
 
 sys.dont_write_bytecode = True
-BIN = os.path.dirname(os.path.realpath(__file__))
-os.environ.setdefault("CAP_HOME", os.path.dirname(BIN))
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+BIN = os.path.join(ROOT, "bin")
+os.environ.setdefault("CAP_HOME", ROOT)
 sys.path.insert(0, BIN)
 spec = importlib.util.spec_from_loader("cap_papercut", importlib.machinery.SourceFileLoader("cap_papercut", os.path.join(BIN, "cap-papercut")))
 papercut = importlib.util.module_from_spec(spec)
@@ -41,6 +42,6 @@ if on_disk != papercut.render(entries):
 
 if problems:
     for p in problems:
-        print(f"lint-papercuts: {p}", file=sys.stderr)
+        print(f"test-papercuts: {p}", file=sys.stderr)
     sys.exit(1)
-print(f"lint-papercuts: {len(entries)} entries, paper-cuts.md is their rendering")
+print(f"test-papercuts: {len(entries)} entries, paper-cuts.md is their rendering")

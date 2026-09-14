@@ -6,7 +6,7 @@
 # docs/pipeline-notes.md, "Task state is not a log word").
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "$0")")/.."
+cd "$(dirname "$(readlink -f "$0")")/../.."
 
 files=(bin/cap-crew bin/hooks/crew-status.sh)
 

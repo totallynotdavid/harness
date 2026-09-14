@@ -6,9 +6,9 @@
 # or a read added elsewhere - those stay uncovered.
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "$0")")/.."
+cd "$(dirname "$(readlink -f "$0")")/../.."
 
-mapfile -t files < <(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/lint-* bin/hooks/*.sh)
+mapfile -t files < <(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/hooks/*.sh)
 
 status=0
 for f in "${files[@]}"; do

@@ -5,7 +5,7 @@
 # the caller when false. shellcheck has no diagnostic for this.
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "$0")")/.."
+cd "$(dirname "$(readlink -f "$0")")/../.."
 
 mapfile -t files < <(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/hooks/*.sh)
 

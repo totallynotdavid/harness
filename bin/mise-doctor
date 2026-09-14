@@ -35,7 +35,7 @@ if [ "$failed" -eq 0 ]; then
 
   mise -C "$root" tasks validate || problem "mise task validation failed"
   tasks=$(mise -C "$root" tasks ls --local --name-only)
-  for task in check lint doctor; do
+  for task in check lint doctor test; do
     printf '%s\n' "$tasks" | grep -Fxq "$task" || problem "missing repository task: $task"
   done
 fi
