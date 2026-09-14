@@ -55,6 +55,9 @@ fi
 
 pane_live "$slug" && pane_kill "$slug"
 
+compose_down "$CAP_TREE" ||
+	die "could not stop $slug's dev stack; worktree kept at $CAP_TREE"
+
 git -C "$CAP_REPO" worktree remove --force "$CAP_TREE" 2>/dev/null ||
 	rm -rf "$CAP_TREE"
 

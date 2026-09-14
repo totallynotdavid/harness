@@ -27,6 +27,7 @@ depends = [
   "check:gate-since",
   "check:turn",
   "check:commits",
+  "check:resources",
   "check:papercuts",
   "check:syntax",
 ]
@@ -70,6 +71,10 @@ run = "bin/lint-turn"
 [tasks."check:commits"]
 description = "assert cap commit and cap land share commit message rules"
 run = "bin/lint-commits"
+
+[tasks."check:resources"]
+description = "assert dropped stacks are torn down and memory peaks decay"
+run = "bin/lint-resources"
 
 [tasks."check:papercuts"]
 description = "fail when paper-cuts.md is not the rendering of paper-cuts.jsonl, or an entry's subject is not part of Captain"

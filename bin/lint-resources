@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# lint-resources - exercise stack teardown and decaying peak memory.
+set -euo pipefail
+
+bin=$(dirname "$(readlink -f "$0")")
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/home/config" "$scratch/fake-bin"
+: >"$scratch/home/config/captain.conf"
+
+tree=$scratch/stack-task
+mkdir -p "$tree"
+: >"$tree/docker-compose.yml"
+cat >"$scratch/fake-bin/docker" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = compose ] && [ "${2:-}" = version ]; then
+  exit 0
+fi
+printf '%s|%s\n' "${COMPOSE_PROJECT_NAME:-}" "$*" >>"$CAP_TEST_LOG"
+EOF
+chmod +x "$scratch/fake-bin/docker"
+
+CAP_HOME="$scratch/home" CAP_TEST_LOG="$scratch/compose.log" PATH="$scratch/fake-bin:$PATH" \
+  bash -c '. "$0"; compose_down "$1"' "$bin/lib.sh" "$tree"
+grep -q '^stack-task|compose -f '"$tree"'/docker-compose.yml down --remove-orphans$' "$scratch/compose.log"
+
+CAP_HOME="$scratch/home" bash -c '
+  . "$0"
+  PEAKS="$1"
+  project_peak_record sample 2910
+  project_peak_record sample 1839
+  [ "$(cat "$PEAKS/sample")" = 2643 ]
+  project_peak_record sample 2470
+  [ "$(cat "$PEAKS/sample")" = 2600 ]
+  project_peak_record sample 3000
+  [ "$(cat "$PEAKS/sample")" = 3000 ]
+' "$bin/lib.sh" "$scratch/peaks"
+
+printf 'lint-resources: dropped stacks stop and peak memory decays\n'

@@ -131,6 +131,71 @@ preflight_tools() {
   done <"$f"
 }
 
+# A task may own a dev stack even when its checks are not what started it.
+# Resolve the teardown command while the worktree still exists, because its
+# mise file and compose configuration disappear with the task.
+compose_task_exists() {
+  local tree=$1 want=$2 tasks
+  [ -f "$tree/mise.toml" ] || return 1
+  tasks=$(
+    {
+      grep -oE '^\[tasks\."?[A-Za-z0-9_:.-]+"?\]' "$tree/mise.toml" || true
+      awk '/^\[tasks\]$/{f=1;next} /^\[/{f=0} f && /^[A-Za-z0-9_-]+[[:space:]]*=/{sub(/[[:space:]]*=.*/,""); print}' "$tree/mise.toml"
+    } | sed -E 's/^\[tasks\."?([^"\]]+)"?\]/\1/' | sort -u
+  )
+  printf '%s\n' "$tasks" | grep -qxF "$want"
+}
+
+compose_file() {
+  local tree=$1 files
+  files=$(find "$tree" -maxdepth 3 -type f \( \
+    -name compose.yaml -o -name compose.yml -o \
+    -name docker-compose.yaml -o -name docker-compose.yml \
+  \) -print 2>/dev/null || true)
+  [ -n "$files" ] || return 0
+  printf '%s\n' "$files" | sort | head -1
+}
+
+compose_engine() {
+  if have docker && docker compose version >/dev/null 2>&1; then
+    printf docker
+    return 0
+  fi
+  if have podman && podman compose version >/dev/null 2>&1; then
+    printf podman
+    return 0
+  fi
+  return 1
+}
+
+# Stop a task-owned dev stack before cap-drop removes the files needed to find
+# it. A project-specific dev:down task gets first choice; the compose fallback
+# uses the worktree basename as the same stable project name the task used.
+compose_down() {
+  local tree=$1 file engine project_name
+
+  if compose_task_exists "$tree" dev:down; then
+    if (cd "$tree" && mise run dev:down </dev/null); then
+      return 0
+    fi
+    warn "$tree: mise run dev:down failed; trying compose teardown"
+  fi
+
+  file=$(compose_file "$tree")
+  [ -n "$file" ] || return 0
+  engine=$(compose_engine) || {
+    warn "$tree: compose files found but no docker or podman compose engine is available"
+    return 1
+  }
+  project_name=$(basename "$(readlink -f "$tree")" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g; s/^[^a-z0-9]*//; s/[^a-z0-9]*$//')
+  [ -n "$project_name" ] || project_name=cap-task
+  if (cd "$tree" && COMPOSE_PROJECT_NAME="$project_name" "$engine" compose -f "$file" down --remove-orphans </dev/null); then
+    return 0
+  fi
+  warn "$tree: could not stop the compose stack"
+  return 1
+}
+
 # Which commits the project's own tooling has actually passed on. cap-spawn
 # reads this to refuse forking a second task from a base nothing has verified.
 VERIFIED=$CAP_HOME/state/verified
@@ -175,18 +240,19 @@ project_peak_mb() {
   esac
 }
 
-# Keep the high-water mark, never the latest reading. A run that happened to be
-# cheap must not license a fan-out the expensive run cannot survive.
+# Keep a decaying maximum. A high reading still protects the next wave, while
+# repeated lower readings bring the estimate back toward what the project now
+# costs instead of preserving one unlucky build forever.
 project_peak_record() {
-  local project=$1 mb=$2 cur=0
+  local project=$1 mb=$2 cur=0 next
   case $mb in '' | *[!0-9]*) return 0 ;; esac
   mkdir -p "$PEAKS"
-  # Compare against what was recorded, never against the fallback. Comparing
-  # with project_peak_mb means a first real reading below the default is
-  # discarded and the guess survives forever.
   cur=$(cat "$PEAKS/$project" 2>/dev/null || echo 0)
   case $cur in '' | *[!0-9]*) cur=0 ;; esac
-  if [ "$mb" -gt "$cur" ]; then printf '%s\n' "$mb" >"$PEAKS/$project"; fi
+  [ "$cur" -gt 0 ] || { printf '%s\n' "$mb" >"$PEAKS/$project"; return 0; }
+  next=$(( (cur * 3 + mb + 3) / 4 ))
+  [ "$next" -ge "$mb" ] || next=$mb
+  printf '%s\n' "$next" >"$PEAKS/$project"
 }
 
 # How many more tasks this box can hold for a project, right now.
