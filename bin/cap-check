@@ -2,49 +2,57 @@
 # cap-check - run checks for a task or project.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
+usage="usage: cap check <slug> | cap check --repo <project> [--base REF]"
+
 repo=""
 base=""
 project=""
+slug=""
 
 resolve_target() {
-	# Lock inspection for consistency, without claiming session ownership.
-	slug=""
 	if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
+		[ "$#" = 1 ] || die "$usage"
 		slug=$1
 		task_load "$1"
+
+		# Check the task under its lock without claiming session ownership.
 		task_lock "$1"
+
 		repo=$CAP_TREE
 		base=$CAP_BASE
 		project=$CAP_PROJECT
-		shift
-	else
-		while [ $# -gt 0 ]; do
-			case $1 in
-			--repo)
-				project=${2:?}
-				repo=$(proj_path "$2")
-				shift 2
-				;;
-			--base)
-				base=${2:?}
-				shift 2
-				;;
-			*) die "usage: cap check <slug> | cap check --repo <project> [--base REF]" ;;
-			esac
-		done
+		return
 	fi
+
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--repo)
+			project=${2:?}
+			repo=$(proj_path "$2")
+			shift 2
+			;;
+		--base)
+			base=${2:?}
+			shift 2
+			;;
+		*)
+			die "$usage"
+			;;
+		esac
+	done
 }
 
 resolve_target "$@"
 
-[ -n "$repo" ] || die "usage: cap check <slug> | cap check --repo <project> [--base REF]"
+[ -n "$repo" ] || die "$usage"
+
 : "${base:=$(git_base "$repo")}"
 cap_completion_start check "${slug:-$project}"
 
-git -C "$repo" rev-parse --verify -q "$base" >/dev/null || die "no base ref '$base'"
+git -C "$repo" rev-parse --verify -q "$base" >/dev/null ||
+	die "no base ref '$base'"
 
 conv=$CAP_HOME/cases/$project/conventions.md
-
 diff_from=$(diff_base "$repo" "$base")
 
 changed=$({
@@ -65,53 +73,55 @@ note() {
 	printf '  ! %s\n' "$*"
 }
 
-# Find matches outside changed files.
-#
-# The second argument caps how many matching files still count as a lead, and 0
-# means no cap. A basename is a signal only while it is distinctive: on a
-# repository that vendors a framework, keys like "moodle" and "README" match
-# thousands of files, and printing the first five of them with no count buried
-# the real hits. A removed symbol has no such cap, because one referenced
-# everywhere is the most serious version of that finding, not the least.
-outside() {
-	local hits n max=${2:-0}
+files_outside_diff() {
+	local needle=$1
+	local repo=$2
+	local changed=$3
+	local hits
+	local count
+	local max=${4:-0}
+
 	hits=$({
-		git -C "$repo" grep -lE "\\b$1" -- . 2>/dev/null || true
+		git -C "$repo" grep -lE "\\b$needle" -- . 2>/dev/null || true
 	} | {
 		grep -vxF "$changed" || true
 	})
 
 	[ -n "$hits" ] || return 0
-	n=$(printf '%s\n' "$hits" | wc -l)
-	if [ "$max" != 0 ] && [ "$n" -gt "$max" ]; then
+
+	count=$(printf '%s\n' "$hits" | wc -l)
+
+	# Broad filename matches are noise. 0 keeps all matches for checks where
+	# widespread references make the finding more useful.
+	if [ "$max" != 0 ] && [ "$count" -gt "$max" ]; then
 		return 0
 	fi
 
 	printf '%s\n' "$hits" | head -5
-	if [ "$n" -gt 5 ]; then
-		printf 'and %s more\n' "$((n - 5))"
+
+	if [ "$count" -gt 5 ]; then
+		printf 'and %s more\n' "$((count - 5))"
 	fi
 }
 
-# `git diff` only sees tracked files. Diff untracked files against /dev/null so
-# they reach the same checks as edits to existing files.
+# Git does not include untracked files in a normal diff.
 diff_text=$({
 	git -C "$repo" diff -U0 "$diff_from"
+
 	git -C "$repo" ls-files --others --exclude-standard -z |
 		while IFS= read -r -d '' f; do
-			git -C "$repo" diff --no-index --no-color -U0 -- /dev/null "$f" 2>/dev/null || true
+			git -C "$repo" diff --no-index --no-color -U0 -- /dev/null "$f" \
+				2>/dev/null || true
 		done
 } || true)
 
 printf '## changed (worktree vs %s)\n' "$base"
 printf '%s\n' "$changed" | sed 's/^/  /'
 
-# Check whether another live task in this project is changing the same files.
-# Parallel tasks collide on files no brief assigned, and a per-task check that
-# only compares one worktree against the base cannot see it. A landed task
-# clears itself: once its branch is merged, its diff against the base is empty.
 printf '\n## collisions\n'
+
 collide=0
+
 if [ -n "$project" ]; then
 	for other in $(task_slugs); do
 		[ "$other" != "${CAP_SLUG:-}" ] || continue
@@ -119,36 +129,39 @@ if [ -n "$project" ]; then
 
 		otree=$(task_field "$other" CAP_TREE)
 		[ -n "$otree" ] && [ -e "$otree/.git" ] || continue
-		obase=$(task_field "$other" CAP_BASE)
-		git -C "$otree" rev-parse --verify -q "$obase" >/dev/null 2>&1 || continue
 
-		# Diff from the merge base, not the base tip. When the base has moved
-		# on since the task started, everything landed in the meantime looks
-		# like this task changed it.
-		omb=$(git -C "$otree" merge-base "$obase" HEAD 2>/dev/null) || continue
+		obase=$(task_field "$other" CAP_BASE)
+		git -C "$otree" rev-parse --verify -q "$obase" >/dev/null 2>&1 ||
+			continue
+
+		# Using the base tip would treat changes landed after the task started
+		# as changes made by that task.
+		omb=$(git -C "$otree" merge-base "$obase" HEAD 2>/dev/null) ||
+			continue
+
 		ochanged=$({
 			git -C "$otree" diff --name-only "$omb" 2>/dev/null || true
-			git -C "$otree" ls-files --others --exclude-standard 2>/dev/null || true
+			git -C "$otree" ls-files --others --exclude-standard \
+				2>/dev/null || true
 		} | sort -u)
+
 		[ -n "$ochanged" ] || continue
 
 		shared=$(printf '%s\n' "$changed" |
 			grep -xF -f <(printf '%s\n' "$ochanged") 2>/dev/null || true)
-		[ -n "$shared" ] && {
+
+		if [ -n "$shared" ]; then
 			note "$other is changing the same files:"
 			printf '%s\n' "$shared" | sed 's/^/      /'
 			collide=1
-		}
+		fi
 	done
 fi
+
 [ "$collide" = 0 ] && echo "  ok"
 
-# Two signals about added comments, both reported rather than refused. A
-# comment that narrates history is stating what the commit message already
-# says, and a comment block past six lines is usually defending a decision
-# instead of explaining one. Both point at code worth a second look. Generated
-# Wails files are excluded, and a shebang is not a comment.
 printf '\n## comments\n'
+
 history=$(printf '%s\n' "$diff_text" | awk '
 	/^\+\+\+ / {
 		path = $0
@@ -166,10 +179,11 @@ history=$(printf '%s\n' "$diff_text" | awk '
 			if (++hits >= 8) exit
 		}
 	}')
-[ -z "$history" ] || {
+
+if [ -n "$history" ]; then
 	printf '%s\n' "$history" | sed 's/^/      /'
 	note "added comments narrate history; state the current contract instead"
-}
+fi
 
 long=$(printf '%s\n' "$diff_text" | awk '
 	/^\+\+\+ / {
@@ -185,33 +199,40 @@ long=$(printf '%s\n' "$diff_text" | awk '
 	/^\+[[:space:]]*(\/\/|#|\*|--)/ { n++; next }
 	{ if (n > 6) c++; n = 0 }
 	END { if (n > 6) c++; print c + 0 }')
-[ "$long" = 0 ] || note "$long added comment block(s) run past six lines"
+
+[ "$long" = 0 ] ||
+	note "$long added comment block(s) run past six lines"
 
 [ -n "$history" ] || [ "$long" != 0 ] || echo "  ok"
 
-# Check related files that should change together.
 printf '\n## surfaces\n'
+
 if [ -f "$conv" ] && grep -q '^```surfaces' "$conv"; then
-	# Read once into a variable: a `while ... done < <(sed ...)` loop can't
-	# tell sed failing from an empty surfaces block, and either way reports
-	# ok silently.
+	surface_findings=$findings
+
+	# Capture the block first so a read failure is not mistaken for an empty map.
 	surfaces=$(sed -n '/^```surfaces/,/^```$/p' "$conv") ||
 		note "could not read the surface map in $conv"
+
 	while read -r trigger _arrow required; do
-		case ${trigger:-} in '' | '#'* | '```'*) continue ;; esac
+		case ${trigger:-} in
+		'' | '#'* | '```'*) continue ;;
+		esac
+
 		[ -n "${required:-}" ] || continue
 		printf '%s\n' "$changed" | grep -qE "$trigger" || continue
+
 		printf '%s\n' "$changed" | grep -qE "$required" ||
 			note "changed $trigger without $required"
 	done <<<"$surfaces"
 
-	[ "$findings" = 0 ] && echo "  ok"
+	[ "$findings" = "$surface_findings" ] && echo "  ok"
 else
 	echo "  no surface map - run: cap conventions ${project:-<project>}"
 fi
 
-# Check removed names for remaining references.
 printf '\n## stale\n'
+
 removed=$({
 	printf '%s\n' "$diff_text" |
 		grep '^-[^-]' |
@@ -221,26 +242,25 @@ removed=$({
 } || true)
 
 stale=0
+
 for id in $removed; do
-	# Not `printf ... | grep -q`: under pipefail, grep -q's early exit on a
-	# match (this diff can be 70KB+) sends SIGPIPE to printf before it
-	# finishes writing, and the pipeline then reports printf's 141 instead of
-	# grep's 0 - a real match gets masked as "not found" and a symbol still
-	# in the diff gets flagged as removed. A here-string has no pipe to break.
+	# A grep -q pipeline can make printf exit on SIGPIPE and hide a real match
+	# under pipefail. The here-string avoids that pipeline.
 	grep -q "^+.*\b$id\b" <<<"$diff_text" && continue
 
-	hits=$(outside "$id")
-	[ -n "$hits" ] && {
+	hits=$(files_outside_diff "$id" "$repo" "$changed")
+
+	if [ -n "$hits" ]; then
 		note "removed '$id' still referenced:"
 		printf '%s\n' "$hits" | sed 's/^/      /'
 		stale=1
-	}
+	fi
 done
 
 [ "$stale" = 0 ] && echo "  ok"
 
-# Show callers of changed functions.
 printf '\n## callers\n'
+
 touched=$({
 	printf '%s\n' "$diff_text" |
 		grep '^[+-][^+-]' |
@@ -250,35 +270,40 @@ touched=$({
 } || true)
 
 callers=0
+
 for fn in $touched; do
-	sites=$(outside "$fn *\\(")
-	[ -n "$sites" ] && {
+	sites=$(files_outside_diff "$fn *\\(" "$repo" "$changed")
+
+	if [ -n "$sites" ]; then
 		printf '  ? %s called outside the diff:\n' "$fn"
 		printf '%s\n' "$sites" | sed 's/^/      /'
 		callers=1
-	}
+	fi
 done
 
 [ "$callers" = 0 ] && echo "  ok"
 [ "$callers" = 1 ] && echo "  (check each caller or acknowledge it)"
 
-# Find files related to changed filenames.
 printf '\n## siblings\n'
-sib=0
-for f in $changed; do
-	key=$(basename "$f" | sed 's/\.[^.]*$//')
-	[ ${#key} -ge 5 ] || continue
 
-	hits=$(outside "$key" "$CAP_CHECK_SIBLING_MAX")
-	[ -n "$hits" ] && {
+sib=0
+
+while IFS= read -r f; do
+	key=$(basename "$f" | sed 's/\.[^.]*$//')
+	[ "${#key}" -ge 5 ] || continue
+
+	hits=$(files_outside_diff "$key" "$repo" "$changed" "$CAP_CHECK_SIBLING_MAX")
+
+	if [ -n "$hits" ]; then
 		printf '  ? %s mentioned in:\n' "$key"
 		printf '%s\n' "$hits" | sed 's/^/      /'
 		sib=1
-	}
-done
+	fi
+done <<<"$changed"
 
 [ "$sib" = 0 ] && echo "  ok"
 
 printf '\n%s deterministic finding(s)\n' "$findings"
+
 [ -z "$slug" ] || step_record "$slug" check "$findings"
 [ "$findings" = 0 ]

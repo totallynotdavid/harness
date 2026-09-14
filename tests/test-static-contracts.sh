@@ -54,7 +54,7 @@ expect_rejected dead-flag lint-dead-flag
 printf '# previously broken\n' >>"$scratch/bin/cap"
 expect_rejected comment-policy lint-comments
 
-sed -i 's/st=$(task_state "\$s")/st=$(true)/' "$scratch/bin/cap-crew"
+sed -i 's/task_state "\$slug"/true/' "$scratch/bin/cap-crew"
 expect_rejected task-state lint-task-state
 
 printf 'test-static-contracts: source scanners reject their known bad shapes\n'
