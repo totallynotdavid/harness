@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# lint-doctor - exercise SSH-backed doctor comparison without a network host.
+set -euo pipefail
+
+root=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+scratch=$(mktemp -d)
+mkdir -p "$scratch/bin"
+cat >"$scratch/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+shift
+unset CAP_HOME
+PATH="$FAKE_REMOTE_BIN:$PATH"
+exec "$@"
+EOF
+chmod +x "$scratch/bin/ssh"
+
+mkdir -p "$scratch/remote-bin"
+ln -s "$root/bin/cap" "$scratch/remote-bin/cap"
+
+if ! result=$(CAP_HOME="$root" FAKE_REMOTE_BIN="$scratch/remote-bin" PATH="$scratch/bin:$PATH" "$root/bin/cap-doctor" --remote lint-host); then
+	printf 'lint-doctor: SSH-backed comparison failed\n' >&2
+	exit 1
+fi
+
+[ "$result" = 'no differences' ]
+printf 'lint-doctor: remote Captain discovery and comparison work\n'

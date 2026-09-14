@@ -2,7 +2,7 @@
 # cap-doctor - describe this host's Captain environment, or compare it with another's.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-usage="usage: cap doctor [--diff REPORT]   (REPORT is another host's cap doctor output)"
+usage="usage: cap doctor [--diff REPORT] | cap doctor --remote HOST [--path CAP_HOME]"
 
 # One "key<TAB>value" line per fact, sorted, so two hosts' reports diff line
 # by line. Values are what differs between hosts, never timestamps.
@@ -33,17 +33,79 @@ report() {
   printf 'harness default\t%s\n' "$CAP_AGENT_HARNESS"
 }
 
+diff_report() {
+  local other=$1 this sorted rc
+  [ -f "$other" ] || die "no report at $other"
+  this=$(mktemp)
+  sorted=$(mktemp)
+  report | sort >"$this"
+  sort "$other" >"$sorted"
+  if diff "$this" "$sorted" >/dev/null; then
+    rm -f "$this" "$sorted"
+    printf 'no differences\n'
+    return 0
+  fi
+  printf '%s\n' "- this host, + $other"
+  rc=0
+  diff "$this" "$sorted" | grep '^[<>]' | sed 's/^</-/; s/^>/+/' || rc=$?
+  rm -f "$this" "$sorted"
+  return "$rc"
+}
+
+remote_report() {
+  local host=$1 cap_path=${2:-}
+  # The remote shell discovers CAP_HOME from its environment, the cap binary
+  # on PATH, or a Captain checkout under HOME. The local host never guesses a
+  # path that only exists on the other machine.
+  ssh "$host" bash -s -- "$cap_path" <<'REMOTE'
+set -euo pipefail
+
+requested=${1:-}
+if [ -n "$requested" ]; then
+	cap_home=$requested
+elif [ -n "${CAP_HOME:-}" ]; then
+	cap_home=$CAP_HOME
+else
+	cap_bin=$(command -v cap 2>/dev/null || true)
+	if [ -n "$cap_bin" ]; then
+		cap_home=$(cd "$(dirname "$(readlink -f "$cap_bin")")/.." && pwd)
+	else
+		doctor=$(find "$HOME" -type f -path '*/bin/cap-doctor' -print -quit 2>/dev/null || true)
+		cap_home=${doctor%/bin/cap-doctor}
+	fi
+fi
+
+[ -n "${cap_home:-}" ] && [ -f "$cap_home/bin/cap-doctor" ] || {
+	printf 'cap: could not find Captain on %s; use --path /path/to/captain\n' "$(hostname)" >&2
+	exit 2
+}
+CAP_HOME=$cap_home bash "$cap_home/bin/cap-doctor"
+REMOTE
+}
+
 case ${1:-} in
 '') report | sort ;;
 --diff)
-  other=${2:?$usage}
-  [ -f "$other" ] || die "no report at $other"
-  if diff <(report | sort) <(sort "$other") >/dev/null; then
-    printf 'no differences\n'
-  else
-    printf '%s\n' "- this host, + $other"
-    diff <(report | sort) <(sort "$other") | grep '^[<>]' | sed 's/^</-/; s/^>/+/'
+  diff_report "${2:?$usage}"
+  ;;
+--remote)
+  host=${2:?$usage}
+  shift 2
+  remote_path=""
+  [ "$#" = 0 ] || {
+    [ "$#" = 2 ] && [ "$1" = --path ] || die "$usage"
+    remote_path=$2
+  }
+  remote=$(mktemp)
+  if remote_report "$host" "$remote_path" >"$remote"; then
+    diff_report "$remote"
+    rc=$?
+    rm -f "$remote"
+    exit "$rc"
   fi
+  rc=$?
+  rm -f "$remote"
+  exit "$rc"
   ;;
 *) die "$usage" ;;
 esac

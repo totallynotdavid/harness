@@ -39,6 +39,7 @@ Pull requests use GitHub's rebase strategy by default. Use `--squash` or
 | --- | --- |
 | `cap map [--sync]` | Update the project list. |
 | `cap reconcile [--remote]` | Show open work across projects. |
+| `cap doctor [--diff REPORT]` / `cap doctor --remote HOST [--path CAP_HOME]` | Describe this host or compare it with a host discovered over SSH. |
 | `cap project <name> [mode] [model]` | Show or change project settings. |
 | `cap budget` | Show measured quota, and what each dispatch role resolves to now. |
 | `cap models [--refresh]` | Show what each harness offers, and check the profile table against it. |

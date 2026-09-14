@@ -29,6 +29,8 @@ depends = [
   "check:commits",
   "check:resources",
   "check:transport",
+  "check:verify-output",
+  "check:doctor",
   "check:papercuts",
   "check:syntax",
 ]
@@ -80,6 +82,14 @@ run = "bin/lint-resources"
 [tasks."check:transport"]
 description = "assert prompts, review ownership and command completions survive interruption"
 run = "bin/lint-transport"
+
+[tasks."check:verify-output"]
+description = "assert detached check children cannot hold caller pipes open"
+run = "bin/lint-verify-output"
+
+[tasks."check:doctor"]
+description = "assert cap doctor can compare a host over SSH"
+run = "bin/lint-doctor"
 
 [tasks."check:papercuts"]
 description = "fail when paper-cuts.md is not the rendering of paper-cuts.jsonl, or an entry's subject is not part of Captain"

@@ -136,6 +136,12 @@ for an answer a deterministic command already gives for free. It complements gat
 not replace it: passing tests do not by themselves rule out the logic/security classes of
 defect gate exists to catch.
 
+Each check's stdout and stderr first go to a regular log file, then `cap verify` copies
+that completed log to its own stdout. A detached service can keep the log open, but it
+cannot keep a caller's pipe open after `cap verify` exits. `cap doctor --remote HOST`
+asks the other host to locate its own Captain checkout, with `--path` for an explicit
+location, before comparing the two reports.
+
 ## Task state is not a log word
 
 On 2026-09-11 `bin/hooks/crew-status.sh` stayed silent for ten minutes on a task that had

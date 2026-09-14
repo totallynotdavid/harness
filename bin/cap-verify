@@ -138,19 +138,26 @@ run() {
     return 0
   fi
   printf '=== %s ===\n' "$key"
-  local m rss rc=0
+  local m rss log rc=0
+  # A detached compose child inherits its parent's stdout and keeps a caller's
+  # pipe open after the check exits. Give the whole check a regular-file
+  # boundary, then copy its completed output to our stdout. Descendants may
+  # keep the log open, but they can never keep the caller's pipe open.
+  log=$(mktemp)
   if [ -x /usr/bin/time ]; then
     m=$(mktemp)
-    capped /usr/bin/time -f '%M' -o "$m" "$@" || rc=$?
+    capped /usr/bin/time -f '%M' -o "$m" "$@" >"$log" 2>&1 || rc=$?
     if [ "$rc" = 0 ]; then mark_passed "$key"; else status=1; failed+=("$key"); fi
     rss=$(tail -1 "$m" 2>/dev/null || echo 0)
     rm -f "$m"
     case $rss in '' | *[!0-9]*) rss=0 ;; esac
     [ "$rss" -le "$peak_kb" ] || peak_kb=$rss
   else
-    capped "$@" || rc=$?
+    capped "$@" >"$log" 2>&1 || rc=$?
     if [ "$rc" = 0 ]; then mark_passed "$key"; else status=1; failed+=("$key"); fi
   fi
+  cat "$log"
+  rm -f "$log"
 }
 
 # A count of what ran is not a verdict. The failing script has to be named in
