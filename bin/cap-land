@@ -2,14 +2,30 @@
 # cap-land - deliver a finished task.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-usage="usage: cap land <slug> [--merge] [--take]"
+usage="usage: cap land <slug> [--merge] [--squash|--rebase|--merge-commit] [--take]"
 slug=""
 do_merge=0
 landed=0
 take=0
+merge_method=""
 while [ $# -gt 0 ]; do
 	case $1 in
 	--merge) do_merge=1; shift ;;
+	--squash)
+		[ -z "$merge_method" ] || die "$usage"
+		merge_method=squash
+		shift
+		;;
+	--rebase)
+		[ -z "$merge_method" ] || die "$usage"
+		merge_method=rebase
+		shift
+		;;
+	--merge-commit)
+		[ -z "$merge_method" ] || die "$usage"
+		merge_method=merge
+		shift
+		;;
 	--take) take=1; shift ;;
 	-*) die "$usage" ;;
 	*)
@@ -18,6 +34,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ -n "$slug" ] || die "$usage"
+merge_method=${merge_method:-rebase}
 
 task_load "$slug"
 task_lock "$slug"
@@ -105,6 +122,7 @@ pr)
 
 	git -C "$CAP_TREE" push -u origin "$CAP_BRANCH"
 	repo_url=$(git -C "$CAP_REPO" remote get-url origin)
+	head=$(git -C "$CAP_TREE" rev-parse HEAD)
 
 	# A push needs a moment to propagate before GitHub will accept a PR
 	# against it. 5 attempts x 3s (15s total) was not enough in practice -
@@ -124,16 +142,18 @@ pr)
 	# Both gh calls run from the task's worktree. --repo picks the API target,
 	# but --fill still reads the commit range with local git, and the captain
 	# repo this script runs in has no cap/<slug> branch to read.
+	# A reused branch can still have a closed PR under its name. Accept a view
+	# fallback only when GitHub reports an open PR at the commit just pushed.
 	for i in 1 2 3 4 5 6 7 8; do
 		url=$(cd "$CAP_TREE" && gh pr create --repo "$repo_url" --head "$CAP_BRANCH" --base "$CAP_BASE" --fill 2>"$create_err") && break
-		url=$(cd "$CAP_TREE" && gh pr view "$CAP_BRANCH" --repo "$repo_url" --json url -q .url 2>"$view_err") && break
+		url=$(cd "$CAP_TREE" && gh pr view "$CAP_BRANCH" --repo "$repo_url" --json url,state,headRefOid --jq "select(.state == \"OPEN\" and .headRefOid == \"$head\") | .url" 2>"$view_err") && [ -n "$url" ] && break
 		sleep "$((i * 2))"
 	done
 	if [ -z "$url" ]; then
 		err=$(cat "$create_err" 2>/dev/null)
 		probe=$(cat "$view_err" 2>/dev/null)
 		rm -f "$create_err" "$view_err"
-		die "could not open a PR for $CAP_BRANCH after 8 retries. gh pr create said: ${err:-nothing}. The follow-up gh pr view said: ${probe:-nothing}."
+		die "could not open an open PR for $CAP_BRANCH at $head after 8 retries. gh pr create said: ${err:-nothing}. The follow-up gh pr view said: ${probe:-nothing}."
 	fi
 	rm -f "$create_err" "$view_err"
 
@@ -142,13 +162,19 @@ pr)
 
 	if [ "$do_merge" = 1 ]; then
 		kids=$(task_children "$slug")
+		merge_flags=()
+		case $merge_method in
+		rebase) merge_flags=(--rebase) ;;
+		squash) merge_flags=(--squash) ;;
+		merge) merge_flags=(--merge) ;;
+		esac
 
 		# Keep the branch until any stacked PRs are retargeted: GitHub closes a PR,
 		# unrecoverably, the moment its base branch is deleted.
 		if [ -n "$kids" ]; then
-			gh pr merge "$url" --squash
+			gh pr merge "$url" "${merge_flags[@]}" --match-head-commit "$head"
 		else
-			gh pr merge "$url" --squash --delete-branch
+			gh pr merge "$url" "${merge_flags[@]}" --match-head-commit "$head" --delete-branch
 		fi
 		printf 'merged %s\n' "$url"
 		landed=1

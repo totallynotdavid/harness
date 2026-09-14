@@ -25,11 +25,13 @@ Run `cap help` for all flags.
 | `cap gate <slug> [--full]` | Review the changes: gate B, or gates A and B at once with `--full`. Each returns findings; Captain computes the verdict. |
 | `cap step <slug> [STEP]` | Advance a task: check, verify, cleanup, gate, commit. Stops at a gate FAIL and before landing. A named step is refused until the steps before it are done. |
 | `cap commit <slug> [profile]` | Stage and commit changes. |
-| `cap land <slug> [--merge]` | Push, open a PR, or merge the work. |
+| `cap land <slug> [--merge] [--squash\|--rebase\|--merge-commit]` | Push, open a PR, or merge the work. |
 | `cap restack <slug> [--undo]` | Move stacked tasks onto `<slug>`'s tip. |
 | `cap drop <slug> [--force]` | Remove a task and its worktree. |
 
 `cap land` requires committed changes. Use `--merge` to merge a pull request.
+Pull requests use GitHub's rebase strategy by default. Use `--squash` or
+`--merge-commit` when a different history shape is intended.
 
 ## Projects
 
