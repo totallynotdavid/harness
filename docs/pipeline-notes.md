@@ -79,18 +79,14 @@ recorded this project so far: none had reached a real conclusion before the reje
 each was still mid-investigation. Don't assume that generalizes forever, but it means
 discarding rather than trying to salvage the truncated turn has been the right call so far.
 
-`cap-ask` runs the claude harness headless (`claude -p --output-format stream-json`) and
-detects a session limit from the turn's own structured result, not from its text: the
-result event's `is_error` is `true` together with either its `api_error_status` (`429`) or
-the accompanying `rate_limit_event`'s `rate_limit_info.status` (`"rejected"`). Verified
-against a real rejection captured on this box, in the same stream-json field names the code
-reads: `api_error_status 429`, `rate_limit_info.status "rejected"`, against a turn whose own
-text read "You've hit your session limit". `terminal_reason` plays no part in this check:
-`"blocking_limit"` is the installed harness's own name for overrunning the auto-compact
-window, a context failure with nothing to do with account quota; `cap-ask` gives that its
-own message instead. When either of the two quota fields fire, `cap-ask` fails loudly with a
-distinct message instead of returning truncated or partial text as if it were a real result.
-See the next section for what it also does with the interrupted session.
+Every `cap ask` session is an interactive session whose turns end through a hook
+(`bin/caplib.py`). A claude turn the account refuses ends through the `StopFailure` hook
+with `error: "rate_limit"`, and `cap ask` reads that field, never the rendered text. Any
+other `StopFailure` error (`model_not_found` was seen live) is reported as a harness error,
+not a limit. A codex turn that fails runs no hook at all; its rollout records a
+`task_complete` event carrying an `error`, and `cap ask` reads that, then asks
+`codex_limit_reached` whether the failure was the account. Either way it fails loudly
+instead of returning partial text as a result.
 
 This is a real, separate constraint from system memory pressure. Don't misdiagnose it as
 an OOM/race issue (both can produce similarly confusing partial output). It affects only
@@ -99,62 +95,20 @@ keep working normally while claude-harness work is blocked.
 
 ## Resuming a `cap-ask` call after it hits the session limit
 
-`cap-ask` (claude harness only) records the session id and a context-usage percentage to
-`state/ask-resume/<key>.json` when it detects the rejection above, where `<key>` hashes the
-profile, worktree, prompt, and `CAP_ASK_KEY` (cap-gate passes its diff fingerprint here; see
-below). The percentage comes from the rejected turn's last `usage.iterations[]` entry
-against the profile's own model's `modelUsage.<model>.contextWindow` - the top-level `usage`
-totals are cumulative session spend, not live context occupancy, and grow past 30% within
-the first few turns of any real review (measured on two real 55/49-turn sessions: cumulative
-usage read back as 274%/267% where the actual last-turn occupancy was 10%/10%). A turn a 429
-stopped never reaches an iteration at all, so that reading is treated as 100% (full), never
-as empty, since it is exactly the reading a false-empty value would send down the
-resume-uncompacted path below. In practice this is the common case, not an edge case: a
-session-limit rejection is usually the account rejecting the turn before it makes an API
-call at all, so `usage.iterations` comes back empty (confirmed live: `[]` and all-zero
-top-level `usage` on a session already holding five figures of real tokens) and `ctx_pct`
-reads 100 regardless of how large the session actually is. So the **at or above 30%** branch
-below is the one a real session-limit rejection ordinarily takes; the **under 30%** branch
-stays correct for whatever turn does report a real reading, but is not the common path. The
-**next** `cap-ask` call hashes
-the same four inputs and stats that one file directly - a genuine retry of the same review,
-which is exactly what re-running `cap gate <slug>` after the reset time produces - and picks
-it up automatically:
+On a claude session limit, `cap ask` records the session id and its context percentage
+(`ctx_pct`, which the session's own status line wrote to `state/usage/<session>.json`) in
+`state/ask-resume/<key>.json`. The key hashes the profile, worktree, prompt, and
+`CAP_ASK_KEY`; `cap gate` passes its diff fingerprint there, so a record never resumes
+against different code. A missing reading counts as 100%.
 
-- Recorded context usage **under 30%**: resumes the session directly
-  (`claude --resume <id>` with a generic "continue where you left off" prompt). Cheap
-  enough that no special handling is needed.
-- Recorded context usage **at or above 30%**: does **not** auto-resume by default (a large
-  session costs more per turn to continue than a fresh one costs to re-derive). Starts
-  fresh instead, and leaves the record in place so `CAP_ASK_RESUME=force` on a later call
-  still resumes the pending session. When forced, it sends `/compact` as a first turn
-  before the real continuation prompt, and checks that turn's own result before trusting
-  it: a session too large by token count is not always "enough messages" for the compactor
-  to act on, and running the continuation turn against a session that came back uncompacted
-  would be the exact failure this whole mechanism exists to prevent, so that case dies
-  instead of continuing.
-  `cap-gate` never sets `CAP_ASK_RESUME=force`, so a session limit hit during `cap gate`
-  always starts fresh; force is a deliberate, explicit captain-level override for a plain
-  `cap ask` call whose interrupted work was itself substantial enough that re-deriving it
-  from scratch would cost more than compacting it once.
+The next identical call resumes the recorded session (`claude --resume <id>` with a
+"continue where you left off" prompt) when it was under 30% context. At or above 30% it
+starts fresh and leaves the record, and `CAP_ASK_RESUME=force` resumes it anyway. The
+session is interactive, so compaction is the harness's own business once resumed. A clean
+answer clears the record; records and dispatch directories older than seven days are pruned.
 
-This only applies to `cap-ask` (i.e. `cap gate`, and any other one-shot `cap ask` call),
-because those calls run one headless turn and exit. There is no live process left to just
-wait on. It does not apply to `cap spawn`/`cap send` ship-task agents: their pane stays
-open across a limit hit, so sending a message after the reset time continues the same
-still-running process with zero context loss, which is already the right behavior and
-needs no special handling.
-
-A record is cleared on a clean answer, resumed or fresh, and also the moment a resume
-attempt proves its session is not resumable: no result at all (a dropped worktree, a
-pruned transcript), or an error naming the session gone ("no conversation found"). It
-survives any other failure, including a session-limit rejection, because the session
-behind it might still be there. Without that distinction, a single unresumable session
-would wedge every later call with the same key into resuming it and failing the same way
-forever. Changing the reviewed code changes `CAP_ASK_KEY`'s fingerprint, which changes the
-key, which orphans the old record under its old filename; nothing revisits that key again,
-so `cap-ask` sweeps `state/ask-resume/` on the same 7-day schedule it already prunes
-`state/ask/`'s transcripts.
+This does not apply to `cap spawn` agents: their session stays open across a limit, and a
+`cap send` after the reset continues it.
 
 ## Gate A frequency: cheap by default, expensive only when it matters
 
@@ -228,7 +182,7 @@ one:
 
 A bounded wait (`flock -w`) cannot work at any bound: `cap verify` loops its own
 `CAP_VERIFY_MAX` ceiling over every script it runs, so it can hold the lock for roughly an
-hour; `cap gate`'s review runs through `pane_dispatch`, bounded only by `CAP_ASK_MAX_WAIT`
+hour; `cap gate`'s review waits on its reviewers' turns, bounded only by `CAP_ASK_MAX_WAIT`
 (3600s by default) - well past the timeout (commonly 600s) of any tool a captain drives
 `cap` through, so that tool kills the wait before a bound matching either ceiling ever
 resolves, losing the message with no sign it happened.
@@ -292,16 +246,22 @@ multi-line message arrives exactly as typed whether the lock happened to be free
 
 ## Every agent session runs in a pane
 
-`cap-spawn` opens a herdr pane and starts the session inside it. `cap-ask` runs the harness
-through `pane_dispatch`, which opens a pane the same way, so no session runs as a bare
-background child.
+`cap spawn`, `cap send`'s revive, and `cap ask` (and so `cap gate`, `cap commit`,
+`cap cleanup`) all start a session the same way (`bin/cap-launch`, `launch` in
+`bin/caplib.py`): a real interactive session in a herdr pane, with Captain's hooks passed
+on its command line. claude gets them through `--settings`, codex through `-c hooks.*`,
+with the hook trust codex asks for seeded in `~/.codex/config.toml` so no launch stops on
+a review prompt.
 
-The sessions `cap-ask` starts are still print mode: `claude -p --output-format stream-json`
-and `codex exec --json`. A print-mode session cannot be typed into, `cap-send` cannot reach
-it, and a permission prompt inside it hangs until `CAP_ASK_MAX_WAIT` is exceeded and the
-pane is left open. The pane shows its output; it does not make it a session.
+A turn ends when the harness runs `bin/hooks/session-event.sh turn`, which drops the turn's
+payload into the directory the dispatcher chose. The answer is the payload's
+`last_assistant_message`, or the transcript's last text when the turn ended on a tool call.
+The dispatcher also watches the pane: a closed pane, an exited session, or a harness that
+goes idle without ending its turn is reported rather than waited out. A permission prompt
+shows as `blocked`, is named once on stderr, and can be answered in the pane.
 
-Removing print mode is the open work.
+Stopping a dispatcher (Ctrl-C, or a signal to `cap ask` or `cap-review`) closes the panes
+it opened. A reviewer can be watched and typed into while it runs.
 
 ## Dispatch sizing: quota routes work, it does not cheapen it
 
@@ -375,11 +335,10 @@ Two measurements, no settings that describe the account:
 - The rate-limit windows the harness reports. `bin/cap-statusline` prints Claude Code's
   status line and records the reading for every *interactive* session Captain starts, so
   the fleet keeps it fresh for free. Wire it up once in `~/.claude/settings.json`:
-  `"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }`. A
-  headless `cap-ask` call never renders a status line, so it writes the same shape of
-  reading itself, from its own turn's `rate_limit_event` (`usage_write` in `bin/lib.sh`) -
-  this makes the status line hook redundant for `cap ask`/`cap gate`, not unnecessary: it
-  is still the only source of a live reading for `cap spawn`'s long-running agents.
+  `"statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }`. Every
+  session Captain dispatches is given the same status line on its command line, so a
+  dispatched session records its reading, and its own context percentage, whatever the
+  user's settings say.
 - Session-limit rejections. `cap ask` writes the profile to
   `state/usage/blocked/<profile>` until the reported reset, which takes it out of its tier.
 
@@ -410,7 +369,9 @@ able to dispatch a real reviewer.
 
 Sizing decisions are not announced. A captain running `cap spawn` is an agent with a context
 window, and routine "role crew -> sonnet" chatter spends it on something the reader did not
-ask for and cannot act on. Resolutions append to `state/usage/dispatch.log` with the command
-that asked; `cap budget` reads them back. Warnings that change what the captain does next, a
+ask for and cannot act on. Resolutions append to `state/usage/dispatch.jsonl` with the
+command that asked, and every finished dispatch appends what it cost there too: exact tokens
+from its transcript, and the account's 5h window before and after, labelled account-wide
+because anything else running at the time moves it as well. `cap budget` reads both back. Warnings that change what the captain does next, a
 gate that did not complete or a tier naming a profile that does not exist, still go to
 stderr.

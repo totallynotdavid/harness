@@ -86,8 +86,9 @@ When a human finds something the checks should have caught, that is a gate bug. 
 - reasoned from the whole system -> a **subsystem invariant** in that file, so step 2
   reconstructs the seam next time
 
-Record the miss in that file's gate-miss ledger: date, finding, which gate missed, why,
-what closed it. Then apply the two rules for new checks in `rules/evidence.md`: born red
+`cap land` already writes a miss one gate made and another caught into that file's
+gate-miss ledger. Add a miss a human caught there by hand: date, finding, which gate
+missed, why, what closed it. Then apply the two rules for new checks in `rules/evidence.md`: born red
 and green, and stated in both directions.
 
 **Complete when:** every external finding is matched to a gate that missed with the miss

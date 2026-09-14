@@ -22,7 +22,8 @@ Run `cap help` for all flags.
 | `cap check <slug>` | Check an agent's changes. |
 | `cap check --repo <project> [--base REF]` | Check project changes without an agent. |
 | `cap cleanup <slug> [profile]` | Clean up comments and readability. |
-| `cap gate <slug>` | Run two independent reviews (roles `gate-a`, `gate-b`) before landing. |
+| `cap gate <slug> [--full]` | Review the changes: gate B, or gates A and B at once with `--full`. Each returns findings; Captain computes the verdict. |
+| `cap step <slug> [STEP]` | Advance a task: check, verify, cleanup, gate, commit. Stops at a gate FAIL and before landing. A named step is refused until the steps before it are done. |
 | `cap commit <slug> [profile]` | Stage and commit changes. |
 | `cap land <slug> [--merge]` | Push, open a PR, or merge the work. |
 | `cap restack <slug> [--undo]` | Move stacked tasks onto `<slug>`'s tip. |
@@ -39,7 +40,8 @@ Run `cap help` for all flags.
 | `cap project <name> [mode] [model]` | Show or change project settings. |
 | `cap budget` | Show measured quota, and what each dispatch role resolves to now. |
 | `cap models [--refresh]` | Show what each harness offers, and check the profile table against it. |
-| `cap papercut "<text>"` | Log a problem with Captain. |
+| `cap papercut add <subject> "<text>"` | Log a problem with Captain. The subject is a part of Captain (`cap papercut subjects`); a project is refused. |
+| `cap papercut close <id> "<fix>"` | Close a paper cut and say what fixed it. |
 | `cap explore <owner/repo> [--fresh]` | Clone a repo for inspection. |
 | `cap history --repo <name>\|--task <slug> [opts]` | Search past agent sessions. |
 | `cap conventions <project>` | Create project conventions. |
