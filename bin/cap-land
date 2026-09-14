@@ -63,7 +63,7 @@ local)
 	git -C "$CAP_REPO" rev-parse --verify "$CAP_BASE" >/dev/null 2>&1 ||
 		die "no base branch $CAP_BASE"
 
-	[ "$(git_dirty "$CAP_REPO")" = 0 ] ||
+	[ "$(git_dirty_tracked "$CAP_REPO")" = 0 ] ||
 		die "$CAP_REPO has uncommitted changes"
 
 	# Trial-merge before touching the base. A real merge that conflicts leaves
@@ -81,8 +81,14 @@ local)
 		die "rebase $CAP_BRANCH onto $CAP_BASE and resolve these first"
 	}
 
-	git -C "$CAP_REPO" checkout "$CAP_BASE" >/dev/null 2>&1
-	git -C "$CAP_REPO" merge --no-ff -m "merge $CAP_BRANCH ($slug)" "$CAP_BRANCH"
+	# An untracked file left in $CAP_REPO (tolerated above, since only
+	# tracked changes block a hub landing) can collide with a path
+	# $CAP_BASE's or $CAP_BRANCH's tree wants to create. git refuses rather
+	# than overwrite; capture and show that error at each step.
+	checkout_err=$(git -C "$CAP_REPO" checkout "$CAP_BASE" 2>&1 >/dev/null) ||
+		die "could not check out $CAP_BASE in $CAP_REPO: $checkout_err"
+	merge_err=$(git -C "$CAP_REPO" merge --no-ff -m "merge $CAP_BRANCH ($slug)" "$CAP_BRANCH" 2>&1 >/dev/null) ||
+		die "could not merge $CAP_BRANCH into $CAP_BASE in $CAP_REPO: $merge_err"
 
 	printf 'merged %s into %s (%s commits)\n' "$CAP_BRANCH" "$CAP_BASE" "$commits"
 	landed=1

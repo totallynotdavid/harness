@@ -371,24 +371,21 @@ trap() {
     fi
     CAP_EXIT_FNS+=("$1")
     builtin trap cap_run_exit_fns EXIT
-    # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
+    # shellcheck disable=SC2064
     [ "${#other[@]}" -eq 0 ] || builtin trap "$1" "${other[@]}"
   elif [ "$reset_exit" = 1 ]; then
     [ "${CAP_EXIT_PID:-}" != "$BASHPID" ] || CAP_EXIT_FNS=()
-    # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
+    # shellcheck disable=SC2064
     builtin trap "$@"
   else
-    # shellcheck disable=SC2064 # forwarding whatever the caller passed, not building a trap string here
+    # shellcheck disable=SC2064
     builtin trap "$@"
   fi
 }
 cap_run_exit_fns() {
-  # $? here is the real exit status that fired this trap - captured before
-  # anything else touches it, then restored right before each eval so a
-  # handler reading $? sees what it would in a plain `trap CMD EXIT`, not
-  # this function's own BASHPID test. set +e for the same reason: `(exit
-  # "$code")` failing on a nonzero code is not a real failure, but set -e,
-  # inherited from the caller, would otherwise abort this loop on it.
+  # Capture the real exit status before anything else touches it, then restore
+  # it before each handler so $? is what the handler expects from a plain trap.
+  # set +e so `(exit "$code")` on a nonzero code does not abort.
   local fn code=$?
   [ "${CAP_EXIT_PID:-}" = "$BASHPID" ] || return 0
   set +e
@@ -1063,7 +1060,7 @@ task_state_stale_age() {
 
 # Read complete status lines appended since the task's last status check.
 task_status_lines() {
-  local f=$TASKS/$1/status.log cursor start line bytes
+  local f=$TASKS/$1/status.log cursor start line bytes pid read_from
   local LC_ALL=C
 
   [ -f "$f" ] || return 0
@@ -1079,11 +1076,17 @@ task_status_lines() {
 
   bytes=$(wc -c <"$f")
   [ "$start" -le "$bytes" ] || start=0
+  read_from=$start
 
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line"
     start=$((start + ${#line} + 1))
-  done < <(tail -c +$((start + 1)) "$f")
+  done < <(tail -c +$((read_from + 1)) "$f")
+  pid=$!
+  # A failed tail is invisible to the loop above: zero iterations reads the
+  # same as nothing new logged. Caught here instead of moving the cursor
+  # past a read that never happened.
+  wait "$pid" || { warn "$1: could not read status.log past byte $read_from"; return 0; }
 
   printf '%s\n' "$start" >"$cursor"
 }
@@ -1169,6 +1172,11 @@ task_state() {
 
 git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
 
+# Like git_dirty, but ignores untracked files - for a checkout several
+# sessions share with no locking, where a stray untracked file must not
+# block another session's land.
+git_dirty_tracked() { git -C "$1" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' '; }
+
 # Sync a worktree onto the current tip of its base branch before review, so
 # an unrelated task landing on base since this one branched never gets
 # misread by a gate as this branch deleting/reverting that feature (see
@@ -1222,21 +1230,40 @@ diff_base() {
   printf '%s' "${mb:-$base}"
 }
 
-# Fingerprint of exactly what a gate reviews: full diff plus untracked files.
-# Same fingerprint means identical code reviewed, independent of commits or
-# stash round-trips. Untracked files must be included, since a diff alone
-# says nothing about a new file the deliverable adds.
-gate_fingerprint() {
-  local tree=$1 base=$2 f
-  base=$(diff_base "$tree" "$base")
+# Fingerprint of exactly what a review from $from covers: its diff plus
+# untracked files. Same fingerprint means identical code reviewed,
+# independent of commits or stash round-trips. Untracked files must be
+# included, since a diff alone says nothing about a new file the
+# deliverable adds. $from can be a merge-base (a full-branch review) or a
+# later commit (an incremental one); the caller resolves which.
+gate_fingerprint_from() {
+  local tree=$1 from=$2 f pid rc
+  # A process substitution's own failure is invisible to the `while read`
+  # loop consuming it: zero iterations reads exactly like no untracked
+  # files, not like ls-files failing. set +e/-e brackets just this pipeline
+  # so pipefail's status reaches the explicit die below instead of
+  # aborting the function before it can say what went wrong.
+  set +e
   {
-    git -C "$tree" diff "$base" 2>/dev/null || true
+    git -C "$tree" diff "$from" 2>/dev/null || true
     # Hash each path as well as its bytes, so a rename is a new fingerprint.
     while IFS= read -r -d '' f; do
       printf '=== %s\n' "$f"
       cat -- "$tree/$f" 2>/dev/null || true
     done < <(git -C "$tree" ls-files --others --exclude-standard -z 2>/dev/null | sort -z)
+    pid=$!
+    wait "$pid" || exit 1
   } | sha256sum | cut -d' ' -f1
+  rc=$?
+  set -e
+  [ "$rc" = 0 ] || die "gate_fingerprint_from: could not list untracked files in $tree"
+}
+
+# Fingerprint of a full-branch review: everything since this branch left base.
+gate_fingerprint() {
+  local tree=$1 base=$2
+  base=$(diff_base "$tree" "$base")
+  gate_fingerprint_from "$tree" "$base"
 }
 
 # The markdown-decoration strip gate_report_lines finishes each surviving
@@ -1326,19 +1353,70 @@ gate_has_evidence() {
 # state/tasks/<slug>/gate.json holds the latest verdict per profile label
 # (A, B), each tagged with the fingerprint it was reviewed at, so a reader
 # can tell whether a PASS still describes the code currently in the tree.
+# $commit is HEAD at review time, so the next incremental round for this
+# profile knows where its last review left off.
 gate_record() {
-  local slug=$1 label=$2 verdict=$3 fp=$4
+  local slug=$1 label=$2 verdict=$3 fp=$4 commit=$5
   local f=$TASKS/$slug/gate.json tmp prev
   prev=$([ -f "$f" ] && cat "$f" || echo '{}')
   tmp=$(mktemp)
   if jq -n --argjson prev "$prev" \
-    --arg label "$label" --arg verdict "$verdict" --arg fp "$fp" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '$prev + {($label): {verdict: $verdict, fingerprint: $fp, at: $at}}' >"$tmp" 2>/dev/null; then
+    --arg label "$label" --arg verdict "$verdict" --arg fp "$fp" --arg commit "$commit" \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '$prev + {($label): {verdict: $verdict, fingerprint: $fp, commit: $commit, at: $at}}' >"$tmp" 2>/dev/null; then
     mv "$tmp" "$f"
   else
     rm -f "$tmp"
     warn "could not record gate verdict for $slug/$label"
   fi
+}
+
+# The commit a profile's review last covered, so a plain (non-full) round
+# can review only what changed since. Empty when the profile never ran.
+gate_last_commit() {
+  local slug=$1 label=$2
+  local f=$TASKS/$slug/gate.json
+  [ -f "$f" ] || return 0
+  jq -r --arg l "$label" '.[$l].commit // empty' "$f" 2>/dev/null || true
+}
+
+# Where a plain (non-full) round should review from: $label's last
+# commit, narrowed to only when that commit is still a trustworthy
+# checkpoint. Falls back to the full range otherwise, or prints nothing
+# when nothing has changed since - a clean tree at that same commit has no
+# new content to review at all.
+gate_review_since() {
+  local slug=$1 label=$2 tree=$3 base=$4
+  local full since verdict head mb_now mb_then
+  full=$(diff_base "$tree" "$base")
+
+  since=$(gate_last_commit "$slug" "$label")
+  [ -n "$since" ] || { printf '%s' "$full"; return; }
+  git -C "$tree" cat-file -e "$since" 2>/dev/null || { printf '%s' "$full"; return; }
+  git -C "$tree" merge-base --is-ancestor "$since" HEAD 2>/dev/null || { printf '%s' "$full"; return; }
+
+  # A FAIL is not a checkpoint to increment from, and syncing $base into
+  # this branch moves its fork point, which would otherwise pull $base's
+  # own commits into the diff as if this branch had written them.
+  verdict=$(jq -r --arg l "$label" '.[$l].verdict // empty' "$TASKS/$slug/gate.json" 2>/dev/null || true)
+  [ "$verdict" = PASS ] || { printf '%s' "$full"; return; }
+  mb_now=$(git -C "$tree" merge-base "$base" HEAD 2>/dev/null || true)
+  mb_then=$(git -C "$tree" merge-base "$base" "$since" 2>/dev/null || true)
+  [ "$mb_now" = "$mb_then" ] || { printf '%s' "$full"; return; }
+
+  head=$(git -C "$tree" rev-parse HEAD)
+  if [ "$since" = "$head" ]; then
+    # git diff $since already includes any uncommitted change, so a dirty
+    # tree still has something to review from here. A clean one has
+    # nothing new at all: printing nothing tells the caller to keep the
+    # last verdict instead of paying for an empty review.
+    if [ "$(git_dirty "$tree")" != 0 ]; then
+      printf '%s' "$since"
+    fi
+    return
+  fi
+
+  printf '%s' "$since"
 }
 
 # Whether a task is ready to land: both A and B last passed, and both did so
@@ -1599,10 +1677,11 @@ cap_env_scrub() {
   local scrub=(-u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL
     -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL -u CLAUDE_CODE_SUBAGENT_MODEL
     -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SSE_PORT -u CODEX_SANDBOX)
-  local cap_var
-  while IFS= read -r cap_var; do
+  local cap_var cap_vars
+  mapfile -t cap_vars < <(compgen -e CAP_ || true)
+  for cap_var in "${cap_vars[@]}"; do
     scrub+=(-u "$cap_var")
-  done < <(compgen -e CAP_ || true)
+  done
   printf '%s\n' "${scrub[@]}"
 }
 

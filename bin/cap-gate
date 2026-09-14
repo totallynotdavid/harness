@@ -28,81 +28,103 @@ commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || e
 dirty=$(git_dirty "$CAP_TREE")
 [ "$commits" -gt 0 ] || [ "$dirty" != 0 ] || die "$slug has no changes against $CAP_BASE"
 
-diff_from=$(diff_base "$CAP_TREE" "$CAP_BASE")
+# --full reviews the whole branch. A plain round reviews only what changed
+# since gate B's own last PASS, so a task 24 rounds in re-reviews the
+# round's own diff, not machinery two rounds already passed unchanged.
+# Only gate B ever runs a plain round (below), so only its last commit
+# matters here. Empty means nothing has changed since that PASS at all:
+# nothing to review, so this round runs no reviewer and touches no record.
+if [ "$full" = 1 ]; then
+  since=$(diff_base "$CAP_TREE" "$CAP_BASE")
+else
+  since=$(gate_review_since "$slug" B "$CAP_TREE" "$CAP_BASE")
+fi
 
-prompt="Read $CAP_HOME/rules/code.md, then review every change in this
-worktree against $diff_from (git diff $diff_from, plus any uncommitted change).
+incomplete=0
+out_dir=$CAP_HOME/notes/$CAP_PROJECT
+mkdir -p "$out_dir" "$TASKS/$slug"
+
+if [ -z "$since" ]; then
+  printf '%s: nothing has changed since gate B last passed; not re-reviewing\n' "$slug"
+else
+  prompt="Read $CAP_HOME/rules/code.md, then review every change in this
+worktree since $since (git diff $since, plus any uncommitted change).
 Report concrete defects: what is wrong, where, and the failure it causes. State
 what you checked and what you verified as working, whether or not you found a
 defect. Do not edit files. End with a single line, exactly: GATE: PASS or
 GATE: FAIL."
 
-out_dir=$CAP_HOME/notes/$CAP_PROJECT
-mkdir -p "$out_dir"
-mkdir -p "$TASKS/$slug"
-
-# Gate B (cheap) runs every round; Gate A (expensive) only on --full (see
-# docs/pipeline-notes.md). Both are roles, not models: cap-ask sizes each
-# against the account's current window. Resolve both here, not per cap-ask call,
-# so Gate B picks a different peer when both would use the same profile.
-profiles=()
-gate_a=""
-if [ "$full" = 1 ]; then
-  gate_a=$(role_profile_or_die gate-a)
-  profiles+=("A $gate_a")
-fi
-gate_b=$(role_profile gate-b "$gate_a" || true)
-if [ -z "$gate_b" ]; then
-  if [ -n "$gate_a" ]; then
-    warn "no second profile is available below $gate_a; running gate B on $gate_a too, which is one opinion, not two"
-    gate_b=$gate_a
-  else
-    gate_b=$(role_profile_or_die gate-b)
+  # Gate B (cheap) runs every round; Gate A (expensive) only on --full (see
+  # docs/pipeline-notes.md). Both are roles, not models: cap-ask sizes each
+  # against the account's current window. Resolve both here, not per cap-ask call,
+  # so Gate B picks a different peer when both would use the same profile.
+  profiles=()
+  gate_a=""
+  if [ "$full" = 1 ]; then
+    gate_a=$(role_profile_or_die gate-a)
+    profiles+=("A $gate_a")
   fi
-fi
-profiles+=("B $gate_b")
-
-fp=$(gate_fingerprint "$CAP_TREE" "$CAP_BASE")
-
-# Iterate an array, never a pipe or a here-string. cap-ask launches a harness
-# that inherits the loop's stdin and eats the remaining profiles, so every
-# gate after the first silently never runs while the command still exits 0.
-# cap-verify had the same defect against its task list.
-incomplete=0
-for pair in "${profiles[@]}"; do
-  read -r label profile <<<"$pair"
-  out=$out_dir/$slug.gate-$label.md
-
-  printf '## gate %s (%s)\n\n' "$label" "$profile"
-  # Don't abort on cap-ask failure; session-limit rejection leaves empty report.
-  # Write to temp, promote only after verdict extraction so mid-review death
-  # leaves the last good report intact. Pass CAP_ASK_KEY fingerprint to prevent
-  # a resumed round from restating a stale verdict against changed code.
-  tmp=$(mktemp)
-  if ! CAP_ASK_KEY=$fp "$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$tmp"; then
-    warn "gate $label ($profile) did not run to completion"
-  fi
-  printf '\n'
-
-  # No verdict, or a verdict with no evidence behind it (gate_has_evidence),
-  # means failed gate, not silent pass - recording either would claim a
-  # result nobody reached.
-  verdict=$(gate_verdict "$tmp")
-  if [ "$verdict" = UNKNOWN ] || ! gate_has_evidence "$tmp"; then
-    if [ "$verdict" = UNKNOWN ]; then
-      warn "gate $label ($profile) reached no verdict for $slug ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
+  gate_b=$(role_profile gate-b "$gate_a" || true)
+  if [ -z "$gate_b" ]; then
+    if [ -n "$gate_a" ]; then
+      warn "no second profile is available below $gate_a; running gate B on $gate_a too, which is one opinion, not two"
+      gate_b=$gate_a
     else
-      warn "gate $label ($profile) said $verdict for $slug with nothing behind it ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
+      gate_b=$(role_profile_or_die gate-b)
     fi
-    rm -f "$tmp"
-    incomplete=1
-    continue
   fi
-  mv "$tmp" "$out"
-  gate_record "$slug" "$label" "$verdict" "$fp"
-done
+  profiles+=("B $gate_b")
 
-printf 'reports: %s/%s.gate-A.md %s/%s.gate-B.md\n' "$out_dir" "$slug" "$out_dir" "$slug"
+  # Scoped to $since, not always the full branch. gate_ready compares
+  # against the full-branch fingerprint, so this only matches it when
+  # $since was the full range.
+  fp=$(gate_fingerprint_from "$CAP_TREE" "$since")
+
+  # Captured here, not after the review returns: task_lock only blocks
+  # cap-commit/cap-send, never the task's own live agent, which is free to
+  # add a commit while cap-ask is still running. Recording that later HEAD
+  # would claim a commit as reviewed that closed after the diff did.
+  reviewed_commit=$(git -C "$CAP_TREE" rev-parse HEAD)
+
+  # Iterate an array, never a pipe or a here-string. cap-ask launches a harness
+  # that inherits the loop's stdin and eats the remaining profiles, so every
+  # gate after the first silently never runs while the command still exits 0.
+  # cap-verify had the same defect against its task list.
+  for pair in "${profiles[@]}"; do
+    read -r label profile <<<"$pair"
+    out=$out_dir/$slug.gate-$label.md
+
+    printf '## gate %s (%s)\n\n' "$label" "$profile"
+    # Don't abort on cap-ask failure; session-limit rejection leaves empty report.
+    # Write to temp, promote only after verdict extraction so mid-review death
+    # leaves the last good report intact. Pass CAP_ASK_KEY fingerprint to prevent
+    # a resumed round from restating a stale verdict against changed code.
+    tmp=$(mktemp)
+    if ! CAP_ASK_KEY=$fp "$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$tmp"; then
+      warn "gate $label ($profile) did not run to completion"
+    fi
+    printf '\n'
+
+    # No verdict, or a verdict with no evidence behind it (gate_has_evidence),
+    # means failed gate, not silent pass - recording either would claim a
+    # result nobody reached.
+    verdict=$(gate_verdict "$tmp")
+    if [ "$verdict" = UNKNOWN ] || ! gate_has_evidence "$tmp"; then
+      if [ "$verdict" = UNKNOWN ]; then
+        warn "gate $label ($profile) reached no verdict for $slug ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
+      else
+        warn "gate $label ($profile) said $verdict for $slug with nothing behind it ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
+      fi
+      rm -f "$tmp"
+      incomplete=1
+      continue
+    fi
+    mv "$tmp" "$out"
+    gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit"
+  done
+
+  printf 'reports: %s/%s.gate-A.md %s/%s.gate-B.md\n' "$out_dir" "$slug" "$out_dir" "$slug"
+fi
 
 # Exit status is the machine-readable verdict, so a caller can chain on it:
 #   0  ready to land
@@ -114,11 +136,14 @@ if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
   exit 0
 fi
 
-# Say this on every path. It used to print only under --full, so a plain
-# B-only round that produced nothing looked exactly like a clean one.
 printf 'NOT ready to land: %s (see reports above)\n' "$slug"
 if [ "$incomplete" != 0 ]; then
-  warn "$slug: a gate did not complete; re-run cap gate $slug"
+  # Retry with the scope that just failed. A plain retry only reaches
+  # ready when gate_review_since itself falls back to the full range (a
+  # first run, a FAIL, or a moved fork point) - not on every plain round.
+  retry="cap gate $slug"
+  [ "$full" = 1 ] && retry="$retry --full"
+  warn "$slug: a gate did not complete; re-run $retry"
   exit 2
 fi
 exit 1

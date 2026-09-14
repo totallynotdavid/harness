@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# lint-procsub - find a `while` loop fed by a process substitution whose
+# producer's exit status is never checked. Process substitution loses that
+# exit status: a failed producer and an empty one both end the loop after
+# zero iterations, so a guard built this way reports clean when it could
+# not run.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+mapfile -t files < <(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lint-* bin/hooks/*.sh)
+
+status=0
+for f in "${files[@]}"; do
+	mapfile -t hits < <(awk '
+		{
+			t = $0
+			sub(/^[ \t]+/, "", t)
+			if (t == "" || t ~ /^#/) next
+			k++; ln[k] = FNR; tx[k] = t
+		}
+		END {
+			for (i = 1; i <= k; i++) {
+				if (tx[i] !~ /done < <\(/) continue
+				checked = 0
+				for (j = i + 1; j <= i + 3 && j <= k; j++) {
+					if (tx[j] ~ /wait[ \t]+"?\$(pid|!)"?/) { checked = 1; break }
+				}
+				if (!checked) print ln[i]
+			}
+		}
+	' "$f")
+
+	for line in "${hits[@]}"; do
+		[ -n "$line" ] || continue
+		printf '%s:%s: process substitution exit status is never checked\n' "$f" "$line" >&2
+		status=1
+	done
+done
+
+[ "$status" = 0 ] && printf 'lint-procsub: no unchecked process substitution\n'
+exit "$status"

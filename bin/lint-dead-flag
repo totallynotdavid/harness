@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# lint-dead-flag - find a flag parsed into a variable nothing after the
+# parsing loop reads: accepted and silently dropped.
+#
+# Does not follow an indirect read (${!name}, a dispatched process's env)
+# or a read added elsewhere - those stay uncovered.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+mapfile -t files < <(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lint-* bin/hooks/*.sh)
+
+status=0
+for f in "${files[@]}"; do
+	# Every assignment in a flag-labeled arm (never the bare `*)` arm),
+	# paired with its own loop's end so two flag loops don't share a
+	# boundary. Each "name=" must start the line or follow a space or `;`,
+	# so "tokens=" inside `${1#--max-tokens=}` is not mistaken for one.
+	mapfile -t records < <(awk '
+		/while \[ \$# -gt 0 \]/ { inloop = 1; flagarm = 0; n = 0; delete names; next }
+		inloop && /^[ \t]*done[ \t;]*$/ {
+			for (i = 1; i <= n; i++) print NR "\t" names[i]
+			inloop = 0; next
+		}
+		inloop {
+			if ($0 ~ /^[ \t]*#/) next
+			is_label = ($0 ~ /^[ \t]*-[^)]*\)/)
+			if (is_label) flagarm = 1
+			else if ($0 ~ /^[ \t]*\*\)/) flagarm = 0
+			if (!flagarm) next
+			line = $0
+			if (is_label) {
+				paren = index(line, ")")
+				if (paren > 0) line = substr(line, paren + 1)
+			}
+			pos = 1
+			while (match(substr(line, pos), /(^|[ \t;])[A-Za-z_][A-Za-z0-9_]*=/)) {
+				full = substr(line, pos + RSTART - 1, RLENGTH)
+				sub(/^[ \t;]/, "", full)
+				sub(/=$/, "", full)
+				n++
+				names[n] = full
+				pos += RSTART + RLENGTH - 1
+			}
+		}
+	' "$f")
+	pid=$!
+	wait "$pid" || { printf '%s: could not scan for flag assignments\n' "$f" >&2; status=1; continue; }
+
+	seen=""
+	for record in "${records[@]}"; do
+		end=${record%%$'\t'*}
+		name=${record#*$'\t'}
+		key="$end:$name"
+		case $seen in *" $key "*) continue ;; esac
+		seen="$seen $key "
+
+		hits=$(tail -n "+$((end + 1))" "$f" | grep -cE "\\\$\\{?$name\\b" || true)
+		[ "$hits" -gt 0 ] && continue
+		printf '%s: %s is parsed as a flag but never read after the parsing loop\n' "$f" "$name" >&2
+		status=1
+	done
+done
+
+[ "$status" = 0 ] && printf 'lint-dead-flag: no flag parsed and never read\n'
+exit "$status"

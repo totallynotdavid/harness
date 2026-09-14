@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# lint-andlist - find a bare `[ cond ] && cmd` whose false status escapes into set -e.
-#
-# Bash exempts the test in `a && b` from set -e, but not the list itself. So the
-# shape is harmless mid-body and fatal in tail position: as a script's last
-# statement it becomes the exit status, and as a function's last statement it
-# becomes the return value, which kills the caller the moment that function is
-# invoked bare. shellcheck has no diagnostic for either.
+# lint-andlist - find a bare `[ cond ] && cmd` in tail position, where its
+# false status becomes the script's exit status or function's return value.
+# Bash exempts the test from set -e, but not the list itself, so this kills
+# the caller when false. shellcheck has no diagnostic for this.
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/.."
@@ -79,6 +76,10 @@ bare_callers() {
 
 status=0
 for f in "${files[@]}"; do
+	# Read once into a variable: a `while ... done < <(scan "$f")` loop
+	# can't tell scan() failing from scan() finding nothing, and either
+	# way this would report the file clean.
+	found=$(scan "$f") || { printf '%s: could not scan for the and-list pattern\n' "$f" >&2; status=1; continue; }
 	while IFS=$'\037' read -r file line kind fn text; do
 		[ -n "${file:-}" ] || continue
 		if [ "$kind" = script ]; then
@@ -94,7 +95,7 @@ for f in "${files[@]}"; do
 			printf '    called bare at: %s\n' "$(printf '%s' "$callers" | tr '\n' ' ')" >&2
 			status=1
 		fi
-	done < <(scan "$f")
+	done <<<"$found"
 done
 
 [ "$status" = 0 ] && printf 'lint-andlist: no escaping and-list\n'

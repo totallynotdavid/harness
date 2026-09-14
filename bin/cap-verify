@@ -51,16 +51,19 @@ fi
 cd "$CAP_TREE" || die "$slug: no worktree at $CAP_TREE"
 
 sha=$(git -C "$CAP_TREE" rev-parse HEAD 2>/dev/null || true)
-dirty=$(git_dirty "$CAP_TREE")
+# Both uses below - the resumption cache and verified_record - trust a
+# pass as describing $sha, so both require the tree that actually ran to
+# be fully clean, untracked files included.
+dirty_count=$(git_dirty "$CAP_TREE")
 
 # Which scripts already passed at this commit, so a run that dies partway
 # through resumes instead of starting over. The build is both the most
 # expensive script and the first thing a constrained box kills, which is the
-# combination that keeps a run from ever reaching the end. Only a clean tree
-# earns an entry: a pass with uncommitted changes says nothing about the
-# commit.
+# combination that keeps a run from ever reaching the end. Only a fully
+# clean tree earns an entry: a pass cached from a dirty tree would later be
+# trusted (skipped, not re-run) even after the tree went clean.
 progress=""
-if [ -n "$sha" ] && [ "$dirty" = 0 ]; then
+if [ -n "$sha" ] && [ "$dirty_count" = 0 ]; then
   mkdir -p "$VERIFIED/$CAP_PROJECT"
   progress=$VERIFIED/$CAP_PROJECT/$sha.scripts
   [ "$again" = 0 ] || rm -f "$progress"
@@ -135,17 +138,17 @@ run() {
     return 0
   fi
   printf '=== %s ===\n' "$key"
-  local m rss rc
+  local m rss rc=0
   if [ -x /usr/bin/time ]; then
     m=$(mktemp)
-    capped /usr/bin/time -f '%M' -o "$m" "$@"; rc=$?
+    capped /usr/bin/time -f '%M' -o "$m" "$@" || rc=$?
     if [ "$rc" = 0 ]; then mark_passed "$key"; else status=1; failed+=("$key"); fi
     rss=$(tail -1 "$m" 2>/dev/null || echo 0)
     rm -f "$m"
     case $rss in '' | *[!0-9]*) rss=0 ;; esac
     [ "$rss" -le "$peak_kb" ] || peak_kb=$rss
   else
-    capped "$@"; rc=$?
+    capped "$@" || rc=$?
     if [ "$rc" = 0 ]; then mark_passed "$key"; else status=1; failed+=("$key"); fi
   fi
 }
@@ -166,9 +169,10 @@ on_exit() {
     project_peak_record "$CAP_PROJECT" "$((peak_kb / 1024))"
     printf 'peak %s MB for %s\n' "$((peak_kb / 1024))" "$CAP_PROJECT"
   fi
-  # Only a clean tree earns the record. A pass with uncommitted changes says
-  # nothing about the commit anyone else would fork from.
-  if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$dirty" = 0 ]; then
+  # Only a fully clean tree earns the record. A pass with uncommitted or
+  # untracked changes says nothing about the commit anyone else would fork
+  # from.
+  if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$dirty_count" = 0 ]; then
     verified_record "$CAP_PROJECT" "$sha"
     [ -z "$progress" ] || rm -f "$progress"
     printf '%s verified at %s\n' "$CAP_PROJECT" "${sha:0:12}"

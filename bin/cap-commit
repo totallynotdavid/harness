@@ -67,6 +67,12 @@ if [ -n "$bad_trailers" ]; then
   declare -A remap
   new=""
   rewriting=0
+  # Read once into a variable: a `while ... done < <(rev-list ...)` loop
+  # can't tell rev-list failing from an empty range.
+  commits_to_rewrite=$(git -C "$CAP_TREE" rev-list --reverse --topo-order "$CAP_BASE..HEAD") ||
+    die "$slug: could not list commits between $CAP_BASE and HEAD"
+  [ -n "$commits_to_rewrite" ] ||
+    die "$slug: found attribution to strip but rev-list found no commits between $CAP_BASE and HEAD; this should not happen - report it"
   while IFS= read -r old; do
     # Read once into a variable and matched with a here-string, not piped
     # into grep: a large message piped into grep -q lets grep exit at its
@@ -114,7 +120,7 @@ if [ -n "$bad_trailers" ]; then
         git -C "$CAP_TREE" commit-tree "${sign_flag[@]}" "${parent_args[@]}" "$tree" -m "$msg"
     ) || die "$slug: could not strip AI attribution automatically; fix it by hand"
     remap[$old]=$new
-  done < <(git -C "$CAP_TREE" rev-list --reverse --topo-order "$CAP_BASE..HEAD")
+  done <<<"$commits_to_rewrite"
 
   [ -n "$new" ] ||
     die "$slug: found attribution to strip but rewrote no commit; this should not happen - report it"
