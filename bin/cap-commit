@@ -33,6 +33,42 @@ snapshot_tree() {
   git -C "$CAP_TREE" branch "$snap_ref" "$snap_commit"
 }
 
+extract_commit_plan() {
+  local answer=$1 block
+  block=$(printf '%s\n' "$answer" | awk '
+    /^```json[[:space:]]*$/ { inside=1; current=""; next }
+    /^```[[:space:]]*$/ && inside { last=current; inside=0; next }
+    inside { current=current $0 ORS }
+    END { if (inside) printf "%s", current; else if (last != "") printf "%s", last }
+  ')
+  if [ -n "$block" ]; then
+    printf '%s' "$block"
+  else
+    printf '%s\n' "$answer"
+  fi
+}
+
+prepare_commit_plan() {
+  local changed plan_answer plan_json problems
+  changed=$(git -C "$CAP_TREE" diff --name-only "$snap_commit^" "$snap_commit")
+  [ -n "$changed" ] || die "$slug has no changed paths to plan"
+  plan_path=$TASKS/$slug/commit-plan.json
+  plan_prompt="Read $CAP_HOME/rules/commits.md in full. Inspect the current working-tree changes without editing them or committing anything. Design the exact commit groups before the captain asks another session to write them.
+
+Return exactly one fenced json block with this shape:
+{\"commits\":[{\"summary\":\"Imperative summary under 50 characters\",\"why\":\"The reason this change exists.\",\"paths\":[\"relative/path\"]}]}
+
+Every changed path must appear exactly once. Keep files that form one logical change in the same group. The groups are committed in the listed order. The body of each resulting commit must begin with the exact line \"Why: <why>\".
+
+Changed paths:
+$changed"
+  plan_answer=$("$CAP_BIN/cap-ask" "$profile" "$plan_prompt" --dir "$CAP_TREE" --label "commit-plan-$slug")
+  plan_json=$(extract_commit_plan "$plan_answer")
+  printf '%s\n' "$plan_json" >"$plan_path"
+  problems=$(commit_plan_paths_report "$plan_path" "$changed")
+  [ -z "$problems" ] || die "$slug's commit plan is invalid:\n$problems"
+}
+
 parse_args "$@"
 task_load "$slug"
 task_lock "$slug"
@@ -42,16 +78,17 @@ cap_completion_start commit "$slug"
 [ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to commit"
 
 snapshot_tree
+prepare_commit_plan
 
-prompt="Read $CAP_HOME/rules/commits.md in full. Some or all changes may
+prompt="Read $CAP_HOME/rules/commits.md and $plan_path in full. Some or all changes may
 already be staged - the captain may have run git add . to review them. That
 is normal, not a grouping signal. Unstage everything first (git restore
 --staged . or git reset), then stage and commit every change in this
-worktree yourself. Use git add -p to split unrelated changes into separate
-commits. Keep files that form one logical change together, and make each
-commit stand on its own. Summaries must be imperative, specific and at most
-50 characters. Leave a blank second line. Write a body only when it explains
-why the change exists. Do not edit files. Do not push."
+worktree yourself in the exact groups and order in the commit plan. Use git
+add -p inside each planned group. Keep each group in one commit and make each
+commit stand on its own. Use the exact planned summary. Leave a blank second
+line, then write the exact planned line 'Why: <why>' as the first body line.
+Do not edit source files or the commit plan. Do not push."
 
 "$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" --label "commit-$slug"
 
@@ -139,27 +176,32 @@ if [ -n "$bad_trailers" ]; then
 $(printf '%s\n' "$still_bad" | sed 's/^/  /')"
 fi
 
-# The commit agent was told the rules, but the write path still needs a
-# deterministic final check. Give it one repair pass so a bad summary costs a
-# reword rather than a rebase after the gates have run.
+# The commit agent was told the rules and the plan, but the write path still
+# needs a deterministic final check. Give it one repair pass so a bad message
+# or grouping costs a repair rather than a rebase after the gates have run.
 bad_messages=$(commit_rule_report "$CAP_TREE" "$CAP_BASE")
-if [ -n "$bad_messages" ]; then
-	warn "$slug: commit messages need repair before the task can continue:"
-	printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
-	repair_prompt="Read $CAP_HOME/rules/commits.md in full. The commits you just
-wrote in this worktree violate these checks:
+bad_plan=$(commit_plan_report "$CAP_TREE" "$CAP_BASE" "$plan_path")
+if [ -n "$bad_messages" ] || [ -n "$bad_plan" ]; then
+	warn "$slug: commit messages or grouping need repair before the task can continue:"
+	[ -z "$bad_messages" ] || printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
+	[ -z "$bad_plan" ] || printf '%s\n' "$bad_plan" | sed 's/^/  /' >&2
+	repair_prompt="Read $CAP_HOME/rules/commits.md and $plan_path in full. The commits you just
+wrote in this worktree violate these checks or the required grouping:
 
 $bad_messages
+$bad_plan
 
-Rewrite only the commit messages or commit grouping needed to fix those
-violations. Keep the final working-tree content exactly unchanged. Every
-commit must have one coherent purpose, and files that make up one logical
-change must stay together. Do not edit source files. Do not push."
+Rewrite only the commit messages or commit grouping needed to match the plan.
+Keep the final working-tree content and the plan exactly unchanged. Use the
+exact planned summary and 'Why: <why>' body line. Do not edit source files or
+the plan. Do not push."
 	"$CAP_BIN/cap-ask" "$profile" "$repair_prompt" --dir "$CAP_TREE" --label "commit-repair-$slug"
 	bad_messages=$(commit_rule_report "$CAP_TREE" "$CAP_BASE")
-	[ -z "$bad_messages" ] || {
-		printf 'cap: %s still has invalid commit messages after one repair pass:\n' "$slug" >&2
-		printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
+	bad_plan=$(commit_plan_report "$CAP_TREE" "$CAP_BASE" "$plan_path")
+	[ -z "$bad_messages" ] && [ -z "$bad_plan" ] || {
+		printf 'cap: %s still violates its commit rules or plan after one repair pass:\n' "$slug" >&2
+		[ -z "$bad_messages" ] || printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
+		[ -z "$bad_plan" ] || printf '%s\n' "$bad_plan" | sed 's/^/  /' >&2
 		die "repair them by hand, then run cap commit again"
 	}
 fi

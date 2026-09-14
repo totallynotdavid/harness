@@ -16,6 +16,7 @@ Captain is a shell CLI. Each part of its state has one source of truth.
 | Measured memory cost | `state/peaks/<project>` | `bin/cap-verify`, `bin/lib/` |
 | Package-manager caches | `CAP_CACHE_ROOT` | `bin/lib/` |
 | Project conventions | `cases/<project>/conventions.md` | `bin/cap-conventions`, `bin/cap-check` |
+| Commit plans | `state/tasks/<slug>/commit-plan.json` | `bin/cap-commit`, `bin/cap-land` |
 | Notes and reports | `notes/<project>/` | task and scout commands |
 | Project list | `map.md` (generated, untracked) | `bin/cap-map` |
 | Skill sources | `config/skill-sources.tsv` | `bin/cap-skills`, `bin/cap-explore` |

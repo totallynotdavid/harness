@@ -190,18 +190,33 @@ gate_review_since() {
   full=$(diff_base "$tree" "$base")
 
   since=$(gate_last_commit "$slug" "$label")
-  [ -n "$since" ] || { printf '%s' "$full"; return; }
-  git -C "$tree" cat-file -e "$since" 2>/dev/null || { printf '%s' "$full"; return; }
-  git -C "$tree" merge-base --is-ancestor "$since" HEAD 2>/dev/null || { printf '%s' "$full"; return; }
+  [ -n "$since" ] || {
+    printf '%s' "$full"
+    return
+  }
+  git -C "$tree" cat-file -e "$since" 2>/dev/null || {
+    printf '%s' "$full"
+    return
+  }
+  git -C "$tree" merge-base --is-ancestor "$since" HEAD 2>/dev/null || {
+    printf '%s' "$full"
+    return
+  }
 
   # A FAIL is not a checkpoint to increment from, and syncing $base into
   # this branch moves its fork point, which would otherwise pull $base's
   # own commits into the diff as if this branch had written them.
   verdict=$(jq -r --arg l "$label" '.[$l].verdict // empty' "$TASKS/$slug/gate.json" 2>/dev/null || true)
-  [ "$verdict" = PASS ] || { printf '%s' "$full"; return; }
+  [ "$verdict" = PASS ] || {
+    printf '%s' "$full"
+    return
+  }
   mb_now=$(git -C "$tree" merge-base "$base" HEAD 2>/dev/null || true)
   mb_then=$(git -C "$tree" merge-base "$base" "$since" 2>/dev/null || true)
-  [ "$mb_now" = "$mb_then" ] || { printf '%s' "$full"; return; }
+  [ "$mb_now" = "$mb_then" ] || {
+    printf '%s' "$full"
+    return
+  }
 
   head=$(git -C "$tree" rev-parse HEAD)
   if [ "$since" = "$head" ]; then
@@ -328,7 +343,7 @@ ai_trailer_report() {
 # this beside the landing check so a branch cannot pass one command and fail
 # the other for the same message.
 commit_rule_report() {
-  local tree=$1 base=$2 hashes c short subject message second ai
+  local tree=$1 base=$2 hashes c short subject message second body first_body ai long_body
   hashes=$(git -C "$tree" log --format=%H "$base..HEAD") ||
     die "could not list commits $base..HEAD in $tree; cannot check commit messages"
 
@@ -338,6 +353,7 @@ commit_rule_report() {
     subject=$(git -C "$tree" log -1 --format=%s "$c")
     message=$(git -C "$tree" log -1 --format=%B "$c")
     second=$(printf '%s\n' "$message" | sed -n '2p')
+    body=$(printf '%s\n' "$message" | sed '1,2d')
 
     if [ -z "$subject" ]; then
       printf '%s: summary is empty\n' "$short"
@@ -354,10 +370,118 @@ commit_rule_report() {
     esac
     [ -z "$second" ] ||
       printf '%s: the second line must be blank\n' "$short"
+
+    if [ -n "$body" ]; then
+      first_body=$(printf '%s\n' "$body" | awk 'NF { print; exit }')
+      case $first_body in
+      Why:\ ?*) ;;
+      *) printf '%s: body must begin with Why: and explain the reason for the change\n' "$short" ;;
+      esac
+      long_body=$(printf '%s\n' "$body" | awk 'length($0) > 72 { print; exit }')
+      [ -z "$long_body" ] ||
+        printf '%s: body line exceeds 72 characters: %s\n' "$short" "$long_body"
+      if grep -q '—' <<<"$body"; then
+        printf '%s: body contains an em dash\n' "$short"
+      fi
+    fi
   done <<<"$hashes"
 
   ai=$(ai_trailer_report "$tree" "$base")
   [ -z "$ai" ] || printf '%s\n' "$ai"
+}
+
+commit_plan_shape_report() {
+  local plan=$1 duplicates
+  [ -s "$plan" ] || {
+    printf 'commit plan is missing: %s\n' "$plan"
+    return 0
+  }
+  jq -e '
+    (.commits | type == "array") and (.commits | length > 0) and
+    all(.commits[];
+      ((.summary | type) == "string" and (.summary | length) > 0) and
+      ((.why | type) == "string" and (.why | length) > 0 and (.why | contains("\n") | not)) and
+      ((.paths | type) == "array" and (.paths | length) > 0) and
+      all(.paths[];
+        (type == "string" and length > 0 and (startswith("/") | not) and ((split("/")[0]) != ".."))
+      )
+    )
+  ' "$plan" >/dev/null 2>&1 || {
+    printf 'commit plan must contain commits with summary, why, and relative paths: %s\n' "$plan"
+    return 0
+  }
+  duplicates=$(jq -r '.commits[].paths[]' "$plan" | sort | uniq -d)
+  [ -z "$duplicates" ] || {
+    printf 'commit plan assigns a path to more than one commit: %s\n' "$(tr '\n' ' ' <<<"$duplicates")"
+  }
+}
+
+commit_plan_paths_report() {
+  local plan=$1 actual_paths=$2 planned_paths problems
+  problems=$(commit_plan_shape_report "$plan")
+  [ -z "$problems" ] || {
+    printf '%s' "$problems"
+    return 0
+  }
+  planned_paths=$(jq -r '.commits[].paths[]' "$plan" | sort -u)
+  [ "$planned_paths" = "$actual_paths" ] || {
+    printf 'commit plan paths do not cover exactly the changed files\n'
+    printf '  planned: %s\n' "$(tr '\n' ' ' <<<"$planned_paths")"
+    printf '  actual: %s\n' "$(tr '\n' ' ' <<<"$actual_paths")"
+  }
+}
+
+commit_plan_report() {
+  local tree=$1 base=$2 plan=$3 hashes c short expected_summary actual_summary expected_why first_body
+  local actual_paths planned_commit_paths actual_commit_paths count planned_count i problems
+  problems=$(commit_plan_shape_report "$plan")
+  [ -z "$problems" ] || {
+    printf '%s' "$problems"
+    return 0
+  }
+
+  hashes=$(git -C "$tree" log --reverse --format=%H "$base..HEAD") ||
+    die "could not list commits $base..HEAD in $tree; cannot check the commit plan"
+  actual_paths=$(while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    git -C "$tree" diff-tree --no-commit-id --name-only -r "$c"
+  done <<<"$hashes" | sort -u)
+  problems=$(commit_plan_paths_report "$plan" "$actual_paths")
+  [ -z "$problems" ] || {
+    printf '%s' "$problems"
+    return 0
+  }
+
+  count=$(printf '%s\n' "$hashes" | sed '/^$/d' | wc -l | tr -d ' ')
+  planned_count=$(jq '.commits | length' "$plan")
+  [ "$count" = "$planned_count" ] || {
+    printf 'commit plan has %s group(s), but the branch has %s commit(s)\n' "$planned_count" "$count"
+    return 0
+  }
+
+  i=0
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    short=$(git -C "$tree" log -1 --format=%h "$c")
+    expected_summary=$(jq -r ".commits[$i].summary" "$plan")
+    actual_summary=$(git -C "$tree" log -1 --format=%s "$c")
+    [ "$expected_summary" = "$actual_summary" ] ||
+      printf '%s: plan summary is %s, commit summary is %s\n' "$short" "$expected_summary" "$actual_summary"
+
+    planned_commit_paths=$(jq -r ".commits[$i].paths[]" "$plan" | sort -u)
+    actual_commit_paths=$(git -C "$tree" diff-tree --no-commit-id --name-only -r "$c" | sort -u)
+    [ "$planned_commit_paths" = "$actual_commit_paths" ] || {
+      printf '%s: planned paths do not match the commit paths\n' "$short"
+      printf '  planned: %s\n' "$(tr '\n' ' ' <<<"$planned_commit_paths")"
+      printf '  actual: %s\n' "$(tr '\n' ' ' <<<"$actual_commit_paths")"
+    }
+
+    expected_why=$(jq -r ".commits[$i].why" "$plan")
+    first_body=$(git -C "$tree" log -1 --format=%B "$c" | sed '1,2d' | awk 'NF { print; exit }')
+    [ "$first_body" = "Why: $expected_why" ] ||
+      printf '%s: body must begin with the planned reason: Why: %s\n' "$short" "$expected_why"
+    i=$((i + 1))
+  done <<<"$hashes"
 }
 
 git_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null || echo '-'; }
@@ -381,7 +505,7 @@ harness_trust() {
       "$HOME/.claude.json" >/dev/null 2>&1 && return 0
     tmpj=$(mktemp)
     if jq --arg d "$dir" '.projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true})' \
-         "$HOME/.claude.json" >"$tmpj" 2>/dev/null && [ -s "$tmpj" ]; then
+      "$HOME/.claude.json" >"$tmpj" 2>/dev/null && [ -s "$tmpj" ]; then
       cp "$HOME/.claude.json" "$HOME/.claude.json.cap-bak" && mv "$tmpj" "$HOME/.claude.json"
     else
       rm -f "$tmpj"
