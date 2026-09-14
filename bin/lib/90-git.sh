@@ -337,6 +337,36 @@ ai_trailer_report() {
   done <<<"$hashes"
 }
 
+commit_subject_report() {
+  local label=$1 subject=$2 action
+  local conventional_re='^(revert:[[:space:]])?(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\([^)]*\))?!?:[[:space:]]'
+
+  if [ -z "$subject" ]; then
+    printf '%s: summary is empty\n' "$label"
+  elif [ "${#subject}" -gt 50 ]; then
+    printf '%s: summary is %s characters: %s\n' "$label" "${#subject}" "$subject"
+  fi
+
+  case $subject in
+  *$'\n'*) printf '%s: summary must be one line\n' "$label" ;;
+  [!a-z]*) printf '%s: summary must start with a lowercase word: %s\n' "$label" "$subject" ;;
+  esac
+
+  if [[ $subject == *": "* ]]; then
+    action=${subject#*": "}
+    case $action in
+    [!a-z]*) printf '%s: summary text after an area prefix must start lowercase: %s\n' "$label" "$subject" ;;
+    esac
+  fi
+
+  if [[ $subject =~ $conventional_re ]]; then
+    printf '%s: summary uses a conventional-commit prefix: %s\n' "$label" "$subject"
+  fi
+  case $subject in
+  *.) printf '%s: summary ends with a period: %s\n' "$label" "$subject" ;;
+  esac
+}
+
 # Every commit message rule that cap-commit can check before it returns. Keep
 # this beside the landing check so a branch cannot pass one command and fail
 # the other for the same message.
@@ -353,26 +383,14 @@ commit_rule_report() {
     second=$(printf '%s\n' "$message" | sed -n '2p')
     body=$(printf '%s\n' "$message" | sed '1,2d')
 
-    if [ -z "$subject" ]; then
-      printf '%s: summary is empty\n' "$short"
-    elif [ "${#subject}" -gt 50 ]; then
-      printf '%s: summary is %s characters: %s\n' "$short" "${#subject}" "$subject"
-    fi
-    case $subject in
-    feat:* | feat\(*\):* | fix:* | fix\(*\):*)
-      printf '%s: summary uses a conventional-commit prefix: %s\n' "$short" "$subject"
-      ;;
-    esac
-    case $subject in
-    *.) printf '%s: summary ends with a period: %s\n' "$short" "$subject" ;;
-    esac
+    commit_subject_report "$short" "$subject"
     [ -z "$second" ] ||
       printf '%s: the second line must be blank\n' "$short"
 
     if [ -n "$body" ]; then
-      first_body=$(printf '%s\n' "$body" | awk 'NF { print; exit }')
+      first_body=$(printf '%s\n' "$message" | sed -n '3p')
       case $first_body in
-      Why:\ ?*) ;;
+      Why:\ [![:space:]]*) ;;
       *) printf '%s: body must begin with Why: and explain the reason for the change\n' "$short" ;;
       esac
       long_body=$(printf '%s\n' "$body" | awk 'length($0) > 72 { print; exit }')
@@ -389,7 +407,7 @@ commit_rule_report() {
 }
 
 commit_plan_shape_report() {
-  local plan=$1 duplicates
+  local plan=$1 duplicates summary count i
   [ -s "$plan" ] || {
     printf 'commit plan is missing: %s\n' "$plan"
     return 0
@@ -408,6 +426,15 @@ commit_plan_shape_report() {
     printf 'commit plan must contain commits with summary, why, and relative paths: %s\n' "$plan"
     return 0
   }
+
+  count=$(jq '.commits | length' "$plan")
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    summary=$(jq -r ".commits[$i].summary" "$plan")
+    commit_subject_report "commit plan[$i]" "$summary"
+    i=$((i + 1))
+  done
+
   duplicates=$(jq -r '.commits[].paths[]' "$plan" | sort | uniq -d)
   [ -z "$duplicates" ] || {
     printf 'commit plan assigns a path to more than one commit: %s\n' "$(tr '\n' ' ' <<<"$duplicates")"
@@ -475,7 +502,7 @@ commit_plan_report() {
     }
 
     expected_why=$(jq -r ".commits[$i].why" "$plan")
-    first_body=$(git -C "$tree" log -1 --format=%B "$c" | sed '1,2d' | awk 'NF { print; exit }')
+    first_body=$(git -C "$tree" log -1 --format=%B "$c" | sed -n '3p')
     [ "$first_body" = "Why: $expected_why" ] ||
       printf '%s: body must begin with the planned reason: Why: %s\n' "$short" "$expected_why"
     i=$((i + 1))

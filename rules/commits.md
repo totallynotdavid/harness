@@ -2,20 +2,30 @@
 
 How a commit message must read. Applies to every commit, captain or agent, in any repo.
 
-## Structure
+## Subject
 
-- Summary line: one line, imperative mood (`Fix`, `Add`, `Remove`, not `Fixed`, `Adds`,
-  `Removed`), no trailing period, no `feat:`/`fix:` conventional-commit prefix. Aim for
-  about 50 characters.
-- Blank second line, always.
-- Body wrapped near 72 characters, when the change needs explaining. Its first line must
-  be `Why: ...` and state why the change was made. The diff already shows what changed.
-- A summary that resists one line is doing more than one logical change. Split it with
-  `git add -p` before committing rather than writing a summary that tries to cover both.
+- Write one subject line of at most 50 characters.
+- Start with a lowercase ASCII word and use the imperative present tense: `add`, `fix`,
+  `remove`, not `Added`, `Fixed`, or `Removed`.
+- An optional area prefix is allowed when it names the part of Captain being changed. Keep
+  it lowercase and start the description after the colon with a lowercase word, such as
+  `status: render usage`.
+- Do not use a conventional-commit type prefix such as `feat:`, `fix:`, or `chore:`.
+- Do not end the subject with a period.
+- A subject that needs several clauses usually describes several changes. Split the work
+  with `git add -p` instead of hiding multiple purposes in one line.
+
+## Body
+
+- Leave the second line blank, always.
+- If a body is present, its first line must be `Why: <reason>` with a non-empty reason.
+- Wrap body lines at 72 characters or less.
+- Keep the body for constraints, motivation, or behavior that the diff cannot show.
 
 `cap commit` records a plan before an agent writes history. Each changed path must belong
-to one planned commit group. The final commits must match those groups, summaries, and
-`Why:` lines exactly. `cap land` checks the same plan again.
+to one planned commit group. The plan uses the same subject and body rules. Final commits
+must match the groups, summaries, and `Why:` lines exactly. `cap land` checks the plan
+again.
 
 ## Style
 

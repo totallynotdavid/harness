@@ -56,9 +56,9 @@ prepare_commit_plan() {
   plan_prompt="Read $CAP_HOME/rules/commits.md in full. Inspect the current working-tree changes without editing them or committing anything. Design the exact commit groups before the captain asks another session to write them.
 
 Return exactly one fenced json block with this shape:
-{\"commits\":[{\"summary\":\"Imperative summary under 50 characters\",\"why\":\"The reason this change exists.\",\"paths\":[\"relative/path\"]}]}
+{\"commits\":[{\"summary\":\"lowercase summary under 50 characters\",\"why\":\"The reason this change exists.\",\"paths\":[\"relative/path\"]}]}
 
-Every changed path must appear exactly once. Keep files that form one logical change in the same group. The groups are committed in the listed order. The body of each resulting commit must begin with the exact line \"Why: <why>\".
+Every changed path must appear exactly once. Keep files that form one logical change in the same group. The groups are committed in the listed order. Summaries must start with a lowercase word, stay under 50 characters, and omit conventional-commit prefixes and trailing periods. The body of each resulting commit must begin with the exact line \"Why: <why>\".
 
 Changed paths:
 $changed"
