@@ -31,10 +31,9 @@ printf 'bad\n' >>"$tree/file"
 git -C "$tree" add file
 git -C "$tree" commit -q -m 'fix: this summary is deliberately far too long for the rule.' -m 'This body restates the changed file.'
 bad=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_rule_report "$1" main' "$bin/lib.sh" "$tree")
-grep -q 'summary is .* characters' <<<"$bad"
 grep -q 'conventional-commit prefix' <<<"$bad"
 grep -q 'summary ends with a period' <<<"$bad"
-grep -q 'body must begin with Why:' <<<"$bad"
+grep -q 'description must begin with Why:' <<<"$bad"
 
 printf 'upper\n' >>"$tree/file"
 git -C "$tree" add file
@@ -57,7 +56,7 @@ git -C "$planned" commit -q -m 'add compose setup' -m 'Why: Keep runtime setup a
 
 plan=$scratch/commit-plan.json
 cat >"$plan" <<'EOF'
-{"commits":[{"summary":"add compose setup","why":"Keep runtime setup and its usage instructions together.","paths":["README.md","compose.yaml"]}]}
+{"commits":[{"summary":"add compose setup","body":"Why: Keep runtime setup and its usage instructions together.","paths":["README.md","compose.yaml"]}]}
 EOF
 good_plan=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_report "$1" main "$2"' "$bin/lib.sh" "$planned" "$plan")
 [ -z "$good_plan" ] || {
@@ -66,15 +65,51 @@ good_plan=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_report "$1" ma
 }
 
 cat >"$plan" <<'EOF'
-{"commits":[{"summary":"Add compose setup","why":"Keep runtime setup and its usage instructions together.","paths":["README.md","compose.yaml"]}]}
+{"commits":[{"summary":"Add compose setup","body":"Why: Keep runtime setup and its usage instructions together.","paths":["README.md","compose.yaml"]}]}
 EOF
 bad_plan=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_report "$1" main "$2"' "$bin/lib.sh" "$planned" "$plan")
 grep -q 'summary must start with a lowercase word' <<<"$bad_plan"
 
 cat >"$plan" <<'EOF'
-{"commits":[{"summary":"add compose file","why":"Keep runtime setup together.","paths":["compose.yaml"]},{"summary":"document compose setup","why":"Keep usage instructions together.","paths":["README.md"]}]}
+{"commits":[{"summary":"add compose file","body":"Why: Keep runtime setup together.","paths":["compose.yaml"]},{"summary":"document compose setup","body":"Why: Keep usage instructions together.","paths":["README.md"]}]}
 EOF
 bad_plan=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_report "$1" main "$2"' "$bin/lib.sh" "$planned" "$plan")
 grep -q 'group(s)' <<<"$bad_plan"
+
+written=$scratch/written
+git init -q -b main "$written"
+git -C "$written" config user.name lint
+git -C "$written" config user.email lint@example.test
+printf 'base\n' >"$written/README.md"
+git -C "$written" add README.md
+git -C "$written" commit -qm base
+
+printf 'small change\n' >>"$written/README.md"
+cat >"$plan" <<'EOF'
+{"commits":[{"summary":"document a longer commit subject without trimming it","body":null,"paths":["README.md"]}]}
+EOF
+CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_write "$1" "$2"' "$bin/lib.sh" "$written" "$plan"
+[ "$(git -C "$written" log -1 --format=%B)" = 'document a longer commit subject without trimming it' ]
+
+printf 'detail\n' >>"$written/README.md"
+printf 'second\n' >"$written/second.md"
+cat >"$plan" <<'EOF'
+{"commits":[{"summary":"document the change","body":"Why: Explain the larger commit.\n\nKeep the operational detail with the history.\nCo-authored-by: Codex <codex@example.test>","paths":["README.md","second.md"]}]}
+EOF
+CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_write "$1" "$2"' "$bin/lib.sh" "$written" "$plan"
+message=$(git -C "$written" log -1 --format=%B)
+grep -q 'Why: Explain the larger commit.' <<<"$message"
+grep -q 'Keep the operational detail with the history.' <<<"$message"
+! grep -qi 'co-authored-by' <<<"$message"
+
+git -C "$written" mv README.md GUIDE.md
+cat >"$plan" <<'EOF'
+{"commits":[{"summary":"rename the readme","body":null,"paths":["GUIDE.md","README.md"]}]}
+EOF
+CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_write "$1" "$2"' "$bin/lib.sh" "$written" "$plan"
+[ "$(git -C "$written" log -1 --format=%B)" = 'rename the readme' ]
+git -C "$written" diff-tree --no-commit-id --name-status -r -M HEAD^ HEAD | grep -q '^R'
+clean=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_rule_report "$1" main' "$bin/lib.sh" "$written")
+[ -z "$clean" ]
 
 printf 'test-commits: cap commit and cap land share message checks\n'

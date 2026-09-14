@@ -21,11 +21,12 @@ An agent is told only what its task needs: where to work and what to leave uncom
 7. `cap land` opens a pull request or merges the branch.
 8. `cap drop` removes the task after it is finished or explicitly discarded.
 
-`cap commit` snapshots the worktree's full state before the commit agent
-reshapes it into commits, under a `log/<slug>-<timestamp>` branch. If the
-final commit sequence's tree matches the snapshot, the history is promoted
-and the snapshot is deleted. If it does not, `cap commit` fails and keeps the
-snapshot, since something changed the code, not just its shape.
+`cap commit` snapshots the worktree's full state before a planner agent groups
+the changes, under a `log/<slug>-<timestamp>` branch. Captain then writes the
+planned commits. If the final commit sequence's tree matches the snapshot, the
+history is promoted and the snapshot is deleted. If it does not, `cap commit`
+fails and keeps the snapshot, since something changed the code, not just its
+shape.
 
 A task can also be stacked on another task. `cap spawn --stack <parent-slug>` cuts it from the parent's branch instead of the base branch.
 

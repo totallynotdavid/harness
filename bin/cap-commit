@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cap-commit - commit a task with a separate agent.
+# cap-commit - plan and write a task's commits.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 usage="usage: cap commit <slug> [profile] [--take]"
@@ -13,7 +13,8 @@ parse_args() {
     -*) die "$usage" ;;
     *)
       if [ -z "$slug" ]; then slug=$1; elif [ -z "$profile" ]; then profile=$1; else die "$usage"; fi
-      shift ;;
+      shift
+      ;;
     esac
   done
   [ -n "$slug" ] || die "$usage"
@@ -21,7 +22,6 @@ parse_args() {
 }
 
 snapshot_tree() {
-  # Capture the complete worktree before the agent groups changes into commits.
   local tmp_index
   tmp_index=$(mktemp -u)
   GIT_INDEX_FILE=$tmp_index git -C "$CAP_TREE" read-tree HEAD
@@ -50,15 +50,15 @@ extract_commit_plan() {
 
 prepare_commit_plan() {
   local changed plan_answer plan_json problems
-  changed=$(git -C "$CAP_TREE" diff --name-only "$snap_commit^" "$snap_commit")
+  changed=$(git -C "$CAP_TREE" diff --no-renames --name-only "$snap_commit^" "$snap_commit")
   [ -n "$changed" ] || die "$slug has no changed paths to plan"
   plan_path=$TASKS/$slug/commit-plan.json
-  plan_prompt="Read $CAP_HOME/rules/commits.md in full. Inspect the current working-tree changes without editing them or committing anything. Design the exact commit groups before the captain asks another session to write them.
+  plan_prompt="Read $CAP_HOME/rules/commits.md in full. Inspect the current working-tree changes without editing them or committing anything. Design the exact commit groups and messages before Captain writes the history.
 
 Return exactly one fenced json block with this shape:
-{\"commits\":[{\"summary\":\"lowercase summary under 50 characters\",\"why\":\"The reason this change exists.\",\"paths\":[\"relative/path\"]}]}
+{\"commits\":[{\"summary\":\"lowercase imperative subject\",\"body\":null,\"paths\":[\"relative/path\"]}]}
 
-Every changed path must appear exactly once. Keep files that form one logical change in the same group. The groups are committed in the listed order. Summaries must start with a lowercase word, stay under 50 characters, and omit conventional-commit prefixes and trailing periods. The body of each resulting commit must begin with the exact line \"Why: <why>\".
+Every changed path must appear exactly once. Keep files that form one logical change in the same group. The groups are written in the listed order. Use body null for a small, obvious, or pure rename change. For a change that spans several files, changes behavior, or needs context, set body to the complete description. Its first line must be \"Why: <reason>\"; it may contain further paragraphs. Encode paragraph breaks as \\n inside the JSON string. Keep the subject direct and concise. Do not use conventional-commit prefixes or a trailing period.
 
 Changed paths:
 $changed"
@@ -79,133 +79,26 @@ cap_completion_start commit "$slug"
 
 snapshot_tree
 prepare_commit_plan
-
-prompt="Read $CAP_HOME/rules/commits.md and $plan_path in full. Some or all changes may
-already be staged - the captain may have run git add . to review them. That
-is normal, not a grouping signal. Unstage everything first (git restore
---staged . or git reset), then stage and commit every change in this
-worktree yourself in the exact groups and order in the commit plan. Use git
-add -p inside each planned group. Keep each group in one commit and make each
-commit stand on its own. Use the exact planned summary. Leave a blank second
-line, then write the exact planned line 'Why: <why>' as the first body line.
-Do not edit source files or the commit plan. Do not push."
-
-"$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" --label "commit-$slug"
-
-final_tree=$(git -C "$CAP_TREE" rev-parse HEAD^{tree})
-if [ "$final_tree" = "$snap_tree" ]; then
-  :
-else
-  die "$slug's history no longer matches its code: HEAD's tree differs from the snapshot at $snap_ref. Compare with: git -C $CAP_TREE diff $snap_ref HEAD"
-fi
-
-# ai_trailer_report (bin/lib.sh) is the attribution reader used by the
-# shared commit-rule check below and by cap-land.
-# Rebuilt with commit-tree, not git filter-branch, which drops -S.
-bad_trailers=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
-if [ -n "$bad_trailers" ]; then
-  warn "$slug: stripping AI attribution rules/commits.md forbids:"
-  printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
-  declare -A remap
-  new=""
-  rewriting=0
-  # Read once into a variable: a `while ... done < <(rev-list ...)` loop
-  # can't tell rev-list failing from an empty range.
-  commits_to_rewrite=$(git -C "$CAP_TREE" rev-list --reverse --topo-order "$CAP_BASE..HEAD") ||
-    die "$slug: could not list commits between $CAP_BASE and HEAD"
-  [ -n "$commits_to_rewrite" ] ||
-    die "$slug: found attribution to strip but rev-list found no commits between $CAP_BASE and HEAD; this should not happen - report it"
-  while IFS= read -r old; do
-    # Read once into a variable and matched with a here-string, not piped
-    # into grep: a large message piped into grep -q lets grep exit at its
-    # first match before git log finishes writing, git log dies of SIGPIPE,
-    # and pipefail turns that into a failure indistinguishable from no match.
-    body=$(git -C "$CAP_TREE" log -1 --format='%B' "$old")
-
-    if [ "$rewriting" = 0 ]; then
-      # Untouched until the first commit that actually carries a trailer:
-      # everything before it keeps its own sha, and the parent lookup below
-      # falls back to that unchanged sha with no remap entry to find.
-      grep -qiE "$AI_TRAILER_RE" <<<"$body" || continue
-      rewriting=1
-    fi
-
-    tree=$(git -C "$CAP_TREE" rev-parse "$old^{tree}")
-    msg=$(grep -viE "$AI_TRAILER_RE" <<<"$body" || true)
-    [ -n "$msg" ] ||
-      die "$slug: $old's message is nothing but AI attribution; fix it by hand"
-
-    # Every parent is looked up in remap, not assumed to be whatever was
-    # last rebuilt: a merge commit's second (and any later) parent is
-    # base-side history outside this range, so it has no remap entry and
-    # is kept as-is - rebuilding it with only the first parent would
-    # silently flatten the merge into a regular commit that quietly
-    # absorbs the base side's changes under its own message.
-    parent_args=()
-    read -ra orig_parents <<<"$(git -C "$CAP_TREE" log -1 --format='%P' "$old")"
-    for p in "${orig_parents[@]}"; do parent_args+=(-p "${remap[$p]:-$p}"); done
-
-    # Signs the rebuilt commit only if the one it replaces was itself
-    # signed (%G? is anything but N, "no signature") - mirroring rather
-    # than always passing -S, so this neither force-signs a repo that
-    # never signs nor hard-fails one where the key just isn't loaded.
-    sign_flag=()
-    [ "$(git -C "$CAP_TREE" log -1 --format='%G?' "$old")" = N ] || sign_flag=(-S)
-
-    new=$(
-      GIT_AUTHOR_NAME=$(git -C "$CAP_TREE" log -1 --format='%an' "$old") \
-        GIT_AUTHOR_EMAIL=$(git -C "$CAP_TREE" log -1 --format='%ae' "$old") \
-        GIT_AUTHOR_DATE=$(git -C "$CAP_TREE" log -1 --format='%aI' "$old") \
-        GIT_COMMITTER_NAME=$(git -C "$CAP_TREE" log -1 --format='%cn' "$old") \
-        GIT_COMMITTER_EMAIL=$(git -C "$CAP_TREE" log -1 --format='%ce' "$old") \
-        GIT_COMMITTER_DATE=$(git -C "$CAP_TREE" log -1 --format='%cI' "$old") \
-        git -C "$CAP_TREE" commit-tree "${sign_flag[@]}" "${parent_args[@]}" "$tree" -m "$msg"
-    ) || die "$slug: could not strip AI attribution automatically; fix it by hand"
-    remap[$old]=$new
-  done <<<"$commits_to_rewrite"
-
-  [ -n "$new" ] ||
-    die "$slug: found attribution to strip but rewrote no commit; this should not happen - report it"
-  git -C "$CAP_TREE" update-ref HEAD "$new"
-
-  # A rewrite that silently leaves the thing it was asked to remove must not exit 0.
-  still_bad=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
-  [ -z "$still_bad" ] ||
-    die "$slug: AI attribution survived the rewrite:
-$(printf '%s\n' "$still_bad" | sed 's/^/  /')"
-fi
-
-# The commit agent was told the rules and the plan, but the write path still
-# needs a deterministic final check. Give it one repair pass so a bad message
-# or grouping costs a repair rather than a rebase after the gates have run.
-bad_messages=$(commit_rule_report "$CAP_TREE" "$CAP_BASE")
-bad_plan=$(commit_plan_report "$CAP_TREE" "$CAP_BASE" "$plan_path")
-if [ -n "$bad_messages" ] || [ -n "$bad_plan" ]; then
-	warn "$slug: commit messages or grouping need repair before the task can continue:"
-	[ -z "$bad_messages" ] || printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
-	[ -z "$bad_plan" ] || printf '%s\n' "$bad_plan" | sed 's/^/  /' >&2
-	repair_prompt="Read $CAP_HOME/rules/commits.md and $plan_path in full. The commits you just
-wrote in this worktree violate these checks or the required grouping:
-
-$bad_messages
-$bad_plan
-
-Rewrite only the commit messages or commit grouping needed to match the plan.
-Keep the final working-tree content and the plan exactly unchanged. Use the
-exact planned summary and 'Why: <why>' body line. Do not edit source files or
-the plan. Do not push."
-	"$CAP_BIN/cap-ask" "$profile" "$repair_prompt" --dir "$CAP_TREE" --label "commit-repair-$slug"
-	bad_messages=$(commit_rule_report "$CAP_TREE" "$CAP_BASE")
-	bad_plan=$(commit_plan_report "$CAP_TREE" "$CAP_BASE" "$plan_path")
-	[ -z "$bad_messages" ] && [ -z "$bad_plan" ] || {
-		printf 'cap: %s still violates its commit rules or plan after one repair pass:\n' "$slug" >&2
-		[ -z "$bad_messages" ] || printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
-		[ -z "$bad_plan" ] || printf '%s\n' "$bad_plan" | sed 's/^/  /' >&2
-		die "repair them by hand, then run cap commit again"
-	}
-fi
+commit_plan_write "$CAP_TREE" "$plan_path"
 
 final_tree=$(git -C "$CAP_TREE" rev-parse HEAD^{tree})
 [ "$final_tree" = "$snap_tree" ] ||
-	die "$slug's history no longer matches its code after message repair: compare with: git -C $CAP_TREE diff $snap_ref HEAD"
+  die "$slug's history no longer matches its code: HEAD's tree differs from $snap_ref. Compare with: git -C $CAP_TREE diff $snap_ref HEAD"
+
+bad_trailers=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
+[ -z "$bad_trailers" ] || {
+  printf 'cap: %s still contains generated attribution:\n' "$slug" >&2
+  printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
+  die "commit metadata cleanup failed"
+}
+
+bad_messages=$(commit_rule_report "$CAP_TREE" "$CAP_BASE")
+bad_plan=$(commit_plan_report "$CAP_TREE" "$CAP_BASE" "$plan_path")
+[ -z "$bad_messages" ] && [ -z "$bad_plan" ] || {
+  printf 'cap: %s has commits that do not match its plan:\n' "$slug" >&2
+  [ -z "$bad_messages" ] || printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
+  [ -z "$bad_plan" ] || printf '%s\n' "$bad_plan" | sed 's/^/  /' >&2
+  die "commit plan verification failed"
+}
+
 git -C "$CAP_TREE" branch -D "$snap_ref" >/dev/null 2>&1

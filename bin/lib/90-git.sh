@@ -273,18 +273,16 @@ gate_failed_here() {
   jq -e --arg fp "$cur" '[.A, .B] | map(select(. != null and .verdict == "FAIL" and .fingerprint == $fp)) | length > 0' "$f" >/dev/null 2>&1
 }
 
-# rules/commits.md forbids crediting an AI, not a Co-Authored-By trailer as
-# such - a cherry-picked upstream commit or a human pair credit is not this.
-# Matches a session-link trailer, a generated-with byline, or a Co-Authored-By
-# naming a known model or a vendor noreply address. One pattern, read by
-# both cap-commit (strips it) and cap-land (refuses on it).
+# Captain removes generated attribution after the agent writes a plan. A human
+# co-author remains valid metadata. Match session links, generated-with
+# bylines, and Co-Authored-By lines naming a known model or vendor address.
 AI_TRAILER_RE='^(claude|codex)-session:|generated with \[(claude code|codex)\]|^co-authored-by:[[:space:]]*(claude|codex|chatgpt|gpt)\b|^co-authored-by:.*<noreply@(anthropic|openai)\.com>'
 
 # cap-commit and cap-land only see a task branch. A captain session editing
 # CLAUDE.md or config/captain.conf commits straight to the hub with plain
 # `git commit`, a path neither of them touches, and a harness's own commit
-# template can carry AI_TRAILER_RE's lines onto that commit with nothing
-# to strip them. A commit-msg hook fires on that path too and git hooks
+# template can carry AI_TRAILER_RE's lines onto that commit. A commit-msg hook
+# fires on that path too and git hooks
 # live in the git dir every worktree of one repo shares, so installing it
 # once from any of them covers the hub and every task worktree alike.
 # Idempotent and cheap enough to call from every cap command: the common
@@ -299,10 +297,9 @@ git_ensure_attribution_hook() {
   mkdir -p "$gitdir/hooks" || return 0
   cat >"$hook" <<HOOK || return 0
 #!/usr/bin/env bash
-# Installed by git_ensure_attribution_hook (bin/lib.sh). rules/commits.md's
-# no-AI-attribution rule, applied to the message before the commit is
-# written rather than left for someone to remember or a later pass to
-# strip. Silently drops matching lines; refuses only if nothing is left.
+# Installed by git_ensure_attribution_hook (bin/lib.sh). Captain removes
+# generated attribution before a message reaches history. Silently drops
+# matching lines; refuses only if nothing is left.
 msg_file=\$1
 stripped=\$(grep -viE '$AI_TRAILER_RE' "\$msg_file") || true
 if [ -z "\$(printf '%s' "\$stripped" | tr -d '[:space:]')" ]; then
@@ -341,11 +338,7 @@ commit_subject_report() {
   local label=$1 subject=$2 action
   local conventional_re='^(revert:[[:space:]])?(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\([^)]*\))?!?:[[:space:]]'
 
-  if [ -z "$subject" ]; then
-    printf '%s: summary is empty\n' "$label"
-  elif [ "${#subject}" -gt 50 ]; then
-    printf '%s: summary is %s characters: %s\n' "$label" "${#subject}" "$subject"
-  fi
+  [ -n "$subject" ] || printf '%s: summary is empty\n' "$label"
 
   case $subject in
   *$'\n'*) printf '%s: summary must be one line\n' "$label" ;;
@@ -367,11 +360,22 @@ commit_subject_report() {
   esac
 }
 
+commit_body_report() {
+  local label=$1 body=$2 first
+  [ -n "$body" ] || return 0
+
+  first=$(printf '%s\n' "$body" | sed -n '1p')
+  case $first in
+  Why:\ [![:space:]]*) ;;
+  *) printf '%s: description must begin with Why: and explain the reason for the change\n' "$label" ;;
+  esac
+}
+
 # Every commit message rule that cap-commit can check before it returns. Keep
 # this beside the landing check so a branch cannot pass one command and fail
 # the other for the same message.
 commit_rule_report() {
-  local tree=$1 base=$2 hashes c short subject message second body first_body ai long_body
+  local tree=$1 base=$2 hashes c short subject message second body ai
   hashes=$(git -C "$tree" log --format=%H "$base..HEAD") ||
     die "could not list commits $base..HEAD in $tree; cannot check commit messages"
 
@@ -388,17 +392,7 @@ commit_rule_report() {
       printf '%s: the second line must be blank\n' "$short"
 
     if [ -n "$body" ]; then
-      first_body=$(printf '%s\n' "$message" | sed -n '3p')
-      case $first_body in
-      Why:\ [![:space:]]*) ;;
-      *) printf '%s: body must begin with Why: and explain the reason for the change\n' "$short" ;;
-      esac
-      long_body=$(printf '%s\n' "$body" | awk 'length($0) > 72 { print; exit }')
-      [ -z "$long_body" ] ||
-        printf '%s: body line exceeds 72 characters: %s\n' "$short" "$long_body"
-      if grep -q '—' <<<"$body"; then
-        printf '%s: body contains an em dash\n' "$short"
-      fi
+      commit_body_report "$short" "$body"
     fi
   done <<<"$hashes"
 
@@ -407,7 +401,7 @@ commit_rule_report() {
 }
 
 commit_plan_shape_report() {
-  local plan=$1 duplicates summary count i
+  local plan=$1 duplicates summary body count i
   [ -s "$plan" ] || {
     printf 'commit plan is missing: %s\n' "$plan"
     return 0
@@ -416,14 +410,15 @@ commit_plan_shape_report() {
     (.commits | type == "array") and (.commits | length > 0) and
     all(.commits[];
       ((.summary | type) == "string" and (.summary | length) > 0) and
-      ((.why | type) == "string" and (.why | length) > 0 and (.why | contains("\n") | not)) and
+      ((.body == null) or
+        ((.body | type) == "string" and (.body | length) > 0)) and
       ((.paths | type) == "array" and (.paths | length) > 0) and
       all(.paths[];
         (type == "string" and length > 0 and (startswith("/") | not) and ((split("/")[0]) != ".."))
       )
     )
   ' "$plan" >/dev/null 2>&1 || {
-    printf 'commit plan must contain commits with summary, why, and relative paths: %s\n' "$plan"
+    printf 'commit plan must contain commits with summary, body, and relative paths: %s\n' "$plan"
     return 0
   }
 
@@ -432,6 +427,8 @@ commit_plan_shape_report() {
   while [ "$i" -lt "$count" ]; do
     summary=$(jq -r ".commits[$i].summary" "$plan")
     commit_subject_report "commit plan[$i]" "$summary"
+    body=$(jq -r ".commits[$i].body // empty" "$plan")
+    commit_body_report "commit plan[$i]" "$body"
     i=$((i + 1))
   done
 
@@ -439,6 +436,45 @@ commit_plan_shape_report() {
   [ -z "$duplicates" ] || {
     printf 'commit plan assigns a path to more than one commit: %s\n' "$(tr '\n' ' ' <<<"$duplicates")"
   }
+}
+
+commit_plan_message() {
+  local plan=$1 index=$2 summary body message
+  summary=$(jq -r ".commits[$index].summary" "$plan")
+  body=$(jq -r ".commits[$index].body // empty" "$plan")
+  message=$summary
+  [ -z "$body" ] || message="$summary
+
+$body"
+
+  printf '%s\n' "$message" | grep -viE "$AI_TRAILER_RE" || true
+}
+
+commit_plan_write() {
+  local tree=$1 plan=$2 count i planned_paths actual_paths message problems
+  local -a paths
+
+  problems=$(commit_plan_shape_report "$plan")
+  [ -z "$problems" ] || die "cannot write commit plan:\n$problems"
+
+  git -C "$tree" reset --quiet
+  count=$(jq '.commits | length' "$plan")
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    mapfile -t paths < <(jq -r ".commits[$i].paths[]" "$plan")
+    planned_paths=$(printf '%s\n' "${paths[@]}" | sort -u)
+
+    git -C "$tree" add -A -- "${paths[@]}"
+    actual_paths=$(git -C "$tree" diff --cached --no-renames --name-only | sort -u)
+    [ "$actual_paths" = "$planned_paths" ] ||
+      die "commit plan group $((i + 1)) staged paths do not match the plan"
+
+    message=$(commit_plan_message "$plan" "$i")
+    [ -n "$(printf '%s' "$message" | tr -d '[:space:]')" ] ||
+      die "commit plan group $((i + 1)) has no message after cleanup"
+    git -C "$tree" commit -q -F - <<<"$message"
+    i=$((i + 1))
+  done
 }
 
 commit_plan_paths_report() {
@@ -457,7 +493,7 @@ commit_plan_paths_report() {
 }
 
 commit_plan_report() {
-  local tree=$1 base=$2 plan=$3 hashes c short expected_summary actual_summary expected_why first_body
+  local tree=$1 base=$2 plan=$3 hashes c short expected_summary actual_summary expected_message actual_message
   local actual_paths planned_commit_paths actual_commit_paths count planned_count i problems
   problems=$(commit_plan_shape_report "$plan")
   [ -z "$problems" ] || {
@@ -501,10 +537,10 @@ commit_plan_report() {
       printf '  actual: %s\n' "$(tr '\n' ' ' <<<"$actual_commit_paths")"
     }
 
-    expected_why=$(jq -r ".commits[$i].why" "$plan")
-    first_body=$(git -C "$tree" log -1 --format=%B "$c" | sed -n '3p')
-    [ "$first_body" = "Why: $expected_why" ] ||
-      printf '%s: body must begin with the planned reason: Why: %s\n' "$short" "$expected_why"
+    expected_message=$(commit_plan_message "$plan" "$i")
+    actual_message=$(git -C "$tree" log -1 --format=%B "$c")
+    [ "$actual_message" = "$expected_message" ] ||
+      printf '%s: planned description does not match the commit body\n' "$short"
     i=$((i + 1))
   done <<<"$hashes"
 }
