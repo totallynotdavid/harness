@@ -44,10 +44,24 @@ def test_prompt_transport():
         caplib.run_main = lambda main: main()
         caplib.task_lock = lambda _: None
         caplib.trust = lambda *_: None
-        caplib.session_argv = lambda harness, model, effort, prompt, **_: seen.setdefault("argv", [harness, prompt])
-        caplib.launch = lambda *_args, **_kwargs: caplib.Session("claude", "p1", "t1", tempfile.mkdtemp(), "lint")
+        caplib.session_argv = lambda harness, model, effort, prompt, **_: (
+            seen.setdefault("argv", [harness, prompt])
+        )
+        caplib.launch = lambda *_args, **_kwargs: caplib.Session(
+            "claude", "p1", "t1", tempfile.mkdtemp(), "lint"
+        )
         caplib.pane_type = lambda pane, prompt: seen.update(pane=pane, prompt=prompt)
-        sys.argv = [str(ROOT / "bin/cap-launch"), "--task", "t", "--dir", str(ROOT), "--harness", "claude", "--prompt-file", prompt_file]
+        sys.argv = [
+            str(ROOT / "bin/cap-launch"),
+            "--task",
+            "t",
+            "--dir",
+            str(ROOT),
+            "--harness",
+            "claude",
+            "--prompt-file",
+            prompt_file,
+        ]
         with redirect_stdout(io.StringIO()):
             runpy.run_path(str(ROOT / "bin/cap-launch"), run_name="__main__")
     finally:
@@ -70,17 +84,25 @@ def test_completion_state():
         home = Path(tmp)
         (home / "config").mkdir()
         (home / "state").mkdir()
-        (home / "config/captain.conf").write_text((ROOT / "config/captain.conf").read_text())
+        (home / "config/captain.conf").write_text(
+            (ROOT / "config/captain.conf").read_text()
+        )
         script = f'. "{ROOT / "bin/lib.sh"}"; cap_completion_start check demo; exit 7'
         env = dict(os.environ, CAP_HOME=str(home))
-        proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+        proc = subprocess.run(
+            ["bash", "-c", script], env=env, capture_output=True, text=True
+        )
         if proc.returncode != 7:
             fail(f"completion fixture exited {proc.returncode}, expected 7")
         records = list((home / "state/completions").glob("*.json"))
         if len(records) != 1:
             fail("completion fixture did not leave one record")
         record = json.loads(records[0].read_text())
-        if record.get("command") != "cap check demo" or record.get("exit") != 7 or record.get("state") != "completed":
+        if (
+            record.get("command") != "cap check demo"
+            or record.get("exit") != 7
+            or record.get("state") != "completed"
+        ):
             fail(f"bad completion record: {record}")
         report = subprocess.run(
             ["bash", "-c", f'. "{ROOT / "bin/lib.sh"}"; cap_completion_report'],
@@ -99,7 +121,9 @@ def test_exit_handlers():
         home = Path(tmp)
         (home / "config").mkdir()
         (home / "state").mkdir()
-        (home / "config/captain.conf").write_text((ROOT / "config/captain.conf").read_text())
+        (home / "config/captain.conf").write_text(
+            (ROOT / "config/captain.conf").read_text()
+        )
         marker = home / "handlers"
         script = f'''. "{ROOT / "bin/lib.sh"}"
 first() {{ printf 'first:%s\\n' "$?" >>"{marker}"; }}
@@ -109,7 +133,9 @@ cap_exit_add second
 [ "$(type -t trap)" = builtin ]
 exit 7
 '''
-        proc = subprocess.run(["bash", "-c", script], env=dict(os.environ, CAP_HOME=str(home)))
+        proc = subprocess.run(
+            ["bash", "-c", script], env=dict(os.environ, CAP_HOME=str(home))
+        )
         if proc.returncode != 7:
             fail(f"exit-handler fixture exited {proc.returncode}, expected 7")
         if marker.read_text().splitlines() != ["first:7", "second:7"]:
@@ -121,7 +147,9 @@ def test_library_source_is_pure():
         home = Path(tmp)
         (home / "config").mkdir()
         (home / "state").mkdir()
-        (home / "config/captain.conf").write_text((ROOT / "config/captain.conf").read_text())
+        (home / "config/captain.conf").write_text(
+            (ROOT / "config/captain.conf").read_text()
+        )
         subprocess.run(["git", "init", "-q", str(home)], check=True)
         proc = subprocess.run(
             ["bash", "-c", f'. "{ROOT / "bin/lib.sh"}"'],
@@ -139,7 +167,9 @@ def test_review_manifest():
         caplib.TASKS = os.path.join(tmp, "tasks")
         os.makedirs(os.path.join(caplib.TASKS, "demo"))
         try:
-            loader = importlib.machinery.SourceFileLoader("cap_review_lint", str(ROOT / "bin/cap-review"))
+            loader = importlib.machinery.SourceFileLoader(
+                "cap_review_lint", str(ROOT / "bin/cap-review")
+            )
             spec = importlib.util.spec_from_loader(loader.name, loader)
             module = importlib.util.module_from_spec(spec)
             old_run_main = caplib.run_main
@@ -148,10 +178,16 @@ def test_review_manifest():
                 spec.loader.exec_module(module)
             finally:
                 caplib.run_main = old_run_main
-            args = SimpleNamespace(slug="demo", fingerprint="f" * 64, results=os.path.join(tmp, "results"))
+            args = SimpleNamespace(
+                slug="demo", fingerprint="f" * 64, results=os.path.join(tmp, "results")
+            )
             module.write_manifest(args, "running", [("A", None)])
             record = json.loads((Path(caplib.TASKS) / "demo/review.json").read_text())
-            if record.get("state") != "running" or record.get("pid") != os.getpid() or record.get("results") != args.results:
+            if (
+                record.get("state") != "running"
+                or record.get("pid") != os.getpid()
+                or record.get("results") != args.results
+            ):
                 fail(f"review manifest lost ownership data: {record}")
         finally:
             caplib.TASKS = old_tasks

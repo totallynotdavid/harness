@@ -16,7 +16,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 BIN = os.path.join(ROOT, "bin")
 os.environ.setdefault("CAP_HOME", ROOT)
 sys.path.insert(0, BIN)
-spec = importlib.util.spec_from_loader("cap_papercut", importlib.machinery.SourceFileLoader("cap_papercut", os.path.join(BIN, "cap-papercut")))
+spec = importlib.util.spec_from_loader(
+    "cap_papercut",
+    importlib.machinery.SourceFileLoader(
+        "cap_papercut", os.path.join(BIN, "cap-papercut")
+    ),
+)
 papercut = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(papercut)
 
@@ -28,7 +33,9 @@ if len(ids) != len(set(ids)):
     problems.append("paper-cuts.jsonl has duplicate ids")
 for e in entries:
     if e.get("subject") not in allowed:
-        problems.append(f"#{e.get('id')} has subject {e.get('subject')!r}, which is not part of Captain")
+        problems.append(
+            f"#{e.get('id')} has subject {e.get('subject')!r}, which is not part of Captain"
+        )
     if e.get("status") != "open":
         problems.append(f"#{e.get('id')} is not open; remove fixed entries")
 
@@ -38,7 +45,9 @@ try:
 except OSError:
     on_disk = ""
 if on_disk != papercut.render(entries):
-    problems.append("paper-cuts.md differs from what paper-cuts.jsonl renders; log entries with cap papercut, never by editing the markdown")
+    problems.append(
+        "paper-cuts.md differs from what paper-cuts.jsonl renders; log entries with cap papercut, never by editing the markdown"
+    )
 
 if problems:
     for p in problems:
