@@ -24,8 +24,16 @@ def main():
     ap.add_argument("--model", default="-")
     ap.add_argument("--effort", default="")
     ap.add_argument("--guard", action="store_true", help="hold the agent to the task's owns list")
-    ap.add_argument("prompt")
+    prompts = ap.add_mutually_exclusive_group(required=True)
+    prompts.add_argument("--prompt-file", help="read the opening prompt from a private file")
+    prompts.add_argument("prompt", nargs="?")
     args = ap.parse_args()
+
+    if args.prompt_file:
+        with open(args.prompt_file) as fh:
+            prompt = fh.read()
+    else:
+        prompt = args.prompt
 
     caplib.task_lock(args.task)
     caplib.trust(args.harness, args.dir)
@@ -35,11 +43,19 @@ def main():
         args.harness,
         args.model,
         args.effort,
-        args.prompt,
+        "" if args.prompt_file else prompt,
         session_id=session_id,
         guard_slug=args.task if args.guard else None,
     )
     session = caplib.launch(args.dir, args.task, argv, turn_dir, env={"CAP_TASK": args.task})
+    if args.prompt_file:
+        # The prompt is sent through the pane input, so it never appears in
+        # the harness command line. Wait for the TUI to finish opening before
+        # typing; herdr's send-text has no backpressure during startup.
+        import time
+
+        time.sleep(0.8)
+        caplib.pane_type(session.pane, prompt)
     print(f"{session.pane} {session.tab} {session_id or '-'}")
     return 0
 

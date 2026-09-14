@@ -37,6 +37,7 @@ fi
 
 [ -n "$repo" ] || die "usage: cap check <slug> | cap check --repo <project> [--base REF]"
 : "${base:=$(git_base "$repo")}"
+cap_completion_start check "${slug:-$project}"
 
 git -C "$repo" rev-parse --verify -q "$base" >/dev/null || die "no base ref '$base'"
 

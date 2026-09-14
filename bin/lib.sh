@@ -17,6 +17,7 @@ export CAP_BIN
 
 PROJECTS=$CAP_HOME/config/projects.tsv
 TASKS=$CAP_HOME/state/tasks
+COMPLETIONS=$CAP_HOME/state/completions
 
 die() {
   printf 'cap: %s\n' "$*" >&2
@@ -50,6 +51,64 @@ task_load() {
   . "$f"
 }
 task_slugs() { [ -d "$TASKS" ] && ls -1 "$TASKS" 2>/dev/null || true; }
+
+# Foreground commands have no pane for herdr to announce when they finish.
+# Keep their completion in Captain state so the reminder hook can surface it on
+# the next captain prompt, including a non-zero result.
+cap_completion_write() {
+  local file=$1 kind=$2 subject=$3 state=$4 rc=$5 started=$6 ended=${7:-} tmp
+  mkdir -p "$COMPLETIONS"
+  tmp=$(mktemp "$COMPLETIONS/.completion.XXXXXX") || return 0
+  if jq -n --arg kind "$kind" --arg subject "$subject" --arg state "$state" \
+    --argjson rc "$rc" --arg started "$started" --arg ended "$ended" \
+    '{command: ("cap " + $kind + (if $subject == "" then "" else " " + $subject end)), state: $state, exit: $rc, started: $started, ended: $ended}' \
+    >"$tmp" 2>/dev/null; then
+    mv "$tmp" "$file"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+cap_completion_start() {
+  [ -n "${CAP_COMPLETION_FILE:-}" ] && return 0
+  local kind=$1 subject=${2:-} id
+  id="$$-$(date +%s%N)"
+  CAP_COMPLETION_FILE=$COMPLETIONS/$id.json
+  CAP_COMPLETION_KIND=$kind
+  CAP_COMPLETION_SUBJECT=$subject
+  CAP_COMPLETION_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  cap_completion_write "$CAP_COMPLETION_FILE" "$kind" "$subject" running 0 "$CAP_COMPLETION_STARTED" ""
+  trap cap_completion_finish EXIT
+}
+
+cap_completion_finish() {
+  local rc=$?
+  [ -n "${CAP_COMPLETION_FILE:-}" ] || return "$rc"
+  cap_completion_write "$CAP_COMPLETION_FILE" "$CAP_COMPLETION_KIND" "$CAP_COMPLETION_SUBJECT" \
+    completed "$rc" "$CAP_COMPLETION_STARTED" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  return "$rc"
+}
+
+# Atomically claim each completed command so two captain sessions do not both
+# announce the same result. Reported files are retained briefly for diagnosis.
+cap_completion_report() {
+  local f command rc state
+  mkdir -p "$COMPLETIONS"
+  find "$COMPLETIONS" -name '*.reported' -mtime +7 -delete 2>/dev/null || true
+  for f in "$COMPLETIONS"/*.json; do
+    [ -f "$f" ] || continue
+    state=$(jq -r '.state // empty' "$f" 2>/dev/null || true)
+    [ "$state" = completed ] || continue
+    mv "$f" "$f.reported" 2>/dev/null || continue
+    command=$(jq -r '.command // "cap command"' "$f.reported" 2>/dev/null || printf 'cap command')
+    rc=$(jq -r '.exit // 1' "$f.reported" 2>/dev/null || printf 1)
+    if [ "$rc" = 0 ]; then
+      printf '  %s completed successfully\n' "$command"
+    else
+      printf '  %s finished with exit %s; inspect its output\n' "$command" "$rc"
+    fi
+  done
+}
 
 # Make worktree usable before agent starts. Worktrees have no dependencies
 # (node_modules is ignored). Runs every ecosystem's installer whose lockfile

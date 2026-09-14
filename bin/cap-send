@@ -41,7 +41,7 @@ task_load "$slug"
 # would race a turn that has already started, and the pane would be busy
 # exactly when the message arrived.
 revive() {
-  local dir=$TASKS/$slug kick guard=() pane tabid session_id
+  local dir=$TASKS/$slug kick guard=() pane tabid session_id kick_file
   task_load "$slug"
   [ -f "$dir/contract.md" ] || die "$slug: the session is not running and there is no contract to restart it from"
 
@@ -58,8 +58,17 @@ $text"
   [ ! -s "$dir/owns" ] || guard=(--guard)
   # The old pane can outlive its session, holding only the shell it ran in.
   ! pane_live "$slug" || herdr pane close "$(task_pane "$slug")" >/dev/null 2>&1 || true
-  read -r pane tabid session_id <<<"$("$CAP_BIN/cap-launch" --task "$slug" --dir "$CAP_TREE" \
-    --harness "$CAP_HARNESS" --model "$CAP_MODEL" --effort "${CAP_EFFORT:-}" "${guard[@]}" "$kick")"
+  kick_file=$(mktemp "$dir/.revive-prompt.XXXXXX")
+  chmod 600 "$kick_file"
+  printf '%s\n' "$kick" >"$kick_file"
+  launch_output=$("$CAP_BIN/cap-launch" --task "$slug" --dir "$CAP_TREE" \
+    --harness "$CAP_HARNESS" --model "$CAP_MODEL" --effort "${CAP_EFFORT:-}" "${guard[@]}" \
+    --prompt-file "$kick_file") || {
+    rm -f "$kick_file"
+    die "$slug: could not restart the agent session"
+  }
+  rm -f "$kick_file"
+  read -r pane tabid session_id <<<"$launch_output"
   [ -n "$pane" ] || die "$slug: could not restart the agent session"
   task_env_set "$slug" CAP_PANE "$pane"
   task_env_set "$slug" CAP_TAB "$tabid"

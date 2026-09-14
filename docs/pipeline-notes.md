@@ -263,7 +263,20 @@ goes idle without ending its turn is reported rather than waited out. A permissi
 shows as `blocked`, is named once on stderr, and can be answered in the pane.
 
 Stopping a dispatcher (Ctrl-C, or a signal to `cap ask` or `cap-review`) closes the panes
-it opened. A reviewer can be watched and typed into while it runs.
+it opened. `cap-gate` also records the reviewer's pid and durable result path. If its own
+wrapper is killed after the reviewers finish, the next run adopts that result; if it finds
+an incomplete review, it reaps the process and its panes before starting again. A reviewer
+can be watched and typed into while it runs.
+
+`cap send` revives a dead task by starting the harness with a fixed opening instruction and
+typing the captain's actual message through the pane. The message is kept in a private
+temporary file only until it has been typed, so source excerpts and findings do not appear
+in the harness command line.
+
+Foreground `cap check`, `cap commit`, and `cap gate` write a completion record when they
+exit. The reminder hook claims each record once and reports its command and exit status on
+the next captain prompt, which gives a backgrounded command the same completion signal as
+a stopped crew pane.
 
 ## Dispatch sizing: quota routes work, it does not cheapen it
 

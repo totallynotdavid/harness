@@ -18,6 +18,11 @@ cat >/dev/null
 lines=""
 add() { lines="$lines$1"$'\n'; }
 
+completions=$(cap_completion_report 2>/dev/null || true)
+while IFS= read -r completion; do
+	[ -n "$completion" ] && add "$completion"
+done <<<"$completions"
+
 for slug in $(task_slugs); do
 	(task_load "$slug") 2>/dev/null || continue
 

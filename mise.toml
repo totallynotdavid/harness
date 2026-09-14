@@ -28,6 +28,7 @@ depends = [
   "check:turn",
   "check:commits",
   "check:resources",
+  "check:transport",
   "check:papercuts",
   "check:syntax",
 ]
@@ -75,6 +76,10 @@ run = "bin/lint-commits"
 [tasks."check:resources"]
 description = "assert dropped stacks are torn down and memory peaks decay"
 run = "bin/lint-resources"
+
+[tasks."check:transport"]
+description = "assert prompts, review ownership and command completions survive interruption"
+run = "bin/lint-transport"
 
 [tasks."check:papercuts"]
 description = "fail when paper-cuts.md is not the rendering of paper-cuts.jsonl, or an entry's subject is not part of Captain"

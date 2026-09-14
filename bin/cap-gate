@@ -20,6 +20,46 @@ done
 task_load "$slug"
 task_lock "$slug"
 if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
+cap_completion_start gate "$slug"
+
+# Reviewers live in detached herdr panes, so the shell owns their lifetime
+# explicitly. A completed manifest can be adopted if this wrapper died after
+# the reviewers finished but before their verdicts reached gate.json.
+review_pid=""
+review_close_panes() {
+  local live label pane
+  for live in "$CAP_HOME"/state/ask/*/live.json; do
+    [ -f "$live" ] || continue
+    label=$(jq -r '.label // empty' "$live" 2>/dev/null || true)
+    case $label in
+      "gate-A-$slug" | "gate-B-$slug")
+        pane=$(jq -r '.pane // empty' "$live" 2>/dev/null || true)
+        [ -z "$pane" ] || herdr pane close "$pane" >/dev/null 2>&1 || true
+        rm -f "$live"
+        ;;
+    esac
+  done
+}
+review_pid_live() {
+  local pid=$1 cmd
+  [ -n "$pid" ] && [ -e "/proc/$pid" ] || return 1
+  cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+  case $cmd in *cap-review*) return 0 ;; esac
+  return 1
+}
+review_cleanup() {
+  local rc=$?
+  if [ -n "$review_pid" ] && review_pid_live "$review_pid"; then
+    kill -TERM "$review_pid" 2>/dev/null || true
+    wait "$review_pid" 2>/dev/null || true
+  fi
+  review_pid=""
+  review_close_panes
+  return "$rc"
+}
+trap review_cleanup EXIT
+trap 'review_cleanup; exit 130' INT
+trap 'review_cleanup; exit 143' TERM HUP
 
 sync_base "$CAP_TREE" "$CAP_BASE" ||
   die "$slug: worktree is mid-conflict after syncing onto $CAP_BASE; resolve before gating (see docs/pipeline-notes.md)"
@@ -84,17 +124,55 @@ else
   # Recording their verdicts is the only part that stays serial, in order.
   # CAP_ASK_KEY carries the fingerprint so a session a limit interrupted is
   # never resumed against different code.
-  if [ "${#reviewers[@]}" = 0 ]; then
+  review_results=""
+  review_manifest=$TASKS/$slug/review.json
+  needed_reviewers=""
+  for ((review_i = 1; review_i < ${#reviewers[@]}; review_i += 2)); do
+    needed_reviewers+="${reviewers[review_i]%%=*} "
+  done
+  needed_reviewers=$(printf '%s\n' "$needed_reviewers" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')
+  if [ -f "$review_manifest" ] && [ "$(jq -r '.fingerprint // empty' "$review_manifest" 2>/dev/null || true)" = "$fp" ]; then
+    review_state=$(jq -r '.state // empty' "$review_manifest" 2>/dev/null || true)
+    review_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
+    review_pid_saved=$(jq -r '.pid // empty' "$review_manifest" 2>/dev/null || true)
+    saved_reviewers=$(jq -r '.reviewers[]' "$review_manifest" 2>/dev/null | sort | tr '\n' ' ' || true)
+    if [ "$review_state" = complete ] && [ -s "$review_results" ] && [ "$saved_reviewers" = "$needed_reviewers" ]; then
+      printf '%s\n' "$slug: adopting the completed review left by an interrupted gate"
+    else
+      review_pid_live "$review_pid_saved" && kill -TERM "$review_pid_saved" 2>/dev/null || true
+      review_close_panes
+      rm -f "$review_manifest" "$review_results"
+      review_results=""
+    fi
+  elif [ -f "$review_manifest" ]; then
+    review_pid_saved=$(jq -r '.pid // empty' "$review_manifest" 2>/dev/null || true)
+    review_pid_live "$review_pid_saved" && kill -TERM "$review_pid_saved" 2>/dev/null || true
+    review_close_panes
+    old_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
+    rm -f "$review_manifest"
+    [ -z "$old_results" ] || rm -f "$old_results"
+  fi
+
+  if [ -n "$review_results" ]; then
+    :
+  elif [ "${#reviewers[@]}" = 0 ]; then
     printf '%s: both gate profiles already passed this exact full diff; not re-reviewing\n' "$slug"
   else
-    results=$(mktemp)
+    results=$TASKS/$slug/review-results.jsonl
     full_flag=()
     [ "$full" = 0 ] || full_flag=(--full)
     CAP_ASK_KEY=$fp "$CAP_BIN/cap-review" --slug "$slug" --tree "$CAP_TREE" --since "$since" \
       --commit "$reviewed_commit" --fingerprint "$fp" --out-dir "$out_dir" --results "$results" \
-      "${full_flag[@]}" "${reviewers[@]}" </dev/null ||
-      warn "the gate reviewers did not run"
+      "${full_flag[@]}" "${reviewers[@]}" </dev/null &
+    review_pid=$!
+    review_rc=0
+    wait "$review_pid" || review_rc=$?
+    review_pid=""
+    [ "$review_rc" = 0 ] || warn "the gate reviewers did not run"
+    review_results=$results
+  fi
 
+  if [ -n "$review_results" ]; then
     # A reviewer with no validated findings block has no verdict. A verdict is
     # computed from findings that cover the diff, so an answer that is only a
     # verdict, or covers none of the changed files, never reaches this record.
@@ -106,11 +184,11 @@ else
       fi
       gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit" "$since"
       reports+=("$out_dir/$slug.gate-$label.md")
-    done < <(jq -r '[.label, (.verdict // "")] | @tsv' "$results")
+    done < <(jq -r '[.label, (.verdict // "")] | @tsv' "$review_results")
     pid=$!
     wait "$pid" || { warn "$slug: could not read the gate results"; incomplete=1; }
-    [ -s "$results" ] || incomplete=1
-    rm -f "$results"
+    [ -s "$review_results" ] || incomplete=1
+    rm -f "$review_manifest" "$review_results"
 
     [ "${#reports[@]}" = 0 ] || printf 'reports: %s\n' "${reports[*]}"
   fi

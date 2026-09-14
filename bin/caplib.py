@@ -376,7 +376,7 @@ def session_argv(harness, model, effort, prompt, *, session_id=None, resume=None
             argv += ["--resume", resume]
         elif session_id:
             argv += ["--session-id", session_id]
-        return argv + [prompt]
+        return argv + ([prompt] if prompt else [])
     if harness == "codex":
         # codex's --output-schema exists only for exec, which is print mode.
         # Structured output travels in the answer and Captain validates it.
@@ -390,7 +390,7 @@ def session_argv(harness, model, effort, prompt, *, session_id=None, resume=None
         argv += codex_hook_overrides() + ["--dangerously-bypass-approvals-and-sandbox"]
         if guard_slug:
             warn(f"{guard_slug}: --owns is not enforced under codex; the guard is a claude hook")
-        return argv + [prompt]
+        return argv + ([prompt] if prompt else [])
     raise CapError(f"unknown harness '{harness}'")
 
 

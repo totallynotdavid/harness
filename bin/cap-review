@@ -75,6 +75,23 @@ def file_hashes(tree, paths):
     return hashes
 
 
+def write_manifest(args, state, reviewers):
+    """Leave enough state to reap or adopt a review if its wrapper dies."""
+    path = os.path.join(caplib.TASKS, args.slug, "review.json")
+    record = {
+        "state": state,
+        "pid": os.getpid(),
+        "fingerprint": args.fingerprint,
+        "results": args.results,
+        "reviewers": [label for label, _ in reviewers],
+        "started": caplib.iso_now(),
+    }
+    tmp = f"{path}.tmp-{os.getpid()}"
+    with open(tmp, "w") as fh:
+        json.dump(record, fh)
+    os.replace(tmp, path)
+
+
 def parse_reviewer(spec):
     """LABEL=PROFILE[@ROLE], e.g. A=haiku@gate-a."""
     label, _, rest = spec.partition("=")
@@ -196,6 +213,7 @@ def main():
     for harness in sorted({p.harness for _, p in reviewers}):
         caplib.trust(harness, os.path.realpath(args.tree))
 
+    write_manifest(args, "running", reviewers)
     results, lock, threads = {}, threading.Lock(), []
     for label, profile in reviewers:
         t = threading.Thread(target=review, args=(args.slug, label, profile, args, prompt, changed, hashes, results, lock))
@@ -207,6 +225,7 @@ def main():
     with open(args.results, "w") as fh:
         for label, _ in reviewers:
             fh.write(json.dumps(results[label]) + "\n")
+    write_manifest(args, "complete", reviewers)
     return 0
 
 
