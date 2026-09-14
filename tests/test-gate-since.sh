@@ -20,36 +20,36 @@ status=0
 tree=$scratch/tree
 
 fresh() {
-	rm -rf "$tree" "$TASKS/t"
-	mkdir -p "$TASKS/t"
-	git init -q -b main "$tree"
-	echo one >"$tree/f"
-	git -C "$tree" add f
-	git -C "$tree" commit -qm base
-	git -C "$tree" checkout -qb cap/t
+  rm -rf "$tree" "$TASKS/t"
+  mkdir -p "$TASKS/t"
+  git init -q -b main "$tree"
+  echo one >"$tree/f"
+  git -C "$tree" add f
+  git -C "$tree" commit -qm base
+  git -C "$tree" checkout -qb cap/t
 }
 
 commit() {
-	echo "$1" >>"$tree/f"
-	git -C "$tree" commit -qam "$1"
+  echo "$1" >>"$tree/f"
+  git -C "$tree" commit -qam "$1"
 }
 
 # A gate B PASS over the range from $1, as cap gate records it.
 pass_from() {
-	gate_record t B PASS "$(gate_fingerprint_from "$tree" "$1")" "$(git -C "$tree" rev-parse HEAD)" "$1"
+  gate_record t B PASS "$(gate_fingerprint_from "$tree" "$1")" "$(git -C "$tree" rev-parse HEAD)" "$1"
 }
 
 expect() {
-	local name=$1 want=$2 got
-	got=$(gate_review_since t B "$tree" main)
-	case $want in
-	nothing) [ -z "$got" ] && return 0 ;;
-	full) [ "$got" = "$(diff_base "$tree" main)" ] && return 0 ;;
-	head) [ "$got" = "$(git -C "$tree" rev-parse HEAD)" ] && return 0 ;;
-	previous) [ "$got" = "$(git -C "$tree" rev-parse HEAD~1)" ] && return 0 ;;
-	esac
-	printf 'test-gate-since: %s: got <%s>, want %s\n' "$name" "$got" "$want" >&2
-	status=1
+  local name=$1 want=$2 got
+  got=$(gate_review_since t B "$tree" main)
+  case $want in
+  nothing) [ -z "$got" ] && return 0 ;;
+  full) [ "$got" = "$(diff_base "$tree" main)" ] && return 0 ;;
+  head) [ "$got" = "$(git -C "$tree" rev-parse HEAD)" ] && return 0 ;;
+  previous) [ "$got" = "$(git -C "$tree" rev-parse HEAD~1)" ] && return 0 ;;
+  esac
+  printf 'test-gate-since: %s: got <%s>, want %s\n' "$name" "$got" "$want" >&2
+  status=1
 }
 
 fresh
@@ -90,16 +90,16 @@ empty_fp=$(gate_fingerprint "$tree" main)
 gate_record t A PASS "$empty_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
 gate_record t B PASS "$empty_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
 if gate_ready t "$tree" main; then
-	printf 'test-gate-since: empty diff incorrectly reported ready\n' >&2
-	status=1
+  printf 'test-gate-since: empty diff incorrectly reported ready\n' >&2
+  status=1
 fi
 commit two
 full_fp=$(gate_fingerprint "$tree" main)
 gate_record t A PASS "$full_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
 gate_record t B PASS "$full_fp" "$(git -C "$tree" rev-parse HEAD)" "$(diff_base "$tree" main)"
 if ! gate_ready t "$tree" main; then
-	printf 'test-gate-since: reviewable diff incorrectly reported not ready\n' >&2
-	status=1
+  printf 'test-gate-since: reviewable diff incorrectly reported not ready\n' >&2
+  status=1
 fi
 
 [ "$status" = 0 ] && printf 'test-gate-since: plain rounds review from where the last PASS left off\n'

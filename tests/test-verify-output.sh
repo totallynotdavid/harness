@@ -31,8 +31,8 @@ chmod +x "$scratch/fake-bin/mise"
 output=$scratch/output
 if ! timeout 5 bash -c 'CAP_HOME="$1" FAKE_PIDFILE="$2" PATH="$3:$PATH" "$4/bin/cap-verify" --repo demo | tee "$5" >/dev/null' \
   bash "$scratch/home" "$scratch/fake.pid" "$scratch/fake-bin" "$root" "$output"; then
-	printf 'test-verify-output: cap verify did not close its output pipe\n' >&2
-	exit 1
+  printf 'test-verify-output: cap verify did not close its output pipe\n' >&2
+  exit 1
 fi
 
 grep -q 'check output from the detached child' "$output"

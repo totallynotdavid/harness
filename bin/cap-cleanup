@@ -3,52 +3,65 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 usage="usage: cap cleanup <slug> [profile] [--take]"
+
 take=0
 slug=""
 profile=""
+
 while [ $# -gt 0 ]; do
   case $1 in
-  --take) take=1; shift ;;
-  -*) die "$usage" ;;
+  --take)
+    take=1
+    shift
+    ;;
+  -*)
+    die "$usage"
+    ;;
   *)
-    if [ -z "$slug" ]; then slug=$1; elif [ -z "$profile" ]; then profile=$1; else die "$usage"; fi
-    shift ;;
+    if [ -z "$slug" ]; then
+      slug=$1
+    elif [ -z "$profile" ]; then
+      profile=$1
+    else
+      die "$usage"
+    fi
+    shift
+    ;;
   esac
 done
+
 [ -n "$slug" ] || die "$usage"
 profile=${profile:-@chore}
 
 task_load "$slug"
 task_lock "$slug"
-if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
-# Refuse on a worktree with nothing to review, not on one with nothing
-# uncommitted. The prompt below works against $CAP_BASE, which is well defined
-# after cap commit too, and requiring a dirty tree meant a cleanup pass could
-# only ever run before the commit. cap check reports over-long comment blocks
-# on committed work, and the pass that fixes them has to be reachable then.
+if [ "$take" = 1 ]; then
+  task_owner_take "$slug"
+else
+  task_owner_claim "$slug"
+fi
+
 base=$(diff_base "$CAP_TREE" "$CAP_BASE")
+
 reviewable=$(git -C "$CAP_TREE" diff --name-only "$base" | wc -l)
 reviewable=$((reviewable + $(git -C "$CAP_TREE" ls-files --others --exclude-standard | wc -l)))
-reviewable=$((reviewable + $(git -C "$CAP_TREE" diff --name-only | wc -l)))
-[ "$reviewable" != 0 ] || die "$slug's worktree has no changes against $CAP_BASE; nothing to clean up"
 
-# Name the commands instead of relying on `git status`. `git status --porcelain`
-# collapses an untracked directory into one entry, while `ls-files` lists every
-# file. Use the merge base so committed work remains visible to cleanup.
+[ "$reviewable" != 0 ] ||
+  die "$slug's worktree has no changes against $CAP_BASE; nothing to clean up"
+
 prompt="Read $CAP_HOME/rules/comments.md and the Readability section of
 $CAP_HOME/rules/code.md, then apply them to every file this worktree changes
 against $CAP_BASE.
 
-Those files are what these two commands list together. Run both:
+Find those files by running both commands:
 
   git diff --name-only $base
   git ls-files --others --exclude-standard
 
-Do not use git status to find them. It collapses an untracked directory into a
-single entry, so a task that delivers a new directory looks like one file. And
-a clean tree does not mean there is nothing to review, because the work is
-usually committed on this branch already.
+Do not use git status. It can collapse an untracked directory into one entry,
+and committed work on this branch still needs review even when the worktree is
+clean.
 
 Only clean up comments and readability. Remove comments that repeat the code.
 Shorten comments that stay. Rename only misleading names. Remove obvious dead
@@ -56,7 +69,7 @@ code. Do not change behavior, run tests, or commit. Leave all edits unstaged.
 
 If a section does not need changes, leave it alone."
 
-# Not exec: that would discard task_lock's EXIT trap, so a message queued
-# while this command holds the lock would never flush.
+# exec would discard task_lock's EXIT trap and leave queued messages unflushed.
 "$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" --label "cleanup-$slug"
+
 step_record "$slug" cleanup "done"

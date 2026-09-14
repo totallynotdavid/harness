@@ -8,62 +8,84 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import caplib  # noqa: E402
 
+import caplib  # noqa: E402
 
 USAGE = 'usage: cap send <slug|session> "<text>"'
 
 
 def live_records():
     root = os.path.join(caplib.HOME, "state", "ask")
+
     for path in glob.glob(os.path.join(root, "*", "live.json")):
         try:
             with open(path) as fh:
                 record = json.load(fh)
         except (OSError, json.JSONDecodeError):
             continue
+
         if caplib.pane_exists(record.get("pane", "")):
-            yield path, record
-        else:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            yield record
+            continue
+
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
-def main():
-    argv = sys.argv[1:]
+def parse(argv):
     if len(argv) < 2:
         raise caplib.CapError(USAGE)
+
     target = argv[0]
     rest = argv[1:]
-    if rest and rest[0] == "--force":
+
+    if rest[0] == "--force":
         raise caplib.CapError(USAGE)
-    if rest and rest[0] == "--take":
+
+    if rest[0] == "--take":
         raise caplib.CapError("--take only applies to task agents")
+
     text = " ".join(rest)
     if not text.strip():
         raise caplib.CapError("nothing to send")
 
+    return target, text
+
+
+def find_session(target):
     matches = []
-    for path, record in live_records():
+
+    for record in live_records():
         names = {
             record.get("label", ""),
             record.get("session_id", ""),
             os.path.basename(record.get("turn_dir", "")),
         }
+
         if target in names:
-            matches.append((path, record))
+            matches.append(record)
 
     if not matches:
         raise caplib.CapError(f"no live ask session named '{target}'")
-    if len(matches) > 1:
-        labels = ", ".join(item[1].get("label", "?") for item in matches)
-        raise caplib.CapError(f"'{target}' names more than one live ask session: {labels}")
 
-    _, record = matches[0]
+    if len(matches) > 1:
+        labels = ", ".join(record.get("label", "?") for record in matches)
+        raise caplib.CapError(
+            f"'{target}' names more than one live ask session: {labels}"
+        )
+
+    return matches[0]
+
+
+def main():
+    target, text = parse(sys.argv[1:])
+    record = find_session(target)
+
     pane = record["pane"]
     caplib.pane_type(pane, text)
+
     print(f"sent to {record['label']} (live ask, pane {pane})")
     return 0
 

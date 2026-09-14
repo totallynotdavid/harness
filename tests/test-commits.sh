@@ -23,8 +23,8 @@ git -C "$tree" commit -q -m 'Add a useful change' -m 'Why: Keep the fixture focu
 
 good=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_rule_report "$1" main' "$bin/lib.sh" "$tree")
 [ -z "$good" ] || {
-	printf 'test-commits: valid message was rejected:\n%s\n' "$good" >&2
-	exit 1
+  printf 'test-commits: valid message was rejected:\n%s\n' "$good" >&2
+  exit 1
 }
 
 printf 'bad\n' >>"$tree/file"
@@ -55,8 +55,8 @@ cat >"$plan" <<'EOF'
 EOF
 good_plan=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_plan_report "$1" main "$2"' "$bin/lib.sh" "$planned" "$plan")
 [ -z "$good_plan" ] || {
-	printf 'test-commits: valid commit plan was rejected:\n%s\n' "$good_plan" >&2
-	exit 1
+  printf 'test-commits: valid commit plan was rejected:\n%s\n' "$good_plan" >&2
+  exit 1
 }
 
 cat >"$plan" <<'EOF'

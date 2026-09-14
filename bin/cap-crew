@@ -7,29 +7,28 @@ json=0
 
 rows=""
 
-for s in $(task_slugs); do
-	[ -f "$TASKS/$s/task.env" ] || continue
-	. "$TASKS/$s/task.env"
+for slug in $(task_slugs); do
+	[ -f "$TASKS/$slug/task.env" ] || continue
+	. "$TASKS/$slug/task.env"
 
-	st=$(task_state "$s")
+	status=$(task_state "$slug")
 	dirty=$(git_dirty "$CAP_TREE")
-	commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
-	age=$((($(now) - CAP_STARTED) / 60))
+	commit_count=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
+	age_minutes=$((($(now) - CAP_STARTED) / 60))
 
-	# Shown because the ceiling cap-send enforces is otherwise invisible until
-	# it refuses. A task drifting past 40% needs finishing or restarting, and
-	# the captain can only plan that if the number is on the board.
-	ctx=$(pane_context_pct "$s" 2>/dev/null || true)
-	[ -n "$ctx" ] || ctx="-"
+	# Show the context ceiling cap-send enforces. Without it, a task can drift
+	# toward the limit without appearing different from a healthy task.
+	context=$(pane_context_pct "$slug" 2>/dev/null || true)
+	[ -n "$context" ] || context="-"
 
 	# Mark a stale parent tip with *.
-	parent_display=$(task_field "$s" CAP_PARENT)
+	parent_display=$(task_field "$slug" CAP_PARENT)
 	if [ -n "$parent_display" ]; then
 		tip=$(git -C "$CAP_REPO" rev-parse -q --verify "cap/$parent_display" 2>/dev/null || true)
-		[ "$tip" = "$(task_field "$s" CAP_PARENT_TIP)" ] || parent_display="$parent_display*"
+		[ "$tip" = "$(task_field "$slug" CAP_PARENT_TIP)" ] || parent_display="$parent_display*"
 	fi
 
-	rows="$rows$CAP_SLUG\t$CAP_PROJECT\t$CAP_KIND\t$CAP_MODEL\t$st\t${commits}c/${dirty}d\t${age}m\t$ctx\t$parent_display\n"
+	rows="$rows$CAP_SLUG\t$CAP_PROJECT\t$CAP_KIND\t$CAP_MODEL\t$status\t${commit_count}c/${dirty}d\t${age_minutes}m\t$context\t$parent_display\n"
 done
 
 if [ "$json" = 1 ]; then

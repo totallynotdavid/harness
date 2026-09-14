@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# cap-budget - show what Captain can dispatch right now, and why.
-#
-# Sizing happens silently inside cap spawn, cap gate and cap ask. This is where
-# a captain looks when the answer surprises them.
+# cap-budget - show current dispatch capacity and recent sizing decisions.
+
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-# One line per harness that any tier actually reaches for. A harness with no
-# reading is reported as unmeasured rather than left out, because "Captain is
-# not watching this account at all" is the thing a captain most needs told.
 harnesses=$(
   for tier in heavy standard cheap; do
     for profile in $(tier_peers "$tier"); do
@@ -16,48 +11,74 @@ harnesses=$(
   done | sort -u
 )
 
-for h in $harnesses; do
-  read -r pct resets src <<<"$(usage_read "$h")"
-  if [ "$src" = none ]; then
-    printf '%-8s unmeasured  (no reading in the last %ss; nothing is held back)\n' "$h" "${CAP_USAGE_TTL:-900}"
+for harness in $harnesses; do
+  read -r percent resets source <<<"$(usage_read "$harness")"
+
+  if [ "$source" = none ]; then
+    printf \
+      '%-8s unmeasured  (no reading in the last %ss; nothing is held back)\n' \
+      "$harness" \
+      "${CAP_USAGE_TTL:-900}"
     continue
   fi
-  printf '%-8s %s%%  (%s)\n' "$h" "$pct" "$(usage_detail "$h" "$src")"
+
+  printf \
+    '%-8s %s%%  (%s)\n' \
+    "$harness" \
+    "$percent" \
+    "$(usage_detail "$harness" "$source")"
+
   if [ "$resets" -gt "$(now)" ] 2>/dev/null; then
-    printf '%-8s window resets at %s\n' "" "$(date -d "@$resets" '+%H:%M')"
+    printf \
+      '%-8s window resets at %s\n' \
+      "" \
+      "$(date -d "@$resets" '+%H:%M')"
   fi
 done
 
 blocked=""
-for f in "$CAP_BLOCK_DIR"/*; do
-  [ -f "$f" ] || continue
-  p=$(basename "$f")
-  if profile_blocked "$p"; then
-    blocked="${blocked:+$blocked }$p(until $(date -d "@$(profile_block_until "$p")" '+%H:%M'))"
+
+for path in "$CAP_BLOCK_DIR"/*; do
+  [ -f "$path" ] || continue
+
+  profile=$(basename "$path")
+  if profile_blocked "$profile"; then
+    blocked="${blocked:+$blocked }$profile(until $(date -d "@$(profile_block_until "$profile")" '+%H:%M'))"
   fi
 done
+
 printf 'rate limited %s\n' "${blocked:-none}"
 
-printf '\n%-9s %-9s %-8s %-7s %-4s %s\n' ROLE TIER DISPATCH EFFORT ADMIT PEERS
+printf '\n%-9s %-9s %-8s %-7s %-4s %s\n' \
+  ROLE TIER DISPATCH EFFORT ADMIT PEERS
+
 for role in crew scout gate-a gate-b chore; do
   tier=$(role_tier "$role")
+  profile=$(role_profile "$role" || printf -- '-')
+  effort=$(role_effort "$role" | grep . || printf -- '-')
+
   printf '%-9s %-9s %-8s %-7s %-4s %s\n' \
-    "$role" "$tier" "$(role_profile "$role" || printf -- '-')" \
-    "$(role_effort "$role" | grep . || printf -- '-')" "$(tier_admit "$tier")" "$(tier_peers "$tier")"
+    "$role" \
+    "$tier" \
+    "$profile" \
+    "$effort" \
+    "$(tier_admit "$tier")" \
+    "$(tier_peers "$tier")"
 done
 
 if [ -s "$CAP_DISPATCH_LOG" ]; then
   printf '\nrecent decisions (%s)\n' "$CAP_DISPATCH_LOG"
-  # Skip cap-budget's own probes. Asking what would be dispatched is not a
-  # dispatch, and it would otherwise push the real ones out of view.
-  jq -r 'select(.kind == "size" and .caller != "cap-budget")
-    | "  \(.at)  \(.caller | .[0:11] | . + (" " * (11 - length)))  \(.role) -> \(.profile) (\(.harness) at \(.pct)%)"' \
-    "$CAP_DISPATCH_LOG" 2>/dev/null | tail -n 8 || true
 
-  # tokens is exact, from the session transcript. The 5h window is the whole
-  # account, so anything else running at the time is inside its movement.
+  # cap-budget probes sizing without dispatching, so exclude its own entries.
+  jq -r '
+    select(.kind == "size" and .caller != "cap-budget")
+    | "  \(.at)  \(.caller | .[0:11] | . + (" " * (11 - length)))  \(.role) -> \(.profile) (\(.harness) at \(.pct)%)"
+  ' "$CAP_DISPATCH_LOG" 2>/dev/null | tail -n 8 || true
+
+  # Token counts are per session. The 5h usage window includes the whole account.
   printf '\nrecent dispatch cost (tokens exact; 5h window is account-wide)\n'
-  jq -r 'select(.kind == "cost")
-    | "  \(.at)  \(.label)  \(.profile)  \(.seconds)s  in \(.tokens.input) out \(.tokens.output) cache \(.tokens.cache_read)+\(.tokens.cache_creation)  5h \(.window_5h_account_wide.start // "?")% -> \(.window_5h_account_wide.end // "?")%"' \
-    "$CAP_DISPATCH_LOG" 2>/dev/null | tail -n 8 || true
+  jq -r '
+    select(.kind == "cost")
+    | "  \(.at)  \(.label)  \(.profile)  \(.seconds)s  in \(.tokens.input) out \(.tokens.output) cache \(.tokens.cache_read)+\(.tokens.cache_creation)  5h \(.window_5h_account_wide.start // "?")% -> \(.window_5h_account_wide.end // "?")%"
+  ' "$CAP_DISPATCH_LOG" 2>/dev/null | tail -n 8 || true
 fi

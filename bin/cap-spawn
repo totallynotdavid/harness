@@ -3,37 +3,70 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 parse_args() {
-  slug=${1:-}; project=${2:-}; shift 2 2>/dev/null || true
-  [ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [--owns GLOB] [--scout] [--heavy|--light] [-f BRIEF]"
-  case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]";; esac
+	slug=${1:-}
+	project=${2:-}
+	shift 2 2>/dev/null || true
+	[ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [--owns GLOB] [--scout] [--heavy|--light] [-f BRIEF]"
+	case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]" ;; esac
 
-  model=""
-  tier_override=""
-  effort=""
-  harness=$CAP_AGENT_HARNESS
-  harness_set=0
-  kind=ship
-  base=""
-  brief_src=""
-  parent=""
-  owns=""
-  while [ $# -gt 0 ]; do
-    case $1 in
-      -m|--model)   model=${2:?}; shift 2 ;;
-      -e|--effort)  effort=${2:?}; shift 2 ;;
-      -H|--harness) harness=${2:?}; harness_set=1; shift 2 ;;
-      --base)       base=${2:?}; shift 2 ;;
-      --stack)      parent=${2:?}; shift 2 ;;
-      --owns)       owns="$owns ${2:?}"; shift 2 ;;
-      -f|--brief)   brief_src=${2:?}; shift 2 ;;
-      --scout)      kind=scout; shift ;;
-      --heavy)      [ -z "$tier_override" ] || die "use --heavy or --light, not both"
-                    tier_override=heavy; shift ;;
-      --light)      [ -z "$tier_override" ] || die "use --heavy or --light, not both"
-                    tier_override=cheap; shift ;;
-      *) die "unknown flag $1" ;;
-    esac
-  done
+	model=""
+	tier_override=""
+	effort=""
+	harness=$CAP_AGENT_HARNESS
+	harness_set=0
+	kind=ship
+	base=""
+	brief_src=""
+	parent=""
+	owns=""
+	while [ $# -gt 0 ]; do
+		case $1 in
+		-m | --model)
+			model=${2:?}
+			shift 2
+			;;
+		-e | --effort)
+			effort=${2:?}
+			shift 2
+			;;
+		-H | --harness)
+			harness=${2:?}
+			harness_set=1
+			shift 2
+			;;
+		--base)
+			base=${2:?}
+			shift 2
+			;;
+		--stack)
+			parent=${2:?}
+			shift 2
+			;;
+		--owns)
+			owns="$owns ${2:?}"
+			shift 2
+			;;
+		-f | --brief)
+			brief_src=${2:?}
+			shift 2
+			;;
+		--scout)
+			kind=scout
+			shift
+			;;
+		--heavy)
+			[ -z "$tier_override" ] || die "use --heavy or --light, not both"
+			tier_override=heavy
+			shift
+			;;
+		--light)
+			[ -z "$tier_override" ] || die "use --heavy or --light, not both"
+			tier_override=cheap
+			shift
+			;;
+		*) die "unknown flag $1" ;;
+		esac
+	done
 }
 
 parse_args "$@"
@@ -46,52 +79,51 @@ mode=$(proj_mode "$project")
 # Use the parent's branch as this task's base.
 parent_tip=""
 if [ -n "$parent" ]; then
-  [ -z "$base" ] || die "use --base or --stack, not both"
-  [ -f "$TASKS/$parent/task.env" ] || die "no such task '$parent'"
-  [ "$(task_field "$parent" CAP_PROJECT)" = "$project" ] ||
-    die "$parent belongs to project $(task_field "$parent" CAP_PROJECT), not $project"
-  [ "$(task_field "$parent" CAP_KIND)" != scout ] || die "cannot stack on a scout task"
+	[ -z "$base" ] || die "use --base or --stack, not both"
+	[ -f "$TASKS/$parent/task.env" ] || die "no such task '$parent'"
+	[ "$(task_field "$parent" CAP_PROJECT)" = "$project" ] ||
+		die "$parent belongs to project $(task_field "$parent" CAP_PROJECT), not $project"
+	[ "$(task_field "$parent" CAP_KIND)" != scout ] || die "cannot stack on a scout task"
 
-  base=cap/$parent
-  parent_tip=$(git -C "$repo" rev-parse "$base" 2>/dev/null) ||
-    die "$parent has no branch $base in $repo"
+	base=cap/$parent
+	parent_tip=$(git -C "$repo" rev-parse "$base" 2>/dev/null) ||
+		die "$parent has no branch $base in $repo"
 fi
 
 owns=${owns# }
-case $owns in *"'"*|*'"'*) die "--owns globs may not be quoted here; pass one glob per flag" ;; esac
+case $owns in *"'"* | *'"'*) die "--owns globs may not be quoted here; pass one glob per flag" ;; esac
 
-# A second ship task on a project is a fan-out, and a fan-out with no declared
-# partition is the shape that produced four agents writing the same four root
-# files. Refuse it here rather than reporting the collision afterwards.
+# A second ship task is a fan-out. Require explicit ownership partitions before
+# starting it so each task has declared ground.
 if [ "$kind" = ship ]; then
-  peers=""
-  for other in $(task_slugs); do
-    [ "$other" != "$slug" ] || continue
-    [ "$(task_field "$other" CAP_PROJECT 2>/dev/null || true)" = "$project" ] || continue
-    [ "$(task_field "$other" CAP_KIND 2>/dev/null || true)" = ship ] || continue
-    peers="$peers $other"
-  done
+	peers=""
+	for other in $(task_slugs); do
+		[ "$other" != "$slug" ] || continue
+		[ "$(task_field "$other" CAP_PROJECT 2>/dev/null || true)" = "$project" ] || continue
+		[ "$(task_field "$other" CAP_KIND 2>/dev/null || true)" = ship ] || continue
+		peers="$peers $other"
+	done
 
-  if [ -n "$peers" ]; then
-    [ -n "$owns" ] ||
-      die "$project already has$peers in flight; a second task needs --owns (or use cap wave)"
-    for other in $peers; do
-      [ -n "$(owns_read "$other")" ] ||
-        die "$other claims no paths, so it owns everything; drop it or respawn it with --owns"
-    done
-    # Foundation first, enforced rather than described. One task on a broken
-    # base is fine, that is the task fixing it. Two or more is a fan-out, and
-    # the only way to reach a verified base is to have built one.
-    basesha=$(git -C "$repo" rev-parse --verify -q "${base:-$(git_base "$repo")}" 2>/dev/null || true)
-    verified_is "$project" "$basesha" ||
-      die "$project has not passed cap verify at ${basesha:0:12}; build the base before forking it again"
+	if [ -n "$peers" ]; then
+		[ -n "$owns" ] ||
+			die "$project already has$peers in flight; a second task needs --owns (or use cap wave)"
+		for other in $peers; do
+			[ -n "$(owns_read "$other")" ] ||
+				die "$other claims no paths, so it owns everything; drop it or respawn it with --owns"
+		done
+		# Foundation first, enforced rather than described. One task on a broken
+		# base is fine, that is the task fixing it. Two or more is a fan-out, and
+		# the only way to reach a verified base is to have built one.
+		basesha=$(git -C "$repo" rev-parse --verify -q "${base:-$(git_base "$repo")}" 2>/dev/null || true)
+		verified_is "$project" "$basesha" ||
+			die "$project has not passed cap verify at ${basesha:0:12}; build the base before forking it again"
 
-    if taken=$(owns_taken "$project" "$repo" "$owns" "$slug"); then
-      printf 'cap: %s cannot claim ground another task holds:\n' "$slug" >&2
-      printf '%s\n' "$taken" >&2
-      die "narrow --owns, or land the task that holds it first"
-    fi
-  fi
+		if taken=$(owns_taken "$project" "$repo" "$owns" "$slug"); then
+			printf 'cap: %s cannot claim ground another task holds:\n' "$slug" >&2
+			printf '%s\n' "$taken" >&2
+			die "narrow --owns, or land the task that holds it first"
+		fi
+	fi
 fi
 
 # Nothing here names a model unless the captain did. An unpinned task asks for
@@ -99,31 +131,31 @@ fi
 # spawn made at 10% of the window and one made at 85% are not the same spawn.
 role=crew
 if [ "$kind" = scout ]; then
-  role=scout
+	role=scout
 fi
 if [ -z "$model" ] && [ -z "$tier_override" ]; then
-  model=$(proj_model "$project" || true)
-  [ -n "$model" ] && [ "$model" != '-' ] || model=""
+	model=$(proj_model "$project" || true)
+	[ -n "$model" ] && [ "$model" != '-' ] || model=""
 fi
 if [ -z "$model" ]; then
-  # An override moves the tier, it does not bypass the sizing. Starting a heavy
-  # agent on an exhausted account is the failure this exists to prevent, and -m
-  # is still there for a captain who means to spend it anyway.
-  model=$(role_profile_or_die "$role" "$tier_override")
+	# An override moves the tier, it does not bypass the sizing. Starting a heavy
+	# agent on an exhausted account is the failure this exists to prevent, and -m
+	# is still there for a captain who means to spend it anyway.
+	model=$(role_profile_or_die "$role" "$tier_override")
 fi
 
 # Resolve model names that refer to cap-ask profiles.
 if [ "$harness_set" = 0 ] &&
-  printf '%s\n' "$CAP_ASK_PROFILES" | awk -v p="$model" '$1==p{f=1} END{exit !f}' 2>/dev/null; then
-  # Check before the worktree exists. A profile naming a model the account
-  # cannot reach fails on the agent's first turn, long after cap spawn has
-  # built a worktree and taken a pane for it.
-  if ! problem=$(profile_check "$model"); then
-    die "profile '$model': $problem (run cap models)"
-  fi
-  read -r harness model profile_effort <<<"$(ask_profile "$model")"
-  # -e on the command line beats the profile's own default.
-  [ -n "$effort" ] || [ "$profile_effort" = '-' ] || effort=$profile_effort
+	printf '%s\n' "$CAP_ASK_PROFILES" | awk -v p="$model" '$1==p{f=1} END{exit !f}' 2>/dev/null; then
+	# Check before the worktree exists. A profile naming a model the account
+	# cannot reach fails on the agent's first turn, long after cap spawn has
+	# built a worktree and taken a pane for it.
+	if ! problem=$(profile_check "$model"); then
+		die "profile '$model': $problem (run cap models)"
+	fi
+	read -r harness model profile_effort <<<"$(ask_profile "$model")"
+	# -e on the command line beats the profile's own default.
+	[ -n "$effort" ] || [ "$profile_effort" = '-' ] || effort=$profile_effort
 fi
 # A profile without an effort of its own runs at its role's, never at
 # whatever the harness defaults to.
@@ -148,56 +180,65 @@ if [ "$avail" -lt "$need" ]; then
 	die "run cap drop on finished tasks, or clear state/peaks/$project to re-measure"
 fi
 
-prepare_worktree() {
-dir=$(task_dir "$slug")
+prepare_task_directory() {
+	dir=$(task_dir "$slug")
 
-# Locked before checking existence, not after: a check made first can go
-# stale if the winner of a race finishes and releases before the loser
-# even looks, and the loser would then overwrite task.env and open a
-# second pane. task.env, not the directory, is the check: task_lock's own
-# mkdir makes the directory exist regardless of who has spawned here.
-task_lock "$slug"
-[ -f "$dir/task.env" ] && die "task '$slug' already exists (cap drop $slug first)"
+	# The lock directory can exist before task.env, so check the record while
+	# holding the lock instead of using the directory as the existence check.
+	task_lock "$slug"
+	[ -f "$dir/task.env" ] && die "task '$slug' already exists (cap drop $slug first)"
 
-mkdir -p "$dir"
-dir=$(cd "$dir" && pwd)
-status=$dir/status.log
-: >"$status"
-if [ "$brief_src" = "-" ]; then
-  cat > "$dir/brief.md"
-elif [ -n "$brief_src" ]; then
-  cp "$brief_src" "$dir/brief.md"
-else
-  die "a task needs a brief: -f <file> or -f - (stdin)"
-fi
-[ -s "$dir/brief.md" ] || { rm -rf "$dir"; die "brief is empty"; }
-
-tree=$CAP_WORK_ROOT/$slug
-: "${base:=$(git_base "$repo")}"
-mkdir -p "$CAP_WORK_ROOT"
-if [ "$kind" = scout ]; then
-  # A scout never commits, so it gets a clean, detached, branch-free view
-  # instead of the primary checkout - which may be dirty with the user's own
-  # work - and leaves nothing behind for cap-drop to reconcile.
-  branch=""
-  git -C "$repo" worktree add --detach "$tree" "$base" >/dev/null 2>&1 \
-    || { rm -rf "$dir"; die "worktree add failed"; }
-else
-  branch=cap/$slug
-  git -C "$repo" worktree add -b "$branch" "$tree" "$base" >/dev/null 2>&1 \
-    || { rm -rf "$dir"; die "worktree add failed (branch $branch may exist)"; }
-fi
-
-cleanup() {
-  [ "${done:-0}" = 1 ] && return
-  git -C "$repo" worktree remove --force "$tree" 2>/dev/null || rm -rf "$tree"
-  git -C "$repo" worktree prune 2>/dev/null || true
-  [ -z "$branch" ] || git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
-  rm -rf "$dir"
+	mkdir -p "$dir"
+	dir=$(cd "$dir" && pwd)
+	status=$dir/status.log
+	: >"$status"
+	if [ "$brief_src" = "-" ]; then
+		cat >"$dir/brief.md"
+	elif [ -n "$brief_src" ]; then
+		cp "$brief_src" "$dir/brief.md"
+	else
+		die "a task needs a brief: -f <file> or -f - (stdin)"
+	fi
+	[ -s "$dir/brief.md" ] || {
+		rm -rf "$dir"
+		die "brief is empty"
+	}
 }
-cap_exit_add cleanup
 
-cat > "$dir/task.env" <<EOF
+create_worktree() {
+	tree=$CAP_WORK_ROOT/$slug
+	: "${base:=$(git_base "$repo")}"
+	mkdir -p "$CAP_WORK_ROOT"
+	if [ "$kind" = scout ]; then
+		# A scout never commits, so it gets a clean, detached, branch-free view
+		# instead of the primary checkout - which may be dirty with the user's own
+		# work - and leaves nothing behind for cap-drop to reconcile.
+		branch=""
+		git -C "$repo" worktree add --detach "$tree" "$base" >/dev/null 2>&1 ||
+			{
+				rm -rf "$dir"
+				die "worktree add failed"
+			}
+	else
+		branch=cap/$slug
+		git -C "$repo" worktree add -b "$branch" "$tree" "$base" >/dev/null 2>&1 ||
+			{
+				rm -rf "$dir"
+				die "worktree add failed (branch $branch may exist)"
+			}
+	fi
+}
+
+cleanup_worktree() {
+	[ "${done:-0}" = 1 ] && return
+	git -C "$repo" worktree remove --force "$tree" 2>/dev/null || rm -rf "$tree"
+	git -C "$repo" worktree prune 2>/dev/null || true
+	[ -z "$branch" ] || git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
+	rm -rf "$dir"
+}
+
+write_task_record() {
+	cat >"$dir/task.env" <<EOF
 CAP_SLUG=$slug
 CAP_PROJECT=$project
 CAP_REPO=$repo
@@ -214,58 +255,67 @@ CAP_HARNESS=$harness
 CAP_STARTED=$(now)
 CAP_OWNER=$(session_identity)
 EOF
+}
 
-# The ownership guard travels on the session's command line (cap-launch), not
-# in the worktree. A rule the agent is told costs context and can be ignored;
-# a PreToolUse hook cannot.
-guard=()
-if [ -n "$owns" ]; then
-  read -r -a owns_list <<<"$owns"
-  owns_write "$slug" "${owns_list[@]}"
-  guard=(--guard)
-fi
+write_ownership_guard() {
+	guard=()
+	if [ -n "$owns" ]; then
+		# The hook travels on cap-launch's command line, so the agent cannot
+		# ignore the ownership rule as prompt text.
+		read -r -a owns_list <<<"$owns"
+		owns_write "$slug" "${owns_list[@]}"
+		guard=(--guard)
+	fi
+}
 
-# Make the worktree usable before the agent is told it is ready. A worktree
-# the project cannot install into is not ready, and an agent started in one
-# spends its session discovering that one failed turn at a time, so a failed
-# install refuses the spawn here. A project whose setup cannot be inferred
-# is not refused: nothing was tried, so nothing is known to be broken.
-preflight_note=""
-if [ "$kind" = ship ]; then
-  preflight_tools "$project"
-  printf 'cap: preparing %s\n' "$tree" >&2
-  # A gitignored .env does not come with the worktree, so every fresh tree
-  # starts unable to build a project that needs one. It is the same machine
-  # and the same user, so the checkout's own .env is the right file to use.
-  if [ -f "$repo/.env" ] && [ ! -e "$tree/.env" ]; then
-    cp "$repo/.env" "$tree/.env"
-  fi
-  plog=$dir/preflight.log
-  prc=0
-  preflight_deps "$tree" >"$plog" 2>&1 || prc=$?
-  case $prc in
-  0) preflight_note="Dependencies are installed. The worktree is ready to build." ;;
-  2) preflight_note="Captain could not tell how to install this project's dependencies. Set it up yourself if the task needs it." ;;
-  *)
-    printf 'cap: dependency install failed in %s:\n' "$tree" >&2
-    tail -20 "$plog" | sed 's/^/  /' >&2
-    die "$slug: not starting an agent in a worktree that cannot install; fix the install on $base first"
-    ;;
-  esac
-  rm -f "$plog"
-fi
+prepare_dependencies() {
+	preflight_note=""
+	[ "$kind" = ship ] || return
+
+	# An unknown project is allowed through. A detected install failure is not.
+	preflight_tools "$project"
+	printf 'cap: preparing %s\n' "$tree" >&2
+
+	# Gitignored files do not enter a worktree. Reuse the checkout's .env when
+	# the project needs it and the task has no own copy.
+	if [ -f "$repo/.env" ] && [ ! -e "$tree/.env" ]; then
+		cp "$repo/.env" "$tree/.env"
+	fi
+
+	plog=$dir/preflight.log
+	prc=0
+	preflight_deps "$tree" >"$plog" 2>&1 || prc=$?
+	case $prc in
+	0) preflight_note="Dependencies are installed. The worktree is ready to build." ;;
+	2) preflight_note="Captain could not tell how to install this project's dependencies. Set it up yourself if the task needs it." ;;
+	*)
+		printf 'cap: dependency install failed in %s:\n' "$tree" >&2
+		tail -20 "$plog" | sed 's/^/  /' >&2
+		die "$slug: not starting an agent in a worktree that cannot install; fix the install on $base first"
+		;;
+	esac
+	rm -f "$plog"
+}
+
+prepare_worktree() {
+	prepare_task_directory
+	create_worktree
+	cap_exit_add cleanup_worktree
+	write_task_record
+	write_ownership_guard
+	prepare_dependencies
 }
 
 prepare_worktree
 
 report=$CAP_HOME/notes/$project/$slug.md
 if [ "$kind" = scout ]; then
-  deliverable="Write a report at $report. Read the code; leave it unchanged."
+	deliverable="Write a report at $report. Read the code; leave it unchanged."
 else
-  deliverable="Leave your changes uncommitted. Do not run git commit, git push, or open a pull request."
+	deliverable="Leave your changes uncommitted. Do not run git commit, git push, or open a pull request."
 fi
 
-cat > "$dir/contract.md" <<EOF
+cat >"$dir/contract.md" <<EOF
 # Task: $slug
 
 - $deliverable
@@ -296,10 +346,10 @@ EOF
 kick="Read $dir/contract.md and carry it out."
 
 read -r pane tabid session_id <<<"$("$CAP_BIN/cap-launch" --task "$slug" --dir "$tree" \
-  --harness "$harness" --model "$model" --effort "$effort" "${guard[@]}" "$kick")"
+	--harness "$harness" --model "$model" --effort "$effort" "${guard[@]}" "$kick")"
 [ -n "$pane" ] || die "$slug: could not start the agent session"
-printf 'CAP_PANE=%s\nCAP_TAB=%s\nCAP_SESSION_ID=%s\n' "$pane" "$tabid" "$session_id" >> "$dir/task.env"
+printf 'CAP_PANE=%s\nCAP_TAB=%s\nCAP_SESSION_ID=%s\n' "$pane" "$tabid" "$session_id" >>"$dir/task.env"
 
 done=1
 printf 'spawned %s  project=%s  model=%s(%s)  kind=%s  pane=%s\n' \
-  "$slug" "$project" "$model" "$harness" "$kind" "$pane"
+	"$slug" "$project" "$model" "$harness" "$kind" "$pane"

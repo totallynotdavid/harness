@@ -6,6 +6,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
 import caplib  # noqa: E402
 
 USAGE = 'usage: cap ask <profile|@role> "<prompt>"|- [--dir D] [--label L]'
@@ -13,55 +14,85 @@ USAGE = 'usage: cap ask <profile|@role> "<prompt>"|- [--dir D] [--label L]'
 
 def list_profiles():
     print("PROFILE\tHARNESS\tMODEL\tEFFORT")
+
     for line in caplib.conf("CAP_ASK_PROFILES").splitlines():
         fields = line.split()
         if len(fields) == 4:
             print("\t".join(fields))
+
     return 0
 
 
 def parse(argv):
     if len(argv) < 2:
         raise caplib.CapError(USAGE)
-    spec, prompt, rest = argv[0], argv[1], argv[2:]
+
+    spec = argv[0]
+    prompt = argv[1]
+    rest = argv[2:]
+
     directory = os.getcwd()
     label = None
+
     while rest:
         if rest[0] == "--dir" and len(rest) > 1:
             directory = rest[1]
             rest = rest[2:]
-        elif rest[0] == "--label" and len(rest) > 1:
+            continue
+
+        if rest[0] == "--label" and len(rest) > 1:
             label = rest[1]
             rest = rest[2:]
-        else:
-            raise caplib.CapError(USAGE)
+            continue
+
+        raise caplib.CapError(USAGE)
+
     if prompt == "-":
         prompt = sys.stdin.read()
+
     if not prompt.strip():
         raise caplib.CapError("nothing to ask")
+
     if not os.path.isdir(directory):
         raise caplib.CapError(f"no such directory {directory}")
+
     return spec, prompt, directory, label
+
+
+def task_guard_for(directory):
+    slug = caplib.task_for_tree(directory)
+    if not slug:
+        return None
+
+    caplib.task_lock(slug)
+    caplib.lib("task_owner_check", slug)
+
+    if not os.path.isfile(os.path.join(caplib.TASKS, slug, "owns")):
+        return None
+
+    return slug
 
 
 def main():
     argv = sys.argv[1:]
+
     if argv[:1] == ["--list"]:
         return list_profiles()
+
     spec, prompt, directory, label = parse(argv)
+
     profile = caplib.resolve_profile(spec)
     caplib.check_profile(profile)
 
-    # An agent asked to work inside a task's worktree is held to that task's
-    # ground and its lock, the same as the task's own agent.
-    slug = caplib.task_for_tree(directory)
-    if slug:
-        caplib.task_lock(slug)
-        caplib.lib("task_owner_check", slug)
-        if not os.path.isfile(os.path.join(caplib.TASKS, slug, "owns")):
-            slug = None
+    guard_slug = task_guard_for(directory)
+    answer = caplib.ask(
+        profile,
+        prompt,
+        directory,
+        label=label,
+        guard_slug=guard_slug,
+    )
 
-    answer = caplib.ask(profile, prompt, directory, label=label, guard_slug=slug)
     print(answer.text)
     return 0
 

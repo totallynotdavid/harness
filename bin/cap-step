@@ -49,7 +49,6 @@ step_satisfied() {
   esac
 }
 
-# Why the agent step cannot be run for the captain: it is the agent's.
 agent_wait() {
   local state verb
   state=$(task_state "$slug")
@@ -70,7 +69,6 @@ agent_wait() {
   esac
 }
 
-# Run one step. Returns non-zero at a point that needs the captain.
 step_run() {
   local rc=0
   printf '== %s: %s\n' "$slug" "$1"

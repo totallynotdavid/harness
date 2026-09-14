@@ -10,7 +10,10 @@ take=0
 merge_method=""
 while [ $# -gt 0 ]; do
 	case $1 in
-	--merge) do_merge=1; shift ;;
+	--merge)
+		do_merge=1
+		shift
+		;;
 	--squash)
 		[ -z "$merge_method" ] || die "$usage"
 		merge_method=squash
@@ -26,11 +29,16 @@ while [ $# -gt 0 ]; do
 		merge_method=merge
 		shift
 		;;
-	--take) take=1; shift ;;
+	--take)
+		take=1
+		shift
+		;;
 	-*) die "$usage" ;;
 	*)
 		[ -z "$slug" ] || die "$usage"
-		slug=$1; shift ;;
+		slug=$1
+		shift
+		;;
 	esac
 done
 [ -n "$slug" ] || die "$usage"
