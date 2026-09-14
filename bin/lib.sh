@@ -27,19 +27,6 @@ have() { command -v "$1" >/dev/null 2>&1; }
 now() { date +%s; }
 stamp() { date +%Y-%m-%d; }
 
-# A session id for a headless harness launch. uuidgen is not guaranteed
-# present, so this falls back to the kernel's own generator; die with a
-# reason rather than let a missing fallback exit callers silently under set -e.
-new_uuid() {
-  if have uuidgen; then
-    uuidgen
-  elif [ -r /proc/sys/kernel/random/uuid ]; then
-    cat /proc/sys/kernel/random/uuid
-  else
-    die "no uuid source on this host (need uuidgen or /proc/sys/kernel/random/uuid)"
-  fi
-}
-
 # projects.tsv: name, path, mode, model.
 
 proj_field() {
@@ -71,36 +58,47 @@ task_slugs() { [ -d "$TASKS" ] && ls -1 "$TASKS" 2>/dev/null || true; }
 # bun.lock and package-lock.json runs both installers. Within pnpm/yarn/npm,
 # and within uv/poetry, only the first matching lockfile runs.
 
+# Returns 0 when every installer that ran succeeded, 1 when any failed, and
+# 2 when there was nothing to run.
 preflight_deps() {
-  local tree=$1 ran=0
+  local tree=$1 ran=0 failed=0
 
   if [ -f "$tree/mise.toml" ] && have mise; then
     mise trust --yes "$tree/mise.toml" >/dev/null 2>&1 || true
-    (cd "$tree" && mise install -y) && ran=1
+    preflight_run "$tree" mise install -y
   fi
   if [ -f "$tree/bun.lock" ] || [ -f "$tree/bun.lockb" ]; then
-    have bun && (cd "$tree" && bun install --frozen-lockfile) && ran=1
+    ! have bun || preflight_run "$tree" bun install --frozen-lockfile
   fi
   if [ -f "$tree/pnpm-lock.yaml" ]; then
-    have pnpm && (cd "$tree" && pnpm install --frozen-lockfile) && ran=1
+    ! have pnpm || preflight_run "$tree" pnpm install --frozen-lockfile
   elif [ -f "$tree/yarn.lock" ]; then
-    have yarn && (cd "$tree" && yarn install --immutable) && ran=1
+    ! have yarn || preflight_run "$tree" yarn install --immutable
   elif [ -f "$tree/package-lock.json" ]; then
-    have npm && (cd "$tree" && npm ci) && ran=1
+    ! have npm || preflight_run "$tree" npm ci
   fi
   if [ -f "$tree/uv.lock" ]; then
-    have uv && (cd "$tree" && uv sync) && ran=1
+    ! have uv || preflight_run "$tree" uv sync
   elif [ -f "$tree/poetry.lock" ]; then
-    have poetry && (cd "$tree" && poetry install) && ran=1
+    ! have poetry || preflight_run "$tree" poetry install
   fi
-  [ ! -f "$tree/Cargo.lock" ] || { have cargo && (cd "$tree" && cargo fetch) && ran=1; }
-  [ ! -f "$tree/go.sum" ] || { have go && (cd "$tree" && go mod download) && ran=1; }
-  [ ! -f "$tree/Gemfile.lock" ] || { have bundle && (cd "$tree" && bundle install) && ran=1; }
-  [ ! -f "$tree/composer.lock" ] || { have composer && (cd "$tree" && composer install) && ran=1; }
+  [ ! -f "$tree/Cargo.lock" ] || ! have cargo || preflight_run "$tree" cargo fetch
+  [ ! -f "$tree/go.sum" ] || ! have go || preflight_run "$tree" go mod download
+  [ ! -f "$tree/Gemfile.lock" ] || ! have bundle || preflight_run "$tree" bundle install
+  [ ! -f "$tree/composer.lock" ] || ! have composer || preflight_run "$tree" composer install
 
-  # A project whose setup cannot be inferred is not a project to refuse. Say
-  # nothing and let the agent start.
-  [ "$ran" = 1 ]
+  [ "$failed" = 0 ] || return 1
+  [ "$ran" = 1 ] || return 2
+}
+
+# One installer, counted in preflight_deps' ran and failed. A failure is
+# remembered rather than returned, so every installer still runs and the log
+# shows all of them.
+preflight_run() {
+  local tree=$1
+  shift
+  ran=1
+  (cd "$tree" && "$@") || failed=1
 }
 
 # Tools a project needs that nothing in the project declares. Lives in Captain
@@ -444,9 +442,10 @@ task_try_lock() {
 # Pinned here, not inside session_identity: x=$(session_identity) always
 # runs in a subshell, so an export inside it never reaches the caller, and
 # cap-land shelling out to cap-drop needs the same identity under the same
-# harness. cap_env_scrub strips CAP_SESSION the same as CAP_LOCKS, so a
-# dispatched agent never sees it. Not locking itself, but every locker
-# needs it done, once per process, the first time any lock is taken.
+# harness. caplib.py's launch_env_prefix/SCRUBBED strips CAP_SESSION the
+# same as CAP_LOCKS, so a dispatched agent never sees it. Not locking
+# itself, but every locker needs it done, once per process, the first time
+# any lock is taken.
 task_pin_session() {
   if [ -z "${CAP_SESSION:-}" ]; then
     CAP_SESSION=$(session_identity)
@@ -756,7 +755,7 @@ queue_recover_stranded() {
 # queued message into a blocked pane could approve something the captain
 # never saw.
 pane_usable() {
-  pane_live "$1" || return 1
+  agent_live "$1" || return 1
   [ "$(pane_agent_status "$1")" != blocked ]
 }
 
@@ -844,105 +843,19 @@ task_children() {
   return 0
 }
 
-require_herdr() {
-  { [ -n "${HERDR_ENV:-}" ] && have herdr; } && return
-  die "herdr not detected: HERDR_ENV unset or herdr not on PATH"
-}
-
-# Create a Herdr tab and return its pane and tab IDs.
-herdr_open() {
-  local json pane tab
-  json=$(herdr tab create --cwd "$1" --label "$2" --no-focus 2>/dev/null) || die "herdr tab create failed"
-  pane=$(printf '%s' "$json" | jq -r '.result.root_pane.pane_id // empty')
-  tab=$(printf '%s' "$json" | jq -r '.result.tab.tab_id // empty')
-  [ -n "$pane" ] || die "herdr tab create returned no pane id"
-  printf '%s %s' "$pane" "$tab"
-}
-
 task_pane() { awk -F= '$1=="CAP_PANE"{print $2}' "$TASKS/$1/task.env" 2>/dev/null; }
-
-# Run a command in a pane via temp script. Typing directly overruns tty
-# line-length limit with large prompts; "bash <script>" never does.
-pane_launch() {
-  local pane=$1 script
-  shift
-  script=$(mktemp)
-  { printf '#!/usr/bin/env bash\n'; printf 'exec %s\n' "$(printf '%q ' "$@")"; } > "$script"
-  herdr pane run "$pane" "bash $script" >/dev/null 2>&1 || die "herdr pane run failed"
-}
-
-# No agent session runs as a bare background child - it always runs in
-# its own pane, opened and closed just for this call. Structured output
-# is not traded away for that: stdout is teed to a file to parse and
-# shown live too. Blocks until the command exits, then returns its rc.
-pane_dispatch() {
-  local tree=$1 label=$2 out=$3 err=$4
-  shift 4
-  if ! { [ -n "${HERDR_ENV:-}" ] && have herdr; }; then
-    # No herdr to open a pane in: run directly, rather than losing ask,
-    # gate, commit, cleanup and skills entirely in an environment that
-    # never had herdr in the first place.
-    (cd "$tree" && "$@" </dev/null >"$out" 2>"$err")
-    return $?
-  fi
-  local pane script rc_file done_file waited=0
-  local max=${CAP_ASK_MAX_WAIT:-3600}
-  read -r pane _ <<<"$(herdr_open "$tree" "$label")"
-  rc_file=$(mktemp)
-  done_file=$(mktemp)
-  rm -f "$done_file"
-  script=$(mktemp)
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf 'set -o pipefail\n'
-    # No >/dev/null after tee: its own stdout is the script's stdout, which
-    # is the pane. stderr goes straight to $err, unseen.
-    printf '%s </dev/null 2>%q | tee %q\n' "$(printf '%q ' "$@")" "$err" "$out"
-    printf 'echo $? >%q\n' "$rc_file"
-    printf 'touch %q\n' "$done_file"
-  } >"$script"
-  herdr pane run "$pane" "bash $script" >/dev/null 2>&1 || die "herdr pane run failed"
-
-  # Also gives up the moment the pane itself is gone (tab closed, herdr
-  # restarted) instead of spinning out the full $max: the wrapper script
-  # dies on SIGHUP without ever touching $done_file.
-  local timed_out=0 pane_gone=0
-  while [ ! -f "$done_file" ]; do
-    if ! herdr pane get "$pane" >/dev/null 2>&1; then
-      warn "$label: pane no longer exists; giving up rather than waiting out ${max}s"
-      pane_gone=1
-      break
-    fi
-    sleep 1
-    waited=$((waited + 1))
-    if [ "$waited" -ge "$max" ]; then
-      warn "$label: still running after ${max}s; leaving its pane open rather than killing it blind"
-      timed_out=1
-      break
-    fi
-  done
-
-  local rc=1
-  if [ -f "$rc_file" ]; then
-    rc=$(cat "$rc_file" 2>/dev/null || echo 1)
-    case $rc in '' | *[!0-9]*) rc=1 ;; esac
-  fi
-  rm -f "$script"
-  # A timed-out or pane-gone wrapper may still be running and still means
-  # to write $rc_file and $done_file - removing them now only means it
-  # recreates two orphaned files nothing will ever clean up. Left in place,
-  # they sit next to a pane the warning above already said was left open.
-  if [ "$timed_out" = 0 ] && [ "$pane_gone" = 0 ]; then
-    rm -f "$rc_file" "$done_file"
-    herdr pane close "$pane" >/dev/null 2>&1 || true
-  fi
-  return "$rc"
-}
 
 pane_live() {
   local p
   p=$(task_pane "$1")
   [ -n "$p" ] && herdr pane get "$p" >/dev/null 2>&1
+}
+
+# Whether the task's agent session is still running. Its pane outlives it:
+# the shell the session ran in stays open, so a live pane is not enough, and
+# the exit marker cap-launch's session writes on its way out says the rest.
+agent_live() {
+  pane_live "$1" && [ ! -e "$TASKS/$1/turns/exited" ]
 }
 pane_tail() {
   local p
@@ -1266,87 +1179,36 @@ gate_fingerprint() {
   gate_fingerprint_from "$tree" "$base"
 }
 
-# The markdown-decoration strip gate_report_lines finishes each surviving
-# line with: list markers, heading/blockquote/bold/italic markers, trailing
-# punctuation. Factored out so gate_has_evidence can test a raw line for
-# being a verdict the same way gate_verdict does, instead of a stricter
-# literal match that a decorated verdict line fails.
-gate_strip_markdown() {
-  sed -E 's/^[[:space:]]*[0-9]+[.)][[:space:]]*//; s/^[[:space:]#>*_-]*//; s/[[:space:]#*_.]*$//'
+# A task's round is how many times its agent has reported done. A pipeline
+# step counts only for the round it ran in, so an agent sent back to fix
+# something makes every step after it due again.
+task_round() {
+  local n
+  n=$(grep -c '^done:' "$TASKS/$1/status.log" 2>/dev/null) || true
+  printf '%s' "${n:-0}"
 }
 
-# The cleaned line stream gate_verdict and gate_has_evidence both read, so
-# the two never disagree about what a report says. Skips fenced code (```
-# or ~~~, 3+, matched by character and length per CommonMark) and indented
-# lines, then strips markdown structure - never quote marks or backticks.
-gate_report_lines() {
-  [ -f "$1" ] || return 0
-  local body
-  # grep -v exits 1, not just prints nothing, on a zero-byte report - what
-  # cap-gate feeds this after a session-limit rejection. Harmless today only
-  # because the caller uses a command substitution, where bash does not
-  # apply set -e to the command inside.
-  body=$(grep -v '^[[:space:]]*$' "$1" || true)
-  printf '%s\n' "$body" |
-    awk '
-      # <=3 leading spaces then a run of ch (backtick or tilde). An opener
-      # may carry an info string after the run (```sh); a closer may not -
-      # only trailing spaces/tabs, checked by the caller when it matters.
-      function fence_run(line, ch,    lead, rest, run) {
-        lead = 0
-        while (lead < 3 && substr(line, lead + 1, 1) == " ") lead++
-        rest = substr(line, lead + 1)
-        run = 0
-        while (substr(rest, run + 1, 1) == ch) run++
-        return run
-      }
-      function only_trailing_space(line, ch, run,    lead, rest, trail) {
-        lead = 0
-        while (lead < 3 && substr(line, lead + 1, 1) == " ") lead++
-        rest = substr(line, lead + 1)
-        trail = substr(rest, run + 1)
-        gsub(/[ \t]/, "", trail)
-        return trail == ""
-      }
-      {
-        if (in_fence) {
-          # A closer must be the same character, at least as long as the
-          # opener, and bare - anything else, including the other fence
-          # character or an info string, is still content.
-          n = fence_run($0, fch)
-          if (n >= flen && only_trailing_space($0, fch, n)) in_fence = 0
-          next
-        }
-        n = fence_run($0, "`")
-        if (n >= 3) { in_fence = 1; fch = "`"; flen = n; next }
-        n = fence_run($0, "~")
-        if (n >= 3) { in_fence = 1; fch = "~"; flen = n; next }
-        if ($0 ~ /^(    |\t)/) next
-        print
-      }
-    ' |
-    gate_strip_markdown
+# Record that a pipeline step ran for the task's current round, and what it
+# came to. cap step reads this back; nothing else decides a step happened.
+step_record() {
+  local slug=$1 step=$2 result=$3 f=$TASKS/$1/steps.json tmp prev
+  prev=$([ -f "$f" ] && cat "$f" || echo '{}')
+  tmp=$(mktemp)
+  if jq -n --argjson prev "$prev" --arg step "$step" --arg result "$result" \
+    --argjson round "$(task_round "$slug")" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '$prev + {($step): {round: $round, result: $result, at: $at}}' >"$tmp" 2>/dev/null; then
+    mv "$tmp" "$f"
+  else
+    rm -f "$tmp"
+    warn "could not record step $step for $slug"
+  fi
 }
 
-# The exact-line GATE: PASS / GATE: FAIL verdict from a gate report. Last
-# matching cleaned line wins.
-gate_verdict() {
-  gate_report_lines "$1" | grep -E '^GATE: (PASS|FAIL)$' | tail -1 |
-    grep -oE 'PASS|FAIL' || printf 'UNKNOWN'
-}
-
-# Whether a report is more than the bare verdict gate_verdict just read off
-# it. Reads raw, blank-filtered lines, not gate_report_lines' cleaned stream
-# (rules/code.md wants failing output shown fenced or indented, which that
-# stream strips), and tests each for being a verdict through
-# gate_strip_markdown, the same normalisation gate_verdict itself reads through.
-gate_has_evidence() {
-  [ -f "$1" ] || return 1
-  local lines total verdicts
-  lines=$(grep -v '^[[:space:]]*$' "$1" || true)
-  total=$(printf '%s\n' "$lines" | grep -c . || true)
-  verdicts=$(printf '%s\n' "$lines" | gate_strip_markdown | grep -cE '^GATE: (PASS|FAIL)$' || true)
-  [ "$total" -gt "$verdicts" ]
+# Whether a step ran for the task's current round.
+step_ran() {
+  local slug=$1 step=$2 f=$TASKS/$1/steps.json
+  [ -f "$f" ] || return 1
+  [ "$(jq -r --arg s "$step" '.[$s].round // -1' "$f" 2>/dev/null)" = "$(task_round "$slug")" ]
 }
 
 # Record one profile's verdict for a task at the fingerprint it reviewed.
@@ -1354,16 +1216,17 @@ gate_has_evidence() {
 # (A, B), each tagged with the fingerprint it was reviewed at, so a reader
 # can tell whether a PASS still describes the code currently in the tree.
 # $commit is HEAD at review time, so the next incremental round for this
-# profile knows where its last review left off.
+# profile knows where its last review left off. $since is where that review's
+# diff started, the range $fp was taken over.
 gate_record() {
-  local slug=$1 label=$2 verdict=$3 fp=$4 commit=$5
+  local slug=$1 label=$2 verdict=$3 fp=$4 commit=$5 since=$6
   local f=$TASKS/$slug/gate.json tmp prev
   prev=$([ -f "$f" ] && cat "$f" || echo '{}')
   tmp=$(mktemp)
   if jq -n --argjson prev "$prev" \
-    --arg label "$label" --arg verdict "$verdict" --arg fp "$fp" --arg commit "$commit" \
+    --arg label "$label" --arg verdict "$verdict" --arg fp "$fp" --arg commit "$commit" --arg since "$since" \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '$prev + {($label): {verdict: $verdict, fingerprint: $fp, commit: $commit, at: $at}}' >"$tmp" 2>/dev/null; then
+    '$prev + {($label): {verdict: $verdict, fingerprint: $fp, commit: $commit, since: $since, at: $at}}' >"$tmp" 2>/dev/null; then
     mv "$tmp" "$f"
   else
     rm -f "$tmp"
@@ -1387,7 +1250,7 @@ gate_last_commit() {
 # new content to review at all.
 gate_review_since() {
   local slug=$1 label=$2 tree=$3 base=$4
-  local full since verdict head mb_now mb_then
+  local full since verdict head mb_now mb_then reviewed_since reviewed_fp
   full=$(diff_base "$tree" "$base")
 
   since=$(gate_last_commit "$slug" "$label")
@@ -1406,12 +1269,21 @@ gate_review_since() {
 
   head=$(git -C "$tree" rev-parse HEAD)
   if [ "$since" = "$head" ]; then
-    # git diff $since already includes any uncommitted change, so a dirty
-    # tree still has something to review from here. A clean one has
-    # nothing new at all: printing nothing tells the caller to keep the
-    # last verdict instead of paying for an empty review.
+    # The last PASS ended at this commit. A tree still exactly what it
+    # reviewed, fingerprinted over the range that review diffed, has nothing
+    # new: printing nothing keeps that verdict. Otherwise a dirty tree has its
+    # uncommitted changes to review from here, and a clean one, whose PASS saw
+    # changes since discarded, gets the full range.
+    reviewed_since=$(jq -r --arg l "$label" '.[$l].since // empty' "$TASKS/$slug/gate.json" 2>/dev/null || true)
+    reviewed_fp=$(jq -r --arg l "$label" '.[$l].fingerprint // empty' "$TASKS/$slug/gate.json" 2>/dev/null || true)
+    if [ -n "$reviewed_since" ] && git -C "$tree" cat-file -e "$reviewed_since" 2>/dev/null &&
+      [ "$reviewed_fp" = "$(gate_fingerprint_from "$tree" "$reviewed_since")" ]; then
+      return
+    fi
     if [ "$(git_dirty "$tree")" != 0 ]; then
       printf '%s' "$since"
+    else
+      printf '%s' "$full"
     fi
     return
   fi
@@ -1438,6 +1310,17 @@ gate_ready() {
   b_fp=$(jq -r '.B.fingerprint // empty' "$f" 2>/dev/null || true)
   cur=$(gate_fingerprint "$tree" "$base")
   [ "$a_fp" = "$cur" ] && [ "$b_fp" = "$cur" ]
+}
+
+# Whether a gate already failed the exact code in the tree: a FAIL recorded
+# at the tree's current full-branch fingerprint. Reviewing that code again
+# would pay for the same findings twice.
+gate_failed_here() {
+  local slug=$1 tree=$2 base=$3 f=$TASKS/$1/gate.json cur
+  [ -f "$f" ] || return 1
+  jq -e '[.A, .B] | map(select(. != null and .verdict == "FAIL")) | length > 0' "$f" >/dev/null 2>&1 || return 1
+  cur=$(gate_fingerprint "$tree" "$base")
+  jq -e --arg fp "$cur" '[.A, .B] | map(select(. != null and .verdict == "FAIL" and .fingerprint == $fp)) | length > 0' "$f" >/dev/null 2>&1
 }
 
 # rules/commits.md forbids crediting an AI, not a Co-Authored-By trailer as
@@ -1703,36 +1586,6 @@ stack_cascade_landed() {
   done
 }
 
-# Every flag that strips an inherited model/session setting and CAP_*
-# variable (CAP_LOCKS, CAP_SESSION, CAP_ASK_KEY, CAP_TASK, any future one)
-# from a dispatched harness's environment - computed fresh from what is
-# exported right now, not a maintained list, so a lock or identity pinned
-# earlier in this process is always included.
-cap_env_scrub() {
-  local scrub=(-u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u ANTHROPIC_DEFAULT_OPUS_MODEL
-    -u ANTHROPIC_DEFAULT_SONNET_MODEL -u ANTHROPIC_DEFAULT_HAIKU_MODEL -u CLAUDE_CODE_SUBAGENT_MODEL
-    -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SSE_PORT -u CODEX_SANDBOX)
-  local cap_var cap_vars
-  mapfile -t cap_vars < <(compgen -e CAP_ || true)
-  for cap_var in "${cap_vars[@]}"; do
-    scrub+=(-u "$cap_var")
-  done
-  printf '%s\n' "${scrub[@]}"
-}
-
-# Point common package-manager caches at a shared location so a fresh
-# worktree's install is not stuck starting cold, and a project's own relative
-# cache config can't quietly defeat that sharing.
-mkdir -p "$CAP_CACHE_ROOT"
-CAP_CACHE_ENV=(
-  NPM_CONFIG_CACHE="$CAP_CACHE_ROOT/npm"
-  YARN_CACHE_FOLDER="$CAP_CACHE_ROOT/yarn"
-  PIP_CACHE_DIR="$CAP_CACHE_ROOT/pip"
-  CARGO_HOME="$CAP_CACHE_ROOT/cargo"
-  GOMODCACHE="$CAP_CACHE_ROOT/go-mod"
-  COMPOSER_CACHE_DIR="$CAP_CACHE_ROOT/composer"
-)
-
 ask_profile() {
   printf '%s\n' "$CAP_ASK_PROFILES" | awk -v p="$1" '$1==p {print $2, $3, ($4 == "" ? "-" : $4); found=1} END{exit !found}' ||
     die "unknown ask profile '$1' (see config/captain.conf)"
@@ -1842,6 +1695,8 @@ codex_catalog() { codex_cached codex-models.json 86400 model/list '{"includeHidd
 profile_check() {
   local profile=$1 harness model effort catalog problem
   read -r harness model effort <<<"$(ask_profile "$profile")"
+  # A role's effort, when the dispatcher passes one, is the effort the session runs.
+  [ -z "${2:-}" ] || effort=$2
   [ "$harness" = codex ] || return 0
   [ "$model" != '-' ] || return 0
   catalog=$(codex_catalog) || return 0
@@ -1874,7 +1729,7 @@ profile_check() {
 # Knowing the percentage is measuring the account; knowing the plan is
 # describing it, and a description is the thing that goes stale.
 codex_rollout() {
-  find "$HOME/.codex/sessions" -type f -name 'rollout-*.jsonl' -newermt '-24 hours' \
+  find "$HOME/.codex/sessions" -type f -name 'rollout-*.jsonl' -mmin -1440 \
     -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
 }
 
@@ -2019,80 +1874,6 @@ usage_detail() {
   esac
 }
 
-# The rule for picking which of a result's modelUsage entries names the
-# model actually asked for: the one whose canonicalModel/key names the
-# profile's model, or the largest context window when nothing matches.
-# usage_write and cap-ask's ctx_pct both interpolate this one definition, so
-# a session with more than one model (a subagent adds its own entry) can
-# never have the two disagree about which one is "the" model.
-read -r -d '' CAP_MODEL_PICK_JQ <<'JQ' || true
-def pick_model($model):
-  (.modelUsage // {}) | to_entries as $entries
-  | (if ($model // "") == "" or $model == "-" then null
-     else ($entries | map(select((.value.canonicalModel // .key // "") | contains($model))) | .[0])
-     end)
-    // ($entries | max_by(.value.contextWindow // 0));
-JQ
-
-# Record a claude quota reading in the shape bin/cap-statusline writes in
-# Python, so usage_read has a fresh number even for a session whose status
-# line never rendered (that hook only fires for an interactive session).
-# mise run check:usage-shape asserts the two writers agree on that shape.
-usage_write() {
-  local session=$1 dir=$2 rl_json=${3:-} result_json=${4:-} model=${5:-}
-  [ -n "$session" ] || return 0
-
-  # A rejection's own rate_limit_event doesn't always carry unifiedWindows
-  # (its own rejection reason lives in api_error_status/terminal_reason
-  # instead). Write nothing rather than let the // 0 defaults below publish
-  # a fabricated 0% that usage_read's max_by(.at) would then prefer over any
-  # real reading.
-  jq -e '(.rate_limit_info.unifiedWindows.five_hour // .rate_limit_info.unifiedWindows.seven_day) != null' \
-    <<<"${rl_json:-null}" >/dev/null 2>&1 || return 0
-
-  mkdir -p "$CAP_USAGE_DIR" 2>/dev/null || return 0
-
-  local model_id="" model_fallback="" display=""
-  IFS=$'\t' read -r model_id model_fallback <<<"$(jq -r --arg model "$model" "$CAP_MODEL_PICK_JQ"'
-    pick_model($model) as $mu | "\($mu.key // "")\t\($mu.value.canonicalModel // $mu.key // "")"
-  ' <<<"${result_json:-null}" 2>/dev/null)" || true
-
-  # Only an interactive status line learns a model's display name
-  # (bin/cap-statusline, keyed by model.id); reuse its last recording for
-  # this model id instead of restating the raw id. The "^claude-" exclusion
-  # skips raw ids and this function's own past placeholder writes.
-  if [ -n "$model_id" ]; then
-    display=$(jq -rs --arg mid "$model_id" '
-      map(select(.model_id == $mid and (.model // "") != "" and (((.model // "") | test("^claude-")) | not)))
-      | sort_by(.at) | last | .model // empty
-    ' "$CAP_USAGE_DIR"/*.json 2>/dev/null) || true
-  fi
-
-  # A headless call's rate_limit_event never carries a spend_limit field;
-  # only bin/cap-statusline's interactive reading ever observes one. Write
-  # null rather than carry an old reading forward under this call's own
-  # fresh at - a carried value stopped aging out under CAP_USAGE_TTL, which
-  # let a stale spend_limit outlive its own record indefinitely. usage_read
-  # finds the newest record that actually observed one instead.
-  jq -n --arg session "$session" --arg dir "$dir" --argjson at "$(now)" \
-    --arg model_id "$model_id" --arg model_fallback "$model_fallback" \
-    --argjson rl "${rl_json:-null}" --arg disp "$display" --argjson spend null '
-    # Explicit half-away-from-zero, the formula bin/cap-statusline also uses
-    # (math.floor(pct + 0.5)). mise run check:usage-shape asserts they agree.
-    def pct_round: (. + 0.5) | floor;
-    {at: $at, session_id: $session, harness: "claude",
-     model_id: $model_id,
-     model: (if $disp != "" then $disp else $model_fallback end),
-     cwd: $dir, project_dir: $dir,
-     five_hour: {pct: (($rl.rate_limit_info.unifiedWindows.five_hour.utilization // 0) * 100 | pct_round),
-                 resets_at: ($rl.rate_limit_info.unifiedWindows.five_hour.resetsAt // 0)},
-     seven_day: {pct: (($rl.rate_limit_info.unifiedWindows.seven_day.utilization // 0) * 100 | pct_round),
-                 resets_at: ($rl.rate_limit_info.unifiedWindows.seven_day.resetsAt // 0)},
-     spend_limit: $spend}' \
-    >"$CAP_USAGE_DIR/$session.json.tmp" 2>/dev/null &&
-    mv "$CAP_USAGE_DIR/$session.json.tmp" "$CAP_USAGE_DIR/$session.json"
-}
-
 # A profile the harness has rejected for a session limit is out of its tier
 # until its window resets. This is the one signal that is never a guess: the
 # account said no.
@@ -2118,16 +1899,23 @@ profile_blocked() {
 # "role crew -> sonnet" chatter on every dispatch spends its context to tell it
 # something it did not ask for and cannot act on. cap budget reads this back
 # when the answer needs explaining.
-CAP_DISPATCH_LOG=$CAP_USAGE_DIR/dispatch.log
+CAP_DISPATCH_LOG=$CAP_USAGE_DIR/dispatch.jsonl
 
+# One JSON object per line. A sizing decision (kind "size") is written here
+# when a role picks a profile; bin/caplib.py writes what the dispatch then
+# cost (kind "cost") to the same log through dispatch_log_json.
 dispatch_log() {
-  local caller=${0##*/}
+  dispatch_log_json "$(jq -nc --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg caller "${0##*/}" \
+    --arg role "$1" --arg profile "$2" --arg harness "$3" --arg pct "$4" \
+    '{at: $at, caller: $caller, kind: "size", role: $role, profile: $profile, harness: $harness, pct: $pct}')"
+}
+
+dispatch_log_json() {
   mkdir -p "$CAP_USAGE_DIR" 2>/dev/null || return 0
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$caller" "$1" "$2" "$3" "$4" >>"$CAP_DISPATCH_LOG" 2>/dev/null || return 0
+  printf '%s\n' "$1" >>"$CAP_DISPATCH_LOG" 2>/dev/null || return 0
   # Keep the tail, drop the history. Nobody audits a dispatch from last month.
-  if [ "$(stat -c %s "$CAP_DISPATCH_LOG" 2>/dev/null || echo 0)" -gt 65536 ]; then
-    tail -n 200 "$CAP_DISPATCH_LOG" >"$CAP_DISPATCH_LOG.tmp" 2>/dev/null &&
+  if [ "$(stat -c %s "$CAP_DISPATCH_LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
+    tail -n 400 "$CAP_DISPATCH_LOG" >"$CAP_DISPATCH_LOG.tmp" 2>/dev/null &&
       mv "$CAP_DISPATCH_LOG.tmp" "$CAP_DISPATCH_LOG"
   fi
 }
@@ -2136,6 +1924,15 @@ dispatch_log() {
 role_tier() {
   local var
   var=CAP_ROLE_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
+  printf '%s' "${!var:-}"
+}
+
+# The reasoning effort a role runs at, or empty for the harness default. A
+# profile that names its own effort keeps it: terra at xhigh is what that
+# profile means.
+role_effort() {
+  local var
+  var=CAP_EFFORT_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')
   printf '%s' "${!var:-}"
 }
 
