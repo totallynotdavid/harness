@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Search agent history by project, task, sender, or text.
-
-Reads JSONL session logs from ~/.claude/projects.
-Only user and assistant text is included.
-"""
+"""Search agent history by project, task, sender, or text."""
 
 import argparse
 import glob
@@ -13,150 +9,220 @@ import sys
 from datetime import datetime, timezone
 
 
-def proj_path(cap_home, name):
-    tsv = os.path.join(cap_home, "config", "projects.tsv")
-    if not os.path.isfile(tsv):
+def project_path(cap_home, name):
+    path = os.path.join(cap_home, "config", "projects.tsv")
+    if not os.path.isfile(path):
         return None
-    with open(tsv) as f:
-        for line in f:
+
+    with open(path) as file:
+        for line in file:
             parts = line.rstrip("\n").split("\t")
             if len(parts) > 1 and parts[0] == name:
                 return os.path.expanduser(parts[1])
+
     return None
 
 
 def task_tree(cap_home, slug):
-    env_file = os.path.join(cap_home, "state", "tasks", slug, "task.env")
-    if not os.path.isfile(env_file):
+    path = os.path.join(cap_home, "state", "tasks", slug, "task.env")
+    if not os.path.isfile(path):
         return None
-    with open(env_file) as f:
-        for line in f:
+
+    with open(path) as file:
+        for line in file:
             if line.startswith("CAP_TREE="):
                 return line.rstrip("\n").split("=", 1)[1]
+
     return None
 
 
 def text_of(content):
     if isinstance(content, str):
         return content
-    if isinstance(content, list):
-        parts = [
-            b.get("text", "")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
-        ]
-        return "\n".join(p for p in parts if p)
-    return ""
+
+    if not isinstance(content, list):
+        return ""
+
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "text":
+            continue
+
+        text = block.get("text", "")
+        if text:
+            parts.append(text)
+
+    return "\n".join(parts)
 
 
-def parse_since(s):
-    if not s:
+def parse_since(value):
+    if not value:
         return None
-    return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+
+    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
 
 
-def main():
-    ap = argparse.ArgumentParser(prog="cap history", description=__doc__)
-    ap.add_argument("--repo", help="project name or repo basename")
-    ap.add_argument("--task", help="task slug; searches its worktree")
-    ap.add_argument("--sender", choices=["user", "assistant", "both"], default="both")
-    ap.add_argument("--grep", default="", help="case-insensitive text filter")
-    ap.add_argument("--since", default="", help="YYYY-MM-DD")
-    ap.add_argument(
-        "--limit", type=int, default=200, help="maximum number of recent matches"
-    )
-    ap.add_argument(
-        "--include-meta", action="store_true", help="include generated wrapper turns"
-    )
-    ap.add_argument("--full", action="store_true", help="show full turns")
-    args = ap.parse_args()
-
-    if not args.repo and not args.task:
-        ap.error("one of --repo or --task is required")
-
-    cap_home = os.environ.get("CAP_HOME") or os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))
-    )
-
-    if args.task:
-        target = task_tree(cap_home, args.task)
+def resolve_target(cap_home, repo, task):
+    if task:
+        target = task_tree(cap_home, task)
         if not target:
-            print(
-                f"no such task '{args.task}' (or it has no CAP_TREE)", file=sys.stderr
-            )
-            sys.exit(1)
-        label = f"task={args.task}"
-    else:
-        target = proj_path(cap_home, args.repo)
-        label = f"repo={args.repo}"
+            raise ValueError(f"no such task '{task}' (or it has no CAP_TREE)")
 
-    since_dt = parse_since(args.since)
-    logs_root = os.path.expanduser("~/.claude/projects")
+        return target, f"task={task}"
 
+    return project_path(cap_home, repo), f"repo={repo}"
+
+
+def cwd_matches(cwd, target, repo):
+    if target:
+        return cwd == target or cwd.startswith(target.rstrip("/") + "/")
+
+    return os.path.basename(cwd.rstrip("/")) == repo
+
+
+def parse_timestamp(value):
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def turn_matches(record, args, target, since_dt):
+    role = record.get("type")
+    if role not in ("user", "assistant"):
+        return False
+
+    if args.sender != "both" and role != args.sender:
+        return False
+
+    if record.get("isSidechain"):
+        return False
+
+    if record.get("isMeta") and not args.include_meta:
+        return False
+
+    cwd = record.get("cwd", "")
+    if not cwd_matches(cwd, target, args.repo):
+        return False
+
+    text = text_of(record.get("message", {}).get("content")).strip()
+    if not text:
+        return False
+
+    if since_dt:
+        turn_dt = parse_timestamp(record.get("timestamp", ""))
+        if turn_dt and turn_dt < since_dt:
+            return False
+
+    if args.grep and args.grep.lower() not in text.lower():
+        return False
+
+    return True
+
+
+def find_hits(logs_root, args, target, since_dt):
     hits = []
-    for path in sorted(
-        glob.glob(os.path.join(logs_root, "**", "*.jsonl"), recursive=True)
-    ):
-        with open(path, errors="replace") as f:
-            for line in f:
+    pattern = os.path.join(logs_root, "**", "*.jsonl")
+
+    for path in sorted(glob.glob(pattern, recursive=True)):
+        with open(path, errors="replace") as file:
+            for line in file:
                 line = line.strip()
                 if not line:
                     continue
 
                 try:
-                    o = json.loads(line)
+                    record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
 
-                t = o.get("type")
-                if t not in ("user", "assistant"):
-                    continue
-                if args.sender != "both" and t != args.sender:
-                    continue
-                if o.get("isSidechain"):
-                    continue
-                if o.get("isMeta") and not args.include_meta:
+                if not turn_matches(record, args, target, since_dt):
                     continue
 
-                cwd = o.get("cwd", "")
-                if target:
-                    if not (cwd == target or cwd.startswith(target.rstrip("/") + "/")):
-                        continue
-                elif os.path.basename(cwd.rstrip("/")) != args.repo:
-                    continue
+                hits.append(
+                    (
+                        record.get("timestamp", ""),
+                        record["type"],
+                        text_of(record.get("message", {}).get("content")).strip(),
+                    )
+                )
 
-                text = text_of(o.get("message", {}).get("content")).strip()
-                if not text:
-                    continue
+    return hits
 
-                ts = o.get("timestamp", "")
-                if since_dt and ts:
-                    try:
-                        turn_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                        if turn_dt < since_dt:
-                            continue
-                    except ValueError:
-                        pass
 
-                if args.grep and args.grep.lower() not in text.lower():
-                    continue
+def print_hits(hits, limit, full):
+    hits.sort(key=lambda hit: hit[0])
 
-                hits.append((ts, t, text))
+    for timestamp, role, text in hits[-limit:]:
+        if not full and len(text) > 2000:
+            text = text[:2000] + " [truncated]"
 
-    if not hits:
-        print(f"no matches for {label}", file=sys.stderr)
-        sys.exit(1)
-
-    hits.sort(key=lambda h: h[0])
-
-    for ts, role, text in hits[-args.limit :]:
-        snippet = (
-            text if (args.full or len(text) <= 2000) else text[:2000] + " [truncated]"
-        )
-        print(f"=== {ts} {role} ===")
-        print(snippet)
+        print(f"=== {timestamp} {role} ===")
+        print(text)
         print()
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(prog="cap history", description=__doc__)
+    parser.add_argument("--repo", help="project name or repo basename")
+    parser.add_argument("--task", help="task slug; searches its worktree")
+    parser.add_argument(
+        "--sender",
+        choices=["user", "assistant", "both"],
+        default="both",
+    )
+    parser.add_argument("--grep", default="", help="case-insensitive text filter")
+    parser.add_argument("--since", default="", help="YYYY-MM-DD")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="maximum number of recent matches",
+    )
+    parser.add_argument(
+        "--include-meta",
+        action="store_true",
+        help="include generated wrapper turns",
+    )
+    parser.add_argument("--full", action="store_true", help="show full turns")
+
+    args = parser.parse_args()
+
+    if not args.repo and not args.task:
+        parser.error("one of --repo or --task is required")
+
+    return args
+
+
+def main():
+    args = parse_args()
+
+    cap_home = os.environ.get("CAP_HOME") or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+
+    try:
+        target, label = resolve_target(cap_home, args.repo, args.task)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
+
+    since_dt = parse_since(args.since)
+    logs_root = os.path.expanduser("~/.claude/projects")
+    hits = find_hits(logs_root, args, target, since_dt)
+
+    if not hits:
+        print(f"no matches for {label}", file=sys.stderr)
+        return 1
+
+    print_hits(hits, args.limit, args.full)
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

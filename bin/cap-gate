@@ -3,106 +3,199 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 usage="usage: cap gate <slug> [--full] [--take]"
+
 full=0
 take=0
 slug=""
+
 while [ $# -gt 0 ]; do
   case $1 in
-  --full) full=1; shift ;;
-  --take) take=1; shift ;;
-  -*) die "$usage" ;;
+  --full)
+    full=1
+    shift
+    ;;
+  --take)
+    take=1
+    shift
+    ;;
+  -*)
+    die "$usage"
+    ;;
   *)
     [ -z "$slug" ] || die "$usage"
-    slug=$1; shift ;;
+    slug=$1
+    shift
+    ;;
   esac
 done
+
 [ -n "$slug" ] || die "$usage"
+
 task_load "$slug"
 task_lock "$slug"
-if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
+
+if [ "$take" = 1 ]; then
+  task_owner_take "$slug"
+else
+  task_owner_claim "$slug"
+fi
+
 cap_completion_start gate "$slug"
 
-# Reviewers live in detached herdr panes, so the shell owns their lifetime
-# explicitly. A completed manifest can be adopted if this wrapper died after
-# the reviewers finished but before their verdicts reached gate.json.
 review_pid=""
+
 review_close_panes() {
-  local live label pane
+  local live
+  local label
+  local pane
+
   for live in "$CAP_HOME"/state/ask/*/live.json; do
     [ -f "$live" ] || continue
+
     label=$(jq -r '.label // empty' "$live" 2>/dev/null || true)
+
     case $label in
-      "gate-A-$slug" | "gate-B-$slug")
-        pane=$(jq -r '.pane // empty' "$live" 2>/dev/null || true)
-        [ -z "$pane" ] || herdr pane close "$pane" >/dev/null 2>&1 || true
-        rm -f "$live"
-        ;;
+    "gate-A-$slug" | "gate-B-$slug")
+      pane=$(jq -r '.pane // empty' "$live" 2>/dev/null || true)
+
+      if [ -n "$pane" ]; then
+        herdr pane close "$pane" >/dev/null 2>&1 || true
+      fi
+
+      rm -f "$live"
+      ;;
     esac
   done
 }
+
 review_pid_live() {
-  local pid=$1 cmd
-  [ -n "$pid" ] && [ -e "/proc/$pid" ] || return 1
+  local pid=$1
+  local cmd
+
+  [ -n "$pid" ] || return 1
+  [ -e "/proc/$pid" ] || return 1
+
   cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
-  case $cmd in *cap-review*) return 0 ;; esac
+
+  case $cmd in
+  *cap-review*)
+    return 0
+    ;;
+  esac
+
   return 1
 }
+
 review_cleanup() {
   local rc=$?
+
   if [ -n "$review_pid" ] && review_pid_live "$review_pid"; then
     kill -TERM "$review_pid" 2>/dev/null || true
     wait "$review_pid" 2>/dev/null || true
   fi
+
   review_pid=""
   review_close_panes
+
   return "$rc"
 }
+
 cap_exit_add review_cleanup
+
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
 review_manifest_recover() {
-	local fp=$1 needed_reviewers=$2 review_state review_pid_saved saved_reviewers old_results
-	review_results=""
-	if [ -f "$review_manifest" ] && [ "$(jq -r '.fingerprint // empty' "$review_manifest" 2>/dev/null || true)" = "$fp" ]; then
-		review_state=$(jq -r '.state // empty' "$review_manifest" 2>/dev/null || true)
-		review_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
-		review_pid_saved=$(jq -r '.pid // empty' "$review_manifest" 2>/dev/null || true)
-		saved_reviewers=$(jq -r '.reviewers[]' "$review_manifest" 2>/dev/null | sort | tr '\n' ' ' || true)
-		if [ "$review_state" = complete ] && [ -s "$review_results" ] && [ "$saved_reviewers" = "$needed_reviewers" ]; then
-			printf '%s\n' "$slug: adopting the completed review left by an interrupted gate"
-		else
-			review_pid_live "$review_pid_saved" && kill -TERM "$review_pid_saved" 2>/dev/null || true
-			review_close_panes
-			rm -f "$review_manifest" "$review_results"
-			review_results=""
-		fi
-	elif [ -f "$review_manifest" ]; then
-		review_pid_saved=$(jq -r '.pid // empty' "$review_manifest" 2>/dev/null || true)
-		review_pid_live "$review_pid_saved" && kill -TERM "$review_pid_saved" 2>/dev/null || true
-		review_close_panes
-		old_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
-		rm -f "$review_manifest"
-		[ -z "$old_results" ] || rm -f "$old_results"
-	fi
+  local fp=$1
+  local needed_reviewers=$2
+  local manifest_fingerprint
+  local review_state
+  local review_pid_saved
+  local saved_reviewers
+  local old_results
+
+  review_results=""
+
+  if [ ! -f "$review_manifest" ]; then
+    return
+  fi
+
+  manifest_fingerprint=$(jq -r '.fingerprint // empty' "$review_manifest" 2>/dev/null || true)
+  review_pid_saved=$(jq -r '.pid // empty' "$review_manifest" 2>/dev/null || true)
+
+  if [ "$manifest_fingerprint" != "$fp" ]; then
+    review_pid_live "$review_pid_saved" &&
+      kill -TERM "$review_pid_saved" 2>/dev/null || true
+
+    review_close_panes
+
+    old_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
+    rm -f "$review_manifest"
+
+    if [ -n "$old_results" ]; then
+      rm -f "$old_results"
+    fi
+
+    return
+  fi
+
+  review_state=$(jq -r '.state // empty' "$review_manifest" 2>/dev/null || true)
+  review_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
+  saved_reviewers=$(
+    jq -r '.reviewers[]' "$review_manifest" 2>/dev/null |
+      sort |
+      tr '\n' ' ' || true
+  )
+
+  # A completed manifest can survive the gate process that started it.
+  if [ "$review_state" = complete ] &&
+    [ -s "$review_results" ] &&
+    [ "$saved_reviewers" = "$needed_reviewers" ]; then
+    printf '%s\n' "$slug: adopting the completed review left by an interrupted gate"
+    return
+  fi
+
+  review_pid_live "$review_pid_saved" &&
+    kill -TERM "$review_pid_saved" 2>/dev/null || true
+
+  review_close_panes
+  rm -f "$review_manifest" "$review_results"
+  review_results=""
 }
 
 record_review_results() {
-	local label verdict pid
-	reports=()
-	while IFS=$'\t' read -r label verdict; do
-		if [ -z "$verdict" ]; then
-			incomplete=1
-			continue
-		fi
-		gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit" "$since"
-		reports+=("$out_dir/$slug.gate-$label.md")
-	done < <(jq -r '[.label, (.verdict // "")] | @tsv' "$review_results")
-	pid=$!
-	wait "$pid" || { warn "$slug: could not read the gate results"; incomplete=1; }
-	[ -s "$review_results" ] || incomplete=1
-	rm -f "$review_manifest" "$review_results"
-	[ "${#reports[@]}" = 0 ] || printf 'reports: %s\n' "${reports[*]}"
+  local rows
+  local label
+  local verdict
+
+  reports=()
+
+  if ! rows=$(jq -r '[.label, (.verdict // "")] | @tsv' "$review_results"); then
+    warn "$slug: could not read the gate results"
+    incomplete=1
+    rm -f "$review_manifest" "$review_results"
+    return
+  fi
+
+  while IFS=$'\t' read -r label verdict; do
+    [ -n "$label" ] || continue
+
+    if [ -z "$verdict" ]; then
+      incomplete=1
+      continue
+    fi
+
+    gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit" "$since"
+    reports+=("$out_dir/$slug.gate-$label.md")
+  done <<<"$rows"
+
+  [ -s "$review_results" ] || incomplete=1
+
+  rm -f "$review_manifest" "$review_results"
+
+  if [ "${#reports[@]}" -gt 0 ]; then
+    printf 'reports: %s\n' "${reports[*]}"
+  fi
 }
 
 sync_base "$CAP_TREE" "$CAP_BASE" ||
@@ -111,10 +204,10 @@ sync_base "$CAP_TREE" "$CAP_BASE" ||
 full_since=$(diff_base "$CAP_TREE" "$CAP_BASE")
 reviewable=$(reviewable_files "$CAP_TREE" "$full_since") ||
   die "$slug: could not determine the reviewable diff"
-[ -n "$reviewable" ] || die "$slug has no reviewable changes against $CAP_BASE; the work is already in the base"
 
-# A full round reviews the branch. A plain round reviews changes since gate B's
-# last PASS. An empty range needs no reviewer and keeps the existing record.
+[ -n "$reviewable" ] ||
+  die "$slug has no reviewable changes against $CAP_BASE; the work is already in the base"
+
 if [ "$full" = 1 ]; then
   since=$full_since
 else
@@ -123,22 +216,25 @@ fi
 
 incomplete=0
 out_dir=$CAP_HOME/notes/$CAP_PROJECT
+
 mkdir -p "$out_dir" "$TASKS/$slug"
 
 if [ -z "$since" ]; then
   printf '%s: nothing has changed since gate B last passed; not re-reviewing\n' "$slug"
 else
-  # Gate B runs every plain round. Gate A joins full rounds. Reuse a profile
-  # that already passed this fingerprint.
   fp=$(gate_fingerprint_from "$CAP_TREE" "$since")
+
   reviewers=()
   gate_a=""
+
   if [ "$full" = 1 ] && ! gate_passes_fingerprint "$slug" A "$fp"; then
     gate_a=$(role_profile_or_die gate-a)
     reviewers+=(--reviewer "A=$gate_a@gate-a")
   fi
+
   if [ "$full" = 0 ] || ! gate_passes_fingerprint "$slug" B "$fp"; then
     gate_b=$(role_profile gate-b "$gate_a" || true)
+
     if [ -z "$gate_b" ]; then
       if [ -n "$gate_a" ]; then
         warn "no second profile is available below $gate_a; running gate B on $gate_a too, which is one opinion, not two"
@@ -147,21 +243,29 @@ else
         gate_b=$(role_profile_or_die gate-b)
       fi
     fi
+
     reviewers+=(--reviewer "B=$gate_b@gate-b")
   fi
 
-  # Capture HEAD before review. The live agent can add a commit while reviewers
-  # run, and that commit must not enter this review's record.
+  # Do not let commits added while review is running enter this verdict.
   reviewed_commit=$(git -C "$CAP_TREE" rev-parse HEAD)
 
-  # Reviewers run in parallel. The fingerprint also keys session resumption.
   review_results=""
   review_manifest=$TASKS/$slug/review.json
   needed_reviewers=""
+
   for ((review_i = 1; review_i < ${#reviewers[@]}; review_i += 2)); do
     needed_reviewers+="${reviewers[review_i]%%=*} "
   done
-  needed_reviewers=$(printf '%s\n' "$needed_reviewers" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')
+
+  needed_reviewers=$(
+    printf '%s\n' "$needed_reviewers" |
+      tr ' ' '\n' |
+      sed '/^$/d' |
+      sort |
+      tr '\n' ' '
+  )
+
   review_manifest_recover "$fp" "$needed_reviewers"
 
   if [ -n "$review_results" ]; then
@@ -171,28 +275,46 @@ else
   else
     results=$TASKS/$slug/review-results.jsonl
     full_flag=()
-    [ "$full" = 0 ] || full_flag=(--full)
-    CAP_ASK_KEY=$fp "$CAP_BIN/cap-review" --slug "$slug" --tree "$CAP_TREE" --since "$since" \
-      --commit "$reviewed_commit" --fingerprint "$fp" --out-dir "$out_dir" --results "$results" \
-      "${full_flag[@]}" "${reviewers[@]}" </dev/null &
+
+    if [ "$full" = 1 ]; then
+      full_flag=(--full)
+    fi
+
+    CAP_ASK_KEY=$fp \
+      "$CAP_BIN/cap-review" \
+      --slug "$slug" \
+      --tree "$CAP_TREE" \
+      --since "$since" \
+      --commit "$reviewed_commit" \
+      --fingerprint "$fp" \
+      --out-dir "$out_dir" \
+      --results "$results" \
+      "${full_flag[@]}" \
+      "${reviewers[@]}" \
+      </dev/null &
+
     review_pid=$!
     review_rc=0
+
     wait "$review_pid" || review_rc=$?
     review_pid=""
-    [ "$review_rc" = 0 ] || warn "the gate reviewers did not run"
+
+    if [ "$review_rc" != 0 ]; then
+      warn "the gate reviewers did not run"
+    fi
+
     review_results=$results
   fi
 
   if [ -n "$review_results" ]; then
-    # Record only reports that contain validated findings for the diff.
     record_review_results
   fi
 fi
 
-# Exit status is the machine-readable verdict, so a caller can chain on it:
+# Exit status is the verdict for callers:
 #   0  ready to land
-#   1  gates ran, the work is not ready
-#   2  a gate did not complete, so nothing was learned either way
+#   1  not ready
+#   2  gate did not complete
 if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
   printf 'READY TO LAND: %s (gate A and B both passed this exact code) - cap commit %s && cap land %s\n' \
     "$slug" "$slug" "$slug"
@@ -200,13 +322,16 @@ if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
 fi
 
 printf 'NOT ready to land: %s (see reports above)\n' "$slug"
+
 if [ "$incomplete" != 0 ]; then
-  # Retry with the scope that just failed. A plain retry only reaches
-  # ready when gate_review_since itself falls back to the full range (a
-  # first run, a FAIL, or a moved fork point) - not on every plain round.
   retry="cap gate $slug"
-  [ "$full" = 1 ] && retry="$retry --full"
+
+  if [ "$full" = 1 ]; then
+    retry="$retry --full"
+  fi
+
   warn "$slug: a gate did not complete; re-run $retry"
   exit 2
 fi
+
 exit 1

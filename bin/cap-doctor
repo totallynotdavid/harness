@@ -7,17 +7,20 @@ usage="usage: cap doctor [--diff REPORT] | cap doctor --remote HOST [--path CAP_
 path_has() {
   case ":${PATH:-}:" in
     *":$1:"*) return 0 ;;
+    *) return 1 ;;
   esac
-  return 1
 }
 
-# Keep the link in ~/.local/bin so mise activation does not discard it when it
-# rebuilds the managed part of PATH.
 ensure_user_entrypoint() {
   local user_bin=${CAP_USER_BIN:-$HOME/.local/bin}
-  local entry=$user_bin/cap source profile path_line profile_has_path=0
+  local entry=$user_bin/cap
+  local source
+  local profile
+  local path_line
+  local profile_has_path=0
 
   [ -x "$CAP_BIN/cap" ] || die "Captain entrypoint is missing: $CAP_BIN/cap"
+
   source=$(readlink -f "$CAP_BIN/cap")
   mkdir -p "$user_bin"
 
@@ -33,18 +36,23 @@ ensure_user_entrypoint() {
   fi
 
   profile=${CAP_PROFILE:-$HOME/.profile}
+
+  # mise may rebuild its PATH entries, so Captain keeps its own user-level entry.
   if [ "$user_bin" = "$HOME/.local/bin" ]; then
     path_line='export PATH="$HOME/.local/bin:$PATH"'
   else
     path_line=$(printf 'export PATH="%s:$PATH"' "$user_bin")
   fi
+
   if [ -f "$profile" ]; then
-    if [ "$user_bin" = "$HOME/.local/bin" ] && grep -Fq '$HOME/.local/bin' "$profile"; then
+    if [ "$user_bin" = "$HOME/.local/bin" ] &&
+      grep -Fq '$HOME/.local/bin' "$profile"; then
       profile_has_path=1
     elif grep -Fq "$user_bin" "$profile"; then
       profile_has_path=1
     fi
   fi
+
   if [ "$profile_has_path" -eq 0 ]; then
     [ ! -s "$profile" ] || printf '\n' >>"$profile"
     printf '%s\n' "$path_line" >>"$profile"
@@ -52,117 +60,163 @@ ensure_user_entrypoint() {
 }
 
 ensure_repo_setup() {
-	ensure_user_entrypoint
-	git_ensure_attribution_hook "$CAP_HOME" 2>/dev/null || true
+  ensure_user_entrypoint
+  git_ensure_attribution_hook "$CAP_HOME" 2>/dev/null || true
 }
 
-# One "key<TAB>value" line per fact, sorted, so two hosts' reports diff line
-# by line. Values are what differs between hosts, never timestamps.
 report() {
-  local tool v user_bin entry
-  for tool in bash git jq python3 mise herdr claude codex gh shellcheck shfmt flock; do
+  local tool
+  local v
+  local user_bin
+  local entry
+
+  # Stable key/value lines let reports from different hosts diff directly.
+  for tool in bash git jq python3 ruff mise herdr claude codex gh shellcheck shfmt flock; do
     if have "$tool"; then
       v=$("$tool" --version 2>&1 | grep -m1 '[0-9]' | tr '\t' ' ') || true
       [ -n "$v" ] || v="present, version unreadable"
     else
       v=missing
     fi
+
     printf 'tool %s\t%s\n' "$tool" "$v"
   done
-  printf 'captain commit\t%s\n' "$(git -C "$CAP_HOME" rev-parse --short HEAD 2>/dev/null || echo none)"
+
+  printf 'captain commit\t%s\n' \
+    "$(git -C "$CAP_HOME" rev-parse --short HEAD 2>/dev/null || echo none)"
   printf 'captain dirty files\t%s\n' "$(git_dirty "$CAP_HOME")"
-  printf 'captain bin checksum\t%s\n' "$(cd "$CAP_HOME" && find bin -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)"
-  printf 'projects registered\t%s\n' "$(grep -c . "$PROJECTS" 2>/dev/null || echo 0)"
-  printf 'projects.tsv checksum\t%s\n' "$(sha256sum "$PROJECTS" 2>/dev/null | cut -c1-16 || echo none)"
+  printf 'captain bin checksum\t%s\n' \
+    "$(cd "$CAP_HOME" && find bin -type f ! -path '*/__pycache__/*' -print0 |
+      sort -z |
+      xargs -0 sha256sum |
+      sha256sum |
+      cut -c1-16)"
+  printf 'projects registered\t%s\n' \
+    "$(grep -c . "$PROJECTS" 2>/dev/null || echo 0)"
+  printf 'projects.tsv checksum\t%s\n' \
+    "$(sha256sum "$PROJECTS" 2>/dev/null | cut -c1-16 || echo none)"
   printf 'env HERDR_ENV\t%s\n' "${HERDR_ENV:+set}"
   printf 'env CAP_WORK_ROOT\t%s\n' "$CAP_WORK_ROOT"
+
   user_bin=${CAP_USER_BIN:-$HOME/.local/bin}
   entry=$user_bin/cap
-  printf 'cap user entrypoint\t%s\n' "$(readlink -f "$entry" 2>/dev/null || echo missing)"
+
+  printf 'cap user entrypoint\t%s\n' \
+    "$(readlink -f "$entry" 2>/dev/null || echo missing)"
+
   if path_has "$user_bin"; then
     printf 'cap user bin on PATH\tyes\n'
   else
     printf 'cap user bin on PATH\tno (open a new shell)\n'
   fi
-  printf 'gh auth\t%s\n' "$(gh auth status >/dev/null 2>&1 && echo ok || echo 'not logged in')"
-  printf 'claude status line\t%s\n' "$(jq -r '.statusLine.command // "none"' "$HOME/.claude/settings.json" 2>/dev/null || echo none)"
-  # Under pipefail a failing codex fails the pipeline after head has printed,
-  # so the fallback is applied to the captured line, not chained with ||.
+
+  printf 'gh auth\t%s\n' \
+    "$(gh auth status >/dev/null 2>&1 && echo ok || echo 'not logged in')"
+  printf 'claude status line\t%s\n' \
+    "$(jq -r '.statusLine.command // "none"' "$HOME/.claude/settings.json" 2>/dev/null || echo none)"
+
+  # With pipefail, codex may fail after head has already captured the first line.
   v=$(codex login status 2>&1 | head -1) || true
   printf 'codex login\t%s\n' "${v:-unknown}"
+
   printf 'harness default\t%s\n' "$CAP_AGENT_HARNESS"
 }
 
 diff_report() {
-  local other=$1 this sorted rc
+  local other=$1
+  local this
+  local sorted
+  local rc
+
   [ -f "$other" ] || die "no report at $other"
+
   this=$(mktemp)
   sorted=$(mktemp)
+
   report | sort >"$this"
   sort "$other" >"$sorted"
+
   if diff "$this" "$sorted" >/dev/null; then
     rm -f "$this" "$sorted"
     printf 'no differences\n'
     return 0
   fi
+
   printf '%s\n' "- this host, + $other"
+
   rc=0
-  diff "$this" "$sorted" | grep '^[<>]' | sed 's/^</-/; s/^>/+/' || rc=$?
+  diff "$this" "$sorted" |
+    grep '^[<>]' |
+    sed 's/^</-/; s/^>/+/' || rc=$?
+
   rm -f "$this" "$sorted"
   return "$rc"
 }
 
 remote_report() {
-  local host=$1 cap_path=${2:-}
-  # The remote shell takes CAP_HOME, or resolves the cap binary on PATH. The
-  # local host never guesses a path that only exists on the other machine.
+  local host=$1
+  local cap_path=${2:-}
+
   ssh "$host" bash -s -- "$cap_path" <<'REMOTE'
 set -euo pipefail
 
 requested=${1:-}
+
 if [ -n "$requested" ]; then
-	cap_home=$requested
+  cap_home=$requested
 elif [ -n "${CAP_HOME:-}" ]; then
-	cap_home=$CAP_HOME
+  cap_home=$CAP_HOME
 else
-	cap_bin=$(command -v cap 2>/dev/null || true)
-	if [ -n "$cap_bin" ]; then
-		cap_home=$(cd "$(dirname "$(readlink -f "$cap_bin")")/.." && pwd)
-	fi
+  # Resolve Captain on the remote host instead of assuming both hosts use the same path.
+  cap_bin=$(command -v cap 2>/dev/null || true)
+  if [ -n "$cap_bin" ]; then
+    cap_home=$(cd "$(dirname "$(readlink -f "$cap_bin")")/.." && pwd)
+  fi
 fi
 
 [ -n "${cap_home:-}" ] && [ -f "$cap_home/bin/cap-doctor" ] || {
-	printf 'cap: could not find Captain on %s; use --path /path/to/captain\n' "$(hostname)" >&2
-	exit 2
+  printf 'cap: could not find Captain on %s; use --path /path/to/captain\n' "$(hostname)" >&2
+  exit 2
 }
+
 CAP_HOME=$cap_home bash "$cap_home/bin/cap-doctor"
 REMOTE
 }
 
 case ${1:-} in
-'') ensure_repo_setup; report | sort ;;
+"")
+  ensure_repo_setup
+  report | sort
+  ;;
 --diff)
   ensure_repo_setup
   diff_report "${2:?$usage}"
   ;;
 --remote)
   ensure_repo_setup
+
   host=${2:?$usage}
   shift 2
+
   remote_path=""
-  [ "$#" = 0 ] || {
-    [ "$#" = 2 ] && [ "$1" = --path ] || die "$usage"
+  if [ "$#" -ne 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = "--path" ] || die "$usage"
     remote_path=$2
-  }
+  fi
+
   remote=$(mktemp)
+
   if remote_report "$host" "$remote_path" >"$remote"; then
     diff_report "$remote"
     rc=$?
   else
     rc=$?
   fi
+
   rm -f "$remote"
   exit "$rc"
   ;;
-*) die "$usage" ;;
+*)
+  die "$usage"
+  ;;
 esac

@@ -75,8 +75,6 @@ def _interrupted(signum, frame):
     raise KeyboardInterrupt
 
 
-
-
 def lib(func, *args, check=True):
     """Run one bin/lib.sh function and return its stdout."""
     env = dict(os.environ, CAP_HOME=HOME)
@@ -124,8 +122,6 @@ def iso_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-
-
 @dataclass
 class Profile:
     name: str
@@ -159,18 +155,25 @@ def check_profile(profile):
     """Refuse a profile the account cannot run before any pane opens."""
     env = dict(os.environ, CAP_HOME=HOME)
     proc = subprocess.run(
-        ["bash", "-c", '. "$0"; profile_check "$1" "$2"', LIB, profile.name, effective_effort(profile)],
+        [
+            "bash",
+            "-c",
+            '. "$0"; profile_check "$1" "$2"',
+            LIB,
+            profile.name,
+            effective_effort(profile),
+        ],
         stdout=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
         text=True,
         env=env,
     )
     if proc.returncode != 0:
-        raise CapError(f"profile '{profile.name}': {proc.stdout.strip()} (run cap models)")
+        raise CapError(
+            f"profile '{profile.name}': {proc.stdout.strip()} (run cap models)"
+        )
     if not shutil.which(profile.harness):
         raise CapError(f"{profile.harness} is not installed")
-
-
 
 
 def task_field(slug, key):
@@ -224,11 +227,12 @@ def task_lock(slug):
         raise CapError(f"{slug} is already held by {holder}")
     fh.seek(0)
     fh.truncate()
-    fh.write(f"pid {os.getpid()} ({os.path.basename(sys.argv[0])}) since {time.strftime('%H:%M:%SZ', time.gmtime())}\n")
+    fh.write(
+        f"pid {os.getpid()} ({os.path.basename(sys.argv[0])}) since {time.strftime('%H:%M:%SZ', time.gmtime())}\n"
+    )
     fh.flush()
     _held_locks[slug] = fh
     os.environ["CAP_LOCKS"] = " ".join(held + [slug])
-
 
 
 SCRUBBED = (
@@ -287,26 +291,40 @@ def claude_settings(guard_slug):
         hooks["PreToolUse"] = [
             {
                 "matcher": "Edit|Write|NotebookEdit|MultiEdit",
-                "hooks": [{"type": "command", "command": f"CAP_HOME={shlex.quote(HOME)} {shlex.quote(guard)} {shlex.quote(guard_slug)}"}],
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"CAP_HOME={shlex.quote(HOME)} {shlex.quote(guard)} {shlex.quote(guard_slug)}",
+                    }
+                ],
             }
         ]
     # The session records its own quota and context reading into this
     # Captain's state, whatever status line the user configured.
     statusline = f"CAP_HOME={shlex.quote(HOME)} {shlex.quote(os.path.join(HOME, 'bin', 'cap-statusline'))}"
-    return json.dumps({"hooks": hooks, "statusLine": {"type": "command", "command": statusline}})
+    return json.dumps(
+        {"hooks": hooks, "statusLine": {"type": "command", "command": statusline}}
+    )
 
 
 # codex runs a failed turn's end without its Stop hook, so a codex session
 # also reports its start: the payload names the rollout, where a failed turn
 # is recorded (codex_turn_error).
-CODEX_HOOKS = (("SessionStart", "session_start", START_COMMAND), ("Stop", "stop", TURN_COMMAND))
+CODEX_HOOKS = (
+    ("SessionStart", "session_start", START_COMMAND),
+    ("Stop", "stop", TURN_COMMAND),
+)
 
 
 def codex_hook_overrides():
     args = []
     for event, _, command in CODEX_HOOKS:
         # A JSON string is a valid TOML basic string, quotes in the command included.
-        args += ["-c", "hooks.%s=[{hooks=[{type=\"command\",command=%s}]}]" % (event, json.dumps(command))]
+        args += [
+            "-c",
+            'hooks.%s=[{hooks=[{type="command",command=%s}]}]'
+            % (event, json.dumps(command)),
+        ]
     return args
 
 
@@ -319,7 +337,9 @@ def codex_hook_hash(label, command):
     """
     identity = {
         "event_name": label,
-        "hooks": [{"type": "command", "command": command, "async": False, "timeout": 600}],
+        "hooks": [
+            {"type": "command", "command": command, "async": False, "timeout": 600}
+        ],
     }
     body = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     return "sha256:" + hashlib.sha256(body).hexdigest()
@@ -358,7 +378,9 @@ def trust(harness, directory):
         codex_trust_hooks()
 
 
-def claude_session_argv(model, effort, prompt, *, session_id=None, resume=None, guard_slug=None):
+def claude_session_argv(
+    model, effort, prompt, *, session_id=None, resume=None, guard_slug=None
+):
     argv = ["claude"]
     if model and model != "-":
         argv += ["--model", model]
@@ -385,28 +407,41 @@ def codex_session_argv(model, effort, prompt, *, resume=None, guard_slug=None):
         argv += ["-c", f"model_reasoning_effort={effort}"]
     argv += codex_hook_overrides() + ["--dangerously-bypass-approvals-and-sandbox"]
     if guard_slug:
-        warn(f"{guard_slug}: --owns is not enforced under codex; the guard is a claude hook")
+        warn(
+            f"{guard_slug}: --owns is not enforced under codex; the guard is a claude hook"
+        )
     return argv + ([prompt] if prompt else [])
 
 
-def session_argv(harness, model, effort, prompt, *, session_id=None, resume=None, guard_slug=None):
+def session_argv(
+    harness, model, effort, prompt, *, session_id=None, resume=None, guard_slug=None
+):
     """Build the command line for one supported session harness."""
     if harness == "claude":
         return claude_session_argv(
-            model, effort, prompt, session_id=session_id, resume=resume, guard_slug=guard_slug
+            model,
+            effort,
+            prompt,
+            session_id=session_id,
+            resume=resume,
+            guard_slug=guard_slug,
         )
     if harness == "codex":
-        return codex_session_argv(model, effort, prompt, resume=resume, guard_slug=guard_slug)
+        return codex_session_argv(
+            model, effort, prompt, resume=resume, guard_slug=guard_slug
+        )
     raise CapError(f"unknown harness '{harness}'")
 
 
-
-
 def herdr(*args, check=True):
-    proc = subprocess.run(["herdr", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(
+        ["herdr", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
     if proc.returncode != 0:
         if check:
-            raise CapError(f"herdr {args[0]} {args[1] if len(args) > 1 else ''} failed: {proc.stderr.strip()}")
+            raise CapError(
+                f"herdr {args[0]} {args[1] if len(args) > 1 else ''} failed: {proc.stderr.strip()}"
+            )
         return None
     try:
         return json.loads(proc.stdout) if proc.stdout.strip() else {}
@@ -425,7 +460,9 @@ def pane_exists(pane):
 
 def pane_status(pane):
     out = herdr("agent", "get", pane, check=False) or {}
-    return ((out.get("result") or {}).get("agent") or {}).get("agent_status") or "unknown"
+    return ((out.get("result") or {}).get("agent") or {}).get(
+        "agent_status"
+    ) or "unknown"
 
 
 def pane_close(pane):
@@ -453,8 +490,6 @@ def pane_type(pane, text):
         time.sleep(0.15)
     time.sleep(0.4)
     herdr("pane", "send-keys", pane, "enter", check=False)
-
-
 
 
 def live_path(session):
@@ -515,7 +550,11 @@ def launch(directory, label, argv, turn_dir, env=None):
         raise CapError("herdr tab create returned no pane id")
     tab = ((opened.get("result") or {}).get("tab") or {}).get("tab_id", "")
     try:
-        extra = {"CAP_TURN_DIR": turn_dir, "CAP_SESSION_HOOK": EVENT_HOOK, **(env or {})}
+        extra = {
+            "CAP_TURN_DIR": turn_dir,
+            "CAP_SESSION_HOOK": EVENT_HOOK,
+            **(env or {}),
+        }
         command = launch_env_prefix(extra) + argv
         script = os.path.join(turn_dir, f"launch-{int(time.time() * 1000)}.sh")
         exited = os.path.join(turn_dir, "exited")
@@ -533,7 +572,9 @@ def launch(directory, label, argv, turn_dir, env=None):
     except BaseException:
         pane_close(pane)
         raise
-    return Session(harness=argv[0], pane=pane, tab=tab, turn_dir=turn_dir, label=label, seen=seen)
+    return Session(
+        harness=argv[0], pane=pane, tab=tab, turn_dir=turn_dir, label=label, seen=seen
+    )
 
 
 _live_sessions = {}
@@ -557,7 +598,11 @@ def close_live_sessions():
 
 def turn_files(turn_dir):
     try:
-        return sorted(f for f in os.listdir(turn_dir) if f.endswith(".json") and not f.startswith("."))
+        return sorted(
+            f
+            for f in os.listdir(turn_dir)
+            if f.endswith(".json") and not f.startswith(".")
+        )
     except OSError:
         return []
 
@@ -602,7 +647,11 @@ def codex_turn_error(session):
     errors = []
     for entry in read_jsonl(rollout or ""):
         payload = entry.get("payload") or {}
-        if entry.get("type") == "event_msg" and payload.get("type") == "task_complete" and payload.get("error"):
+        if (
+            entry.get("type") == "event_msg"
+            and payload.get("type") == "task_complete"
+            and payload.get("error")
+        ):
             errors.append(payload["error"].get("message") or "unknown error")
     if len(errors) > session.codex_errors:
         session.codex_errors = len(errors)
@@ -672,11 +721,17 @@ def wait_turn(session, max_wait=None):
             if error:
                 raise TurnFailed(f"{session.label}: codex turn failed: {error}")
         if exited:
-            raise TurnLost(f"{session.label}: the {session.harness} session exited before its turn ended. Its pane showed:\n{pane_tail(session.pane)}")
+            raise TurnLost(
+                f"{session.label}: the {session.harness} session exited before its turn ended. Its pane showed:\n{pane_tail(session.pane)}"
+            )
         if polls % 3 == 0:
-            warned_blocked, idle_since = check_pane_progress(session, warned_blocked, idle_since)
+            warned_blocked, idle_since = check_pane_progress(
+                session, warned_blocked, idle_since
+            )
         if time.time() >= deadline:
-            raise TurnTimeout(f"{session.label}: still running after {max_wait}s. Its pane showed:\n{pane_tail(session.pane)}")
+            raise TurnTimeout(
+                f"{session.label}: still running after {max_wait}s. Its pane showed:\n{pane_tail(session.pane)}"
+            )
         time.sleep(1)
 
 
@@ -691,7 +746,9 @@ def submit_codex(session, text):
     )
     if proc.returncode == 0:
         return True
-    warn(f"{session.label}: codex queue failed ({proc.stderr.strip()}), falling back to pane_type")
+    warn(
+        f"{session.label}: codex queue failed ({proc.stderr.strip()}), falling back to pane_type"
+    )
     return False
 
 
@@ -700,8 +757,6 @@ def submit(session, text):
     if session.harness == "codex" and submit_codex(session, text):
         return
     pane_type(session.pane, text)
-
-
 
 
 def read_jsonl(path):
@@ -727,7 +782,11 @@ def claude_transcript_answer(path):
             texts = []
         if entry.get("type") == "assistant":
             for block in msg.get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and block.get("text", "").strip()
+                ):
                     texts.append(block["text"])
     return texts[-1] if texts else ""
 
@@ -758,7 +817,9 @@ def is_prompt(content):
     if isinstance(content, str):
         return True
     if isinstance(content, list):
-        return not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+        return not any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        )
     return False
 
 
@@ -778,12 +839,14 @@ def classify(payload):
     if payload.get("hook_event_name") != "StopFailure":
         return
     error = payload.get("error") or "unknown"
-    details = payload.get("error_details") or payload.get("last_assistant_message") or ""
+    details = (
+        payload.get("error_details") or payload.get("last_assistant_message") or ""
+    )
     if error == "rate_limit":
         raise SessionLimit(details)
-    raise CapError(f"claude harness reported {error}{': ' + details if details else ''}")
-
-
+    raise CapError(
+        f"claude harness reported {error}{': ' + details if details else ''}"
+    )
 
 
 def claude_tokens(transcript, since):
@@ -826,7 +889,8 @@ def codex_tokens(transcript):
     last = codex_last_count(transcript)
     usage = ((last or {}).get("info") or {}).get("total_token_usage") or {}
     return {
-        "input": (usage.get("input_tokens") or 0) - (usage.get("cached_input_tokens") or 0),
+        "input": (usage.get("input_tokens") or 0)
+        - (usage.get("cached_input_tokens") or 0),
         "output": usage.get("output_tokens") or 0,
         "cache_creation": usage.get("cache_write_input_tokens") or 0,
         "cache_read": usage.get("cached_input_tokens") or 0,
@@ -864,7 +928,9 @@ def window_pct(harness, session_id, transcript, since):
             time.sleep(0.5)
         return None
     last = codex_last_count(transcript)
-    return (((last or {}).get("rate_limits") or {}).get("primary") or {}).get("used_percent")
+    return (((last or {}).get("rate_limits") or {}).get("primary") or {}).get(
+        "used_percent"
+    )
 
 
 def codex_usage_now():
@@ -872,7 +938,9 @@ def codex_usage_now():
         limits = json.loads(lib("codex_rate_limits", check=False) or "{}")
     except json.JSONDecodeError:
         limits = {}
-    return (limits.get("primary") or {}).get("used_percent"), limits.get("source") or "none"
+    return (limits.get("primary") or {}).get("used_percent"), limits.get(
+        "source"
+    ) or "none"
 
 
 def claude_usage_now():
@@ -887,7 +955,9 @@ def claude_usage_now():
                 reading = json.load(fh)
         except (OSError, json.JSONDecodeError):
             continue
-        if reading.get("harness", "claude") == "claude" and (reading.get("at") or 0) > (newest.get("at") or 0):
+        if reading.get("harness", "claude") == "claude" and (reading.get("at") or 0) > (
+            newest.get("at") or 0
+        ):
             newest = reading
     pct = (newest.get("five_hour") or {}).get("pct")
     if pct is None:
@@ -913,7 +983,9 @@ def record_cost(session, profile, window_start, transcript):
     else:
         tokens = codex_tokens(transcript)
     start_pct, start_src = window_start
-    end_pct = window_pct(profile.harness, session.session_id, transcript, int(session.started))
+    end_pct = window_pct(
+        profile.harness, session.session_id, transcript, int(session.started)
+    )
     record = {
         "at": iso_now(),
         "caller": os.path.basename(sys.argv[0]),
@@ -925,11 +997,13 @@ def record_cost(session, profile, window_start, transcript):
         "session": session.session_id,
         "seconds": int(time.time() - session.started),
         "tokens": tokens,
-        "window_5h_account_wide": {"start": start_pct, "start_source": start_src, "end": end_pct},
+        "window_5h_account_wide": {
+            "start": start_pct,
+            "start_source": start_src,
+            "end": end_pct,
+        },
     }
     lib("dispatch_log_json", json.dumps(record), check=False)
-
-
 
 
 class InvalidAnswer(CapError):
@@ -949,7 +1023,9 @@ def resume_key(profile, directory, prompt, label):
     same profile never resume each other's session.
     """
     psha = hashlib.sha256(prompt.encode()).hexdigest()[:16]
-    raw = "\x1f".join([profile.name, directory, psha, label, os.environ.get("CAP_ASK_KEY", "")])
+    raw = "\x1f".join(
+        [profile.name, directory, psha, label, os.environ.get("CAP_ASK_KEY", "")]
+    )
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -982,7 +1058,9 @@ def pending_resume(profile, key):
         return sid, path
     if os.environ.get("CAP_ASK_RESUME") == "force":
         return sid, path
-    warn(f"pending session {sid} is at {ctx if ctx is not None else 'an unknown'}% context (>=30%); starting fresh instead of resuming. Set CAP_ASK_RESUME=force to resume it.")
+    warn(
+        f"pending session {sid} is at {ctx if ctx is not None else 'an unknown'}% context (>=30%); starting fresh instead of resuming. Set CAP_ASK_RESUME=force to resume it."
+    )
     return None, path
 
 
@@ -1031,13 +1109,20 @@ def run_ask_turns(session, profile, directory, validate, repairs, record_path, l
         refresh_live(session, profile, directory)
         classify(payload)
         text = turn_answer(profile.harness, payload)
-        problems = validate(text) if validate else ([] if text.strip() else ["the answer was empty"])
+        problems = (
+            validate(text)
+            if validate
+            else ([] if text.strip() else ["the answer was empty"])
+        )
         if not problems:
             if record_path:
                 try_remove(record_path)
             return Answer(text, session.session_id), transcript
         if attempt >= repairs:
-            raise InvalidAnswer(f"{label}: answer still invalid after {repairs} correction(s): " + "; ".join(problems))
+            raise InvalidAnswer(
+                f"{label}: answer still invalid after {repairs} correction(s): "
+                + "; ".join(problems)
+            )
         attempt += 1
         submit(session, correction(problems))
 
@@ -1046,13 +1131,17 @@ def finish_ask(session, profile, window_start, transcript):
     """Record usage and release the pane after every dispatch outcome."""
     start = session_start(session)
     session.session_id = session.session_id or start.get("session_id") or ""
-    record_cost(session, profile, window_start, transcript or start.get("transcript_path") or "")
+    record_cost(
+        session, profile, window_start, transcript or start.get("transcript_path") or ""
+    )
     unpublish_live(session)
     untrack(session)
     pane_close(session.pane)
 
 
-def ask(profile, prompt, directory, *, label=None, validate=None, repairs=2, guard_slug=None):
+def ask(
+    profile, prompt, directory, *, label=None, validate=None, repairs=2, guard_slug=None
+):
     """Run one question in a real session and return its validated answer."""
     directory = os.path.realpath(directory)
     label = label or f"ask-{os.path.basename(directory)}-{profile.name}"
@@ -1112,7 +1201,11 @@ def prune(directory, days=7):
 
 def correction(problems):
     # One line: a newline typed into a TUI input box can submit half of it.
-    return "Your last message is missing what this task asked for: " + "; ".join(problems) + ". Send your complete answer again, as the task describes, with these fixed."
+    return (
+        "Your last message is missing what this task asked for: "
+        + "; ".join(problems)
+        + ". Send your complete answer again, as the task describes, with these fixed."
+    )
 
 
 def try_remove(path):
@@ -1137,7 +1230,14 @@ def limit_reached(profile, session, key, resumed, record_path, details):
     target = os.path.join(resume_dir(), f"{key}.json")
     if resumed or not (record_path and os.path.exists(record_path)):
         with open(target, "w") as fh:
-            json.dump({"profile": profile.name, "session_id": session.session_id, "ctx_pct": ctx if isinstance(ctx, int) else 100}, fh)
+            json.dump(
+                {
+                    "profile": profile.name,
+                    "session_id": session.session_id,
+                    "ctx_pct": ctx if isinstance(ctx, int) else 100,
+                },
+                fh,
+            )
     until = lib("profile_block_until", profile.name).strip()
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(until or 0)))
     raise CapError(
@@ -1152,8 +1252,9 @@ def codex_limit(profile, reached):
     lib("profile_block", profile.name, resets)
     until = lib("profile_block_until", profile.name).strip()
     when = time.strftime("%H:%M", time.localtime(int(until or 0)))
-    raise CapError(f"codex harness reported a rate limit ({reached}); no result to return. {profile.name} is out of its tier until {when}.")
-
+    raise CapError(
+        f"codex harness reported a rate limit ({reached}); no result to return. {profile.name} is out of its tier until {when}."
+    )
 
 
 SEVERITIES = ("blocker", "major", "minor")
@@ -1200,7 +1301,9 @@ def validate_finding(index, finding, changed, tree, covered):
     if finding.get("confidence") not in CONFIDENCE:
         problems.append(f"{where}.confidence must be one of {', '.join(CONFIDENCE)}")
     if not substantive(finding.get("claim")):
-        problems.append(f"{where}.claim must say what is wrong and the failure it causes")
+        problems.append(
+            f"{where}.claim must say what is wrong and the failure it causes"
+        )
     return problems
 
 
@@ -1237,7 +1340,10 @@ def validate_findings(report, changed, tree):
         problems.extend(validate_checked(i, item, changed, tree, covered))
     missing = [p for p in changed if p not in covered]
     if missing:
-        problems.append("these changed files are in neither findings nor checked: " + ", ".join(missing))
+        problems.append(
+            "these changed files are in neither findings nor checked: "
+            + ", ".join(missing)
+        )
     return problems
 
 

@@ -3,7 +3,7 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 json=0
-[ "${1:-}" = --json ] && json=1
+[ "${1:-}" = "--json" ] && json=1
 
 rows=""
 
@@ -16,33 +16,46 @@ for slug in $(task_slugs); do
 	commit_count=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
 	age_minutes=$((($(now) - CAP_STARTED) / 60))
 
-	# Show the context ceiling cap-send enforces. Without it, a task can drift
-	# toward the limit without appearing different from a healthy task.
 	context=$(pane_context_pct "$slug" 2>/dev/null || true)
 	[ -n "$context" ] || context="-"
 
-	# Mark a stale parent tip with *.
 	parent_display=$(task_field "$slug" CAP_PARENT)
 	if [ -n "$parent_display" ]; then
 		tip=$(git -C "$CAP_REPO" rev-parse -q --verify "cap/$parent_display" 2>/dev/null || true)
-		[ "$tip" = "$(task_field "$slug" CAP_PARENT_TIP)" ] || parent_display="$parent_display*"
+
+		# A trailing * means the parent branch moved since this task started.
+		[ "$tip" = "$(task_field "$slug" CAP_PARENT_TIP)" ] ||
+			parent_display="$parent_display*"
 	fi
 
-	rows="$rows$CAP_SLUG\t$CAP_PROJECT\t$CAP_KIND\t$CAP_MODEL\t$status\t${commit_count}c/${dirty}d\t${age_minutes}m\t$context\t$parent_display\n"
+	printf -v rows '%s%s\t%s\t%s\t%s\t%s\t%sc/%sd\t%sm\t%s\t%s\n' \
+		"$rows" \
+		"$CAP_SLUG" \
+		"$CAP_PROJECT" \
+		"$CAP_KIND" \
+		"$CAP_MODEL" \
+		"$status" \
+		"$commit_count" \
+		"$dirty" \
+		"$age_minutes" \
+		"$context" \
+		"$parent_display"
 done
 
 if [ "$json" = 1 ]; then
 	printf '%s' "$rows" |
-		awk -F'\t' 'NF{printf "{\"task\":\"%s\",\"project\":\"%s\",\"kind\":\"%s\",\"model\":\"%s\",\"status\":\"%s\",\"work\":\"%s\",\"age\":\"%s\",\"ctx\":\"%s\",\"stack\":\"%s\"}\n",$1,$2,$3,$4,$5,$6,$7,$8,$9}'
+		awk -F '\t' 'NF {
+			printf "{\"task\":\"%s\",\"project\":\"%s\",\"kind\":\"%s\",\"model\":\"%s\",\"status\":\"%s\",\"work\":\"%s\",\"age\":\"%s\",\"ctx\":\"%s\",\"stack\":\"%s\"}\n", $1, $2, $3, $4, $5, $6, $7, $8, $9
+		}'
 	exit 0
 fi
 
-[ -n "$rows" ] || {
+if [ -z "$rows" ]; then
 	echo "no tasks running"
 	exit 0
-}
+fi
 
 {
 	printf 'TASK\tPROJECT\tKIND\tMODEL\tSTATUS\tWORK\tAGE\tCTX\tSTACK\n'
 	printf '%s' "$rows"
-} | column -t -s"$(printf '\t')"
+} | column -t -s "$(printf '\t')"

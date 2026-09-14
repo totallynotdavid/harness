@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cap-conventions - create a project's convention file.
+# cap-conventions: create a project's convention file.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 project=${1:?usage: cap conventions <project>}
@@ -8,14 +8,16 @@ out=$CAP_HOME/cases/$project/conventions.md
 
 mkdir -p "$(dirname "$out")"
 
-[ -f "$out" ] && {
+if [ -f "$out" ]; then
 	printf '%s\n' "$out"
 	exit 0
-}
+fi
 
 srcs=""
-for f in AGENTS.md CLAUDE.md CONTRIBUTING.md docs/README.md README.md; do
-	[ -f "$repo/$f" ] && srcs="$srcs $f"
+for file in AGENTS.md CLAUDE.md CONTRIBUTING.md docs/README.md README.md; do
+	if [ -f "$repo/$file" ]; then
+		srcs="$srcs $file"
+	fi
 done
 
 cat >"$out" <<EOF
@@ -23,12 +25,12 @@ cat >"$out" <<EOF
 
 Initialized from:${srcs:- none found}
 
-Project-specific rules used by cap check and review.
+Project-specific rules for cap check and review.
 Project instruction files remain authoritative.
 
 ## Surfaces
 
-Rules for files that should change together.
+Files that should change together.
 
 \`\`\`surfaces
 # changed-pattern -> required-pattern
@@ -37,19 +39,20 @@ Rules for files that should change together.
 
 ## House norms
 
-Project-specific rules that change or add to the default checks.
+Project-specific rules that change or extend the default checks.
 
 ## Subsystem invariants
 
-Important system rules that cannot be detected from a diff alone.
+System rules that cannot be detected from a diff alone.
 
 ## Gate-miss ledger
 
-cap land writes an entry here for every blocker or major finding one gate raised
-on bytes an earlier gate round had passed. A miss a human caught is added by hand.
+cap land writes an entry for every blocker or major finding raised after an
+earlier gate round passed the same bytes. Add human-caught misses by hand.
 EOF
 
 printf 'wrote %s\n' "$out"
+
 if [ -n "$srcs" ]; then
 	printf 'read these project instructions:%s\n' "$srcs"
 fi

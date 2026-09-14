@@ -3,11 +3,13 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 usage="usage: cap land <slug> [--merge] [--squash|--rebase|--merge-commit] [--take]"
+
 slug=""
 do_merge=0
 landed=0
 take=0
 merge_method=""
+
 while [ $# -gt 0 ]; do
 	case $1 in
 	--merge)
@@ -33,7 +35,9 @@ while [ $# -gt 0 ]; do
 		take=1
 		shift
 		;;
-	-*) die "$usage" ;;
+	-*)
+		die "$usage"
+		;;
 	*)
 		[ -z "$slug" ] || die "$usage"
 		slug=$1
@@ -41,12 +45,18 @@ while [ $# -gt 0 ]; do
 		;;
 	esac
 done
+
 [ -n "$slug" ] || die "$usage"
 merge_method=${merge_method:-rebase}
 
 task_load "$slug"
 task_lock "$slug"
-if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
+
+if [ "$take" = 1 ]; then
+	task_owner_take "$slug"
+else
+	task_owner_claim "$slug"
+fi
 
 dirty=$(git_dirty "$CAP_TREE")
 [ "$dirty" = 0 ] || die "$slug has $dirty uncommitted change(s); commit them first"
@@ -63,27 +73,46 @@ fi
 commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD")
 [ "$commits" -gt 0 ] || die "$slug has no commits to land"
 
-# rules/commits.md, enforced rather than described. cap-commit runs this same
-# check before it returns, so a bad message costs a repair pass instead of a
-# rebase at landing time.
 bad_messages=$(commit_rule_report "$CAP_TREE" "$CAP_BASE")
 plan_path=$TASKS/$slug/commit-plan.json
 bad_plan=$(commit_plan_report "$CAP_TREE" "$CAP_BASE" "$plan_path")
-[ -z "$bad_messages" ] && [ -z "$bad_plan" ] || {
-	printf 'cap: %s has commit messages or grouping that break the commit plan:\n' "$slug" >&2
-	[ -z "$bad_messages" ] || printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
-	[ -z "$bad_plan" ] || printf '%s\n' "$bad_plan" | sed 's/^/  /' >&2
-	die "repair them, then land again"
-}
 
-# A branch with no common ancestor would replace the base history instead of
-# adding a change to it. Refuse it before any delivery operation.
+if [ -n "$bad_messages" ] || [ -n "$bad_plan" ]; then
+	printf 'cap: %s has commit messages or grouping that break the commit plan:\n' "$slug" >&2
+
+	if [ -n "$bad_messages" ]; then
+		printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
+	fi
+
+	if [ -n "$bad_plan" ]; then
+		printf '%s\n' "$bad_plan" | sed 's/^/  /' >&2
+	fi
+
+	die "repair them, then land again"
+fi
+
+# A branch without a common ancestor would replace the base history.
 if [ -n "$CAP_BRANCH" ] &&
 	git -C "$CAP_REPO" rev-parse --verify -q "$CAP_BASE" >/dev/null 2>&1; then
-	mb=$(git -C "$CAP_REPO" merge-base "$CAP_BASE" "$CAP_BRANCH" 2>/dev/null || true)
-	[ -n "$mb" ] ||
+	merge_base=$(git -C "$CAP_REPO" merge-base "$CAP_BASE" "$CAP_BRANCH" 2>/dev/null || true)
+	[ -n "$merge_base" ] ||
 		die "$CAP_BRANCH shares no commit with $CAP_BASE; it would replace the history rather than add to it"
 fi
+
+update_local_base() {
+	if git -C "$CAP_REPO" fetch origin "$CAP_BASE:$CAP_BASE" 2>/dev/null; then
+		return
+	fi
+
+	current_branch=$(git -C "$CAP_REPO" symbolic-ref -q --short HEAD 2>/dev/null)
+
+	if [ "$current_branch" = "$CAP_BASE" ]; then
+		git -C "$CAP_REPO" pull --ff-only origin "$CAP_BASE" >/dev/null 2>&1 &&
+			return
+	fi
+
+	warn "could not update local $CAP_BASE; commit counts against it may look stale"
+}
 
 land_local() {
 	git -C "$CAP_REPO" rev-parse --verify "$CAP_BASE" >/dev/null 2>&1 ||
@@ -92,28 +121,27 @@ land_local() {
 	[ "$(git_dirty_tracked "$CAP_REPO")" = 0 ] ||
 		die "$CAP_REPO has uncommitted changes"
 
-	# Trial-merge before touching the base. A real merge that conflicts leaves
-	# the repository mid-merge for the captain to clean up, and tests passing
-	# in a worktree are no evidence that two branches compose.
-	# merge-tree exits 1 when it finds conflicts, which `set -e` would turn
-	# into a silent death, so the status is swallowed deliberately. Its first
-	# output line is the tree oid; the conflicted paths follow, then a blank
-	# line before the human-readable summary.
-	conflicts=$({ git -C "$CAP_REPO" merge-tree --write-tree --name-only \
-		"$CAP_BASE" "$CAP_BRANCH" 2>/dev/null || true; } | sed -n '2,/^$/p')
-	[ -z "$conflicts" ] || {
+	# Check conflicts before touching the base checkout.
+	# merge-tree exits 1 for conflicts, so swallow that status and inspect its output.
+	conflicts=$({
+		git -C "$CAP_REPO" merge-tree --write-tree --name-only \
+			"$CAP_BASE" "$CAP_BRANCH" 2>/dev/null || true
+	} | sed -n '2,/^$/p')
+
+	if [ -n "$conflicts" ]; then
 		printf 'cap: %s would conflict with %s in:\n' "$CAP_BRANCH" "$CAP_BASE" >&2
 		printf '%s\n' "$conflicts" | sed 's/^/  /' >&2
 		die "rebase $CAP_BRANCH onto $CAP_BASE and resolve these first"
-	}
+	fi
 
-	# An untracked file left in $CAP_REPO (tolerated above, since only
-	# tracked changes block a hub landing) can collide with a path
-	# $CAP_BASE's or $CAP_BRANCH's tree wants to create. git refuses rather
-	# than overwrite; capture and show that error at each step.
+	# Untracked files are allowed here, but Git can still refuse a checkout or
+	# merge if one would overwrite them.
 	checkout_err=$(git -C "$CAP_REPO" checkout "$CAP_BASE" 2>&1 >/dev/null) ||
 		die "could not check out $CAP_BASE in $CAP_REPO: $checkout_err"
-	merge_err=$(git -C "$CAP_REPO" merge --no-ff -m "merge $CAP_BRANCH ($slug)" "$CAP_BRANCH" 2>&1 >/dev/null) ||
+
+	merge_err=$(git -C "$CAP_REPO" merge --no-ff \
+		-m "merge $CAP_BRANCH ($slug)" \
+		"$CAP_BRANCH" 2>&1 >/dev/null) ||
 		die "could not merge $CAP_BRANCH into $CAP_BASE in $CAP_REPO: $merge_err"
 
 	printf 'merged %s into %s (%s commits)\n' "$CAP_BRANCH" "$CAP_BASE" "$commits"
@@ -123,116 +151,135 @@ land_local() {
 land_pr() {
 	have gh || die "gh not installed; install it or use local mode"
 
-	# GitHub needs the PR base ref on the remote.
 	if [ -n "${CAP_PARENT:-}" ]; then
 		git -C "$CAP_REPO" ls-remote --exit-code origin "cap/$CAP_PARENT" >/dev/null 2>&1 ||
 			die "$slug is stacked on $CAP_PARENT, which is not on the remote yet; run: cap land $CAP_PARENT"
 	fi
 
 	git -C "$CAP_TREE" push -u origin "$CAP_BRANCH"
+
 	repo_url=$(git -C "$CAP_REPO" remote get-url origin)
 	head=$(git -C "$CAP_TREE" rev-parse HEAD)
 
-	# GitHub may not expose a pushed branch immediately. Retry with separate
-	# error capture for creation and the open-PR probe.
 	url=""
 	create_err=$(mktemp)
 	view_err=$(mktemp)
-	# Both gh calls run from the task's worktree. --repo picks the API target,
-	# but --fill still reads the commit range with local git, and the captain
-	# repo this script runs in has no cap/<slug> branch to read.
-	# A reused branch can still have a closed PR under its name. Accept a view
-	# fallback only when GitHub reports an open PR at the commit just pushed.
+
+	# GitHub may take a moment to expose a newly pushed branch.
+	# Run gh from the worktree because --fill reads the local commit range.
 	for i in 1 2 3 4 5 6 7 8; do
-		url=$(cd "$CAP_TREE" && gh pr create --repo "$repo_url" --head "$CAP_BRANCH" --base "$CAP_BASE" --fill 2>"$create_err") && break
-		url=$(cd "$CAP_TREE" && gh pr view "$CAP_BRANCH" --repo "$repo_url" --json url,state,headRefOid --jq "select(.state == \"OPEN\" and .headRefOid == \"$head\") | .url" 2>"$view_err") && [ -n "$url" ] && break
+		url=$(
+			cd "$CAP_TREE" &&
+				gh pr create \
+					--repo "$repo_url" \
+					--head "$CAP_BRANCH" \
+					--base "$CAP_BASE" \
+					--fill 2>"$create_err"
+		) && break
+
+		url=$(
+			cd "$CAP_TREE" &&
+				gh pr view "$CAP_BRANCH" \
+					--repo "$repo_url" \
+					--json url,state,headRefOid \
+					--jq "select(.state == \"OPEN\" and .headRefOid == \"$head\") | .url" \
+					2>"$view_err"
+		) && [ -n "$url" ] && break
+
 		sleep "$((i * 2))"
 	done
+
 	if [ -z "$url" ]; then
 		err=$(cat "$create_err" 2>/dev/null)
 		probe=$(cat "$view_err" 2>/dev/null)
+
 		rm -f "$create_err" "$view_err"
+
 		die "could not open an open PR for $CAP_BRANCH at $head after 8 retries. gh pr create said: ${err:-nothing}. The follow-up gh pr view said: ${probe:-nothing}."
 	fi
+
 	rm -f "$create_err" "$view_err"
 
 	task_env_set "$slug" CAP_PR "$url"
 	printf 'PR: %s\n' "$url"
 
-	if [ "$do_merge" = 1 ]; then
-		kids=$(task_children "$slug")
-		merge_flags=()
-		case $merge_method in
-		rebase) merge_flags=(--rebase) ;;
-		squash) merge_flags=(--squash) ;;
-		merge) merge_flags=(--merge) ;;
-		esac
-
-		# Keep the branch until any stacked PRs are retargeted: GitHub closes a PR,
-		# unrecoverably, the moment its base branch is deleted.
-		if [ -n "$kids" ]; then
-			gh pr merge "$url" "${merge_flags[@]}" --match-head-commit "$head"
-		else
-			gh pr merge "$url" "${merge_flags[@]}" --match-head-commit "$head" --delete-branch
-		fi
-		printf 'merged %s\n' "$url"
-		landed=1
-
-		# Keep the local base ref in step with the remote squash merge, or every
-		# later "commits ahead of CAP_BASE" check (crew, drop) reads it as stale.
-		if git -C "$CAP_REPO" fetch origin "$CAP_BASE:$CAP_BASE" 2>/dev/null; then
-			:
-		elif [ "$(git -C "$CAP_REPO" symbolic-ref -q --short HEAD 2>/dev/null)" = "$CAP_BASE" ]; then
-			git -C "$CAP_REPO" pull --ff-only origin "$CAP_BASE" >/dev/null 2>&1 ||
-				warn "could not update local $CAP_BASE; commit counts against it may look stale"
-		else
-			warn "could not update local $CAP_BASE; commit counts against it may look stale"
-		fi
-
-		if [ -n "$kids" ]; then
-			git -C "$CAP_REPO" fetch origin "$CAP_BASE"
-			tip=$(git -C "$CAP_REPO" rev-parse "origin/$CAP_BASE")
-			snapshot=$(stack_snapshot_new "$slug")
-
-			rc=0
-			stack_cascade_landed "$slug" "$tip" "$snapshot" || rc=$?
-			[ "$STACK_MOVED" != 0 ] || rm -f "$snapshot"
-
-			printf 'restacked %s task(s) onto %s\n' "$STACK_MOVED" "$CAP_BASE"
-			if [ "$rc" = 0 ]; then
-				git -C "$CAP_REPO" push origin --delete "$CAP_BRANCH" 2>/dev/null ||
-					warn "could not delete remote branch $CAP_BRANCH; delete it by hand"
-			else
-				warn "$slug is merged, but $STACK_CONFLICT and anything stacked under it still need a hand-rebase"
-				warn "$CAP_BRANCH was left on the remote so the stack under it stays retargetable"
-			fi
-		fi
-	else
+	if [ "$do_merge" != 1 ]; then
 		printf 'not merged. Run: cap land %s --merge\n' "$slug"
+		return
 	fi
+
+	kids=$(task_children "$slug")
+
+	merge_flags=()
+	case $merge_method in
+	rebase) merge_flags=(--rebase) ;;
+	squash) merge_flags=(--squash) ;;
+	merge) merge_flags=(--merge) ;;
+	esac
+
+	# Keep the branch while stacked PRs still use it as their base.
+	if [ -n "$kids" ]; then
+		gh pr merge "$url" "${merge_flags[@]}" --match-head-commit "$head"
+	else
+		gh pr merge "$url" "${merge_flags[@]}" --match-head-commit "$head" --delete-branch
+	fi
+
+	printf 'merged %s\n' "$url"
+	landed=1
+
+	# Squash and rebase merges move the remote base without moving the local ref.
+	update_local_base
+
+	if [ -z "$kids" ]; then
+		return
+	fi
+
+	git -C "$CAP_REPO" fetch origin "$CAP_BASE"
+
+	tip=$(git -C "$CAP_REPO" rev-parse "origin/$CAP_BASE")
+	snapshot=$(stack_snapshot_new "$slug")
+
+	rc=0
+	stack_cascade_landed "$slug" "$tip" "$snapshot" || rc=$?
+
+	[ "$STACK_MOVED" != 0 ] || rm -f "$snapshot"
+
+	printf 'restacked %s task(s) onto %s\n' "$STACK_MOVED" "$CAP_BASE"
+
+	if [ "$rc" = 0 ]; then
+		git -C "$CAP_REPO" push origin --delete "$CAP_BRANCH" 2>/dev/null ||
+			warn "could not delete remote branch $CAP_BRANCH; delete it by hand"
+		return
+	fi
+
+	warn "$slug is merged, but $STACK_CONFLICT and anything stacked under it still need a hand-rebase"
+	warn "$CAP_BRANCH was left on the remote so the stack under it stays retargetable"
 }
 
 case $CAP_MODE in
-local) land_local ;;
-pr) land_pr ;;
+local)
+	land_local
+	;;
+pr)
+	land_pr
+	;;
 *)
 	die "unknown mode '$CAP_MODE'"
 	;;
 esac
 
-# The gate record goes with the task when it is dropped below, so the misses
-# it holds are written into the project's conventions first. A task whose
-# misses could not be written is kept: dropping it would delete the only copy.
 ledgered=1
+
+# Dropping the task would also delete its unrecorded gate findings.
 if [ "$landed" = 1 ] && ! "$CAP_BIN/cap-ledger" "$slug"; then
 	ledgered=0
 	warn "could not record $slug's gate misses, so $slug is kept with its findings in $TASKS/$slug/findings.jsonl"
 	warn "fix the cause, run $CAP_BIN/cap-ledger $slug, then cap drop $slug"
 fi
 
-# A landed task has no remaining worktree or agent session to hold.
 if [ "$landed" = 1 ] && [ "$ledgered" = 1 ] && pane_live "$slug"; then
 	printf 'releasing %s\n' "$slug"
+
 	"$CAP_BIN/cap-drop" "$slug" --force ||
 		warn "could not release $slug; run cap drop $slug"
 fi
