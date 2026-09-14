@@ -55,13 +55,14 @@ fi
 commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD")
 [ "$commits" -gt 0 ] || die "$slug has no commits to land"
 
-# rules/commits.md, enforced rather than described. ai_trailer_report
-# (bin/lib.sh) is the one reader cap-commit also uses.
-bad_trailers=$(ai_trailer_report "$CAP_TREE" "$CAP_BASE")
-[ -z "$bad_trailers" ] || {
-	printf 'cap: %s carries AI attribution, which rules/commits.md forbids:\n' "$slug" >&2
-	printf '%s\n' "$bad_trailers" | sed 's/^/  /' >&2
-	die "strip them, then land again"
+# rules/commits.md, enforced rather than described. cap-commit runs this same
+# check before it returns, so a bad message costs a repair pass instead of a
+# rebase at landing time.
+bad_messages=$(commit_rule_report "$CAP_TREE" "$CAP_BASE")
+[ -z "$bad_messages" ] || {
+	printf 'cap: %s has commit messages that break rules/commits.md:\n' "$slug" >&2
+	printf '%s\n' "$bad_messages" | sed 's/^/  /' >&2
+	die "repair them, then land again"
 }
 
 # A branch that shares no ancestor with its base is not a change to the base,

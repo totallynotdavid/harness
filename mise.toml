@@ -26,6 +26,7 @@ depends = [
   "check:task-state",
   "check:gate-since",
   "check:turn",
+  "check:commits",
   "check:papercuts",
   "check:syntax",
 ]
@@ -65,6 +66,10 @@ run = "bin/lint-gate-since"
 [tasks."check:turn"]
 description = "assert a dispatcher reads answers, tool-call endings, harness failures and token counts from turn payloads"
 run = "bin/lint-turn"
+
+[tasks."check:commits"]
+description = "assert cap commit and cap land share commit message rules"
+run = "bin/lint-commits"
 
 [tasks."check:papercuts"]
 description = "fail when paper-cuts.md is not the rendering of paper-cuts.jsonl, or an entry's subject is not part of Captain"

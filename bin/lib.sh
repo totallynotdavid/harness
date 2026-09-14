@@ -1406,6 +1406,42 @@ ai_trailer_report() {
   done <<<"$hashes"
 }
 
+# Every commit message rule that cap-commit can check before it returns. Keep
+# this beside the landing check so a branch cannot pass one command and fail
+# the other for the same message.
+commit_rule_report() {
+  local tree=$1 base=$2 hashes c short subject message second ai
+  hashes=$(git -C "$tree" log --format=%H "$base..HEAD") ||
+    die "could not list commits $base..HEAD in $tree; cannot check commit messages"
+
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    short=$(git -C "$tree" log -1 --format=%h "$c")
+    subject=$(git -C "$tree" log -1 --format=%s "$c")
+    message=$(git -C "$tree" log -1 --format=%B "$c")
+    second=$(printf '%s\n' "$message" | sed -n '2p')
+
+    if [ -z "$subject" ]; then
+      printf '%s: summary is empty\n' "$short"
+    elif [ "${#subject}" -gt 50 ]; then
+      printf '%s: summary is %s characters: %s\n' "$short" "${#subject}" "$subject"
+    fi
+    case $subject in
+    feat:* | feat\(*\):* | fix:* | fix\(*\):*)
+      printf '%s: summary uses a conventional-commit prefix: %s\n' "$short" "$subject"
+      ;;
+    esac
+    case $subject in
+    *.) printf '%s: summary ends with a period: %s\n' "$short" "$subject" ;;
+    esac
+    [ -z "$second" ] ||
+      printf '%s: the second line must be blank\n' "$short"
+  done <<<"$hashes"
+
+  ai=$(ai_trailer_report "$tree" "$base")
+  [ -z "$ai" ] || printf '%s\n' "$ai"
+}
+
 git_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null || echo '-'; }
 git_base() {
   local b

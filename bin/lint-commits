@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# lint-commits - exercise the shared commit message rules.
+set -euo pipefail
+
+bin=$(dirname "$(readlink -f "$0")")
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/home/config"
+: >"$scratch/home/config/captain.conf"
+
+tree=$scratch/tree
+git init -q -b main "$tree"
+git -C "$tree" config user.name lint
+git -C "$tree" config user.email lint@example.test
+printf 'base\n' >"$tree/file"
+git -C "$tree" add file
+git -C "$tree" commit -qm base
+git -C "$tree" checkout -qb cap/t
+
+printf 'good\n' >>"$tree/file"
+git -C "$tree" add file
+git -C "$tree" commit -q -m 'Add a useful change' -m 'Explain why this change exists'
+
+good=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_rule_report "$1" main' "$bin/lib.sh" "$tree")
+[ -z "$good" ] || {
+	printf 'lint-commits: valid message was rejected:\n%s\n' "$good" >&2
+	exit 1
+}
+
+printf 'bad\n' >>"$tree/file"
+git -C "$tree" add file
+git -C "$tree" commit -q -m 'fix: this summary is deliberately far too long for the rule.'
+bad=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_rule_report "$1" main' "$bin/lib.sh" "$tree")
+grep -q 'summary is .* characters' <<<"$bad"
+grep -q 'conventional-commit prefix' <<<"$bad"
+grep -q 'summary ends with a period' <<<"$bad"
+
+printf 'lint-commits: cap commit and cap land share message checks\n'
