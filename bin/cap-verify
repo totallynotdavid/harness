@@ -194,7 +194,13 @@ if [ -f mise.toml ] && have mise; then
       awk '/^\[tasks\]$/{f=1;next} /^\[/{f=0} f && /^[A-Za-z0-9_-]+[[:space:]]*=/{sub(/[[:space:]]*=.*/,""); print}' mise.toml
     } | sort -u
   )
-  matched=$(printf '%s\n' "$tasks" | grep -E '^(test|lint|typecheck|check|format-check)([:.-].*)?$' || true)
+  # A top-level check task is the project's aggregate. Run it once instead of
+  # also discovering and repeating each check it depends on.
+  if printf '%s\n' "$tasks" | grep -qx 'check'; then
+    matched=check
+  else
+    matched=$(printf '%s\n' "$tasks" | grep -E '^(test|lint|typecheck|check|format-check)([:.-].*)?$' || true)
+  fi
   # Read the list into an array first, so the loop body never has the list
   # itself as its stdin.
   if [ -n "$matched" ]; then
