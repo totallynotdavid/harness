@@ -102,6 +102,21 @@ Good interfaces make testing natural:
 - An **Adapter** sits at a **Seam** and satisfies the **Interface**.
 - **Depth** produces **Leverage** for callers and **Locality** for maintainers.
 
+## Shared state
+
+A lock, a queue, a cache, a session, an idempotency key: anything more than one
+concurrent actor can read or change. Before touching the implementation, write down
+the full set of states and who is allowed to move which transition, when. Do this
+whether the module is deep or shallow; depth does not protect a caller from a state
+machine nobody described.
+
+A fix that closes one violation of an invariant nobody wrote down is not wrong, but it
+is not finished either: the invariant is still unstated, so the next case that violates
+it looks like a new bug rather than the same one. Writing the states down first turns
+each later fix into "does this still hold the invariant," a question with a checkable
+answer, instead of "does this look right," a question that has to be re-asked from
+scratch every time.
+
 ## Rejected framings
 
 - **Depth as ratio of implementation-lines to interface-lines** (Ousterhout): rewards padding the implementation. We use depth-as-leverage instead.
