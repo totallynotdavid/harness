@@ -37,10 +37,9 @@ task_load "$slug"
 # would race a turn that has already started, and the pane would be busy
 # exactly when the message arrived.
 revive() {
-  local dir=$TASKS/$slug kick margs=() scrub cmd
-  local -a es
+  local dir=$TASKS/$slug kick guard=() pane tabid session_id
   task_load "$slug"
-  [ -f "$dir/contract.md" ] || die "$slug: pane is not live and there is no contract to restart it from"
+  [ -f "$dir/contract.md" ] || die "$slug: the session is not running and there is no contract to restart it from"
 
   kick="This session replaces one that died. You are still working on $slug in
 this worktree, but the previous session's conversation is gone.
@@ -52,37 +51,23 @@ Then carry out this instruction from the captain:
 
 $text"
 
-  if [ "$CAP_MODEL" != '-' ]; then margs=(--model "$CAP_MODEL"); fi
-  mapfile -t es < <(cap_env_scrub)
-  scrub=(env "${es[@]}" "${CAP_CACHE_ENV[@]}" CAP_TASK="$slug")
-  case $CAP_HARNESS in
-    claude)
-      if [ -n "${CAP_EFFORT:-}" ]; then margs+=(--effort "$CAP_EFFORT"); fi
-      # shellcheck disable=SC2206 # CAP_AGENT_FLAGS is a flag string, split on purpose
-      cmd=("${scrub[@]}" claude "${margs[@]}" $CAP_AGENT_FLAGS "$kick")
-      ;;
-    codex)
-      if [ -n "${CAP_EFFORT:-}" ]; then margs+=(-c "model_reasoning_effort=$CAP_EFFORT"); fi
-      cmd=("${scrub[@]}" codex "${margs[@]}"
-           --dangerously-bypass-approvals-and-sandbox "$kick")
-      ;;
-    *) die "unknown harness '$CAP_HARNESS'" ;;
-  esac
-
-  require_herdr
-  local pane tabid
-  read -r pane tabid <<<"$(herdr_open "$CAP_TREE" "$slug")"
-  pane_launch "$pane" "${cmd[@]}"
+  [ ! -s "$dir/owns" ] || guard=(--guard)
+  # The old pane can outlive its session, holding only the shell it ran in.
+  ! pane_live "$slug" || herdr pane close "$(task_pane "$slug")" >/dev/null 2>&1 || true
+  read -r pane tabid session_id <<<"$("$CAP_BIN/cap-launch" --task "$slug" --dir "$CAP_TREE" \
+    --harness "$CAP_HARNESS" --model "$CAP_MODEL" --effort "${CAP_EFFORT:-}" "${guard[@]}" "$kick")"
+  [ -n "$pane" ] || die "$slug: could not restart the agent session"
   task_env_set "$slug" CAP_PANE "$pane"
   task_env_set "$slug" CAP_TAB "$tabid"
+  task_env_set "$slug" CAP_SESSION_ID "$session_id"
   # A fresh pane has a fresh input box - whatever the old one may have had
   # sitting unsent in it died with it.
   queue_clear_untrusted "$slug"
-  warn "$slug: pane was not live; restarted the session on $CAP_MODEL and delivered the message in its opening prompt"
+  warn "$slug: the session was not running; restarted it on $CAP_MODEL and delivered the message in its opening prompt"
 }
 
 
-if ! pane_live "$slug"; then
+if ! agent_live "$slug"; then
 	# Reviving starts a whole new session, rare and disruptive enough to die
 	# loudly on contention rather than queue this call's own message.
 	# task_lock's own release flush still delivers anything already queued
@@ -184,7 +169,7 @@ if task_try_lock "$slug"; then
 		queue_send "$slug" "$text"
 		if queue_untrusted "$slug"; then
 			printf 'queued for %s: an earlier message in its queue was typed but never confirmed; check by hand: cap peek %s\n' "$slug" "$slug"
-		elif ! pane_live "$slug"; then
+		elif ! agent_live "$slug"; then
 			printf 'queued for %s: the session is not live; delivered once it is revived\n' "$slug"
 		elif ! pane_usable "$slug"; then
 			printf 'queued for %s: the agent is waiting on a prompt; delivered once a later command on it finds the pane free\n' "$slug"

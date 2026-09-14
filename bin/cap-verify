@@ -172,6 +172,9 @@ on_exit() {
   # Only a fully clean tree earns the record. A pass with uncommitted or
   # untracked changes says nothing about the commit anyone else would fork
   # from.
+  if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$repo" = 0 ]; then
+    step_record "$slug" verify pass
+  fi
   if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$dirty_count" = 0 ]; then
     verified_record "$CAP_PROJECT" "$sha"
     [ -z "$progress" ] || rm -f "$progress"
@@ -230,4 +233,11 @@ if [ -f package.json ]; then
   exit $status
 fi
 
+# A task in a project with no checks Captain can find has nothing to run, and
+# cap step records that rather than stopping on it forever.
+if [ "$repo" = 0 ]; then
+  step_record "$slug" verify none
+  printf '%s: no checks known for %s (no mise.toml or package.json); nothing verified\n' "$slug" "$CAP_TREE"
+  exit 0
+fi
 die "$slug: don't know how to verify $CAP_TREE (no mise.toml or package.json); run its checks by hand"

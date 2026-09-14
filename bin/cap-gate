@@ -47,22 +47,16 @@ mkdir -p "$out_dir" "$TASKS/$slug"
 if [ -z "$since" ]; then
   printf '%s: nothing has changed since gate B last passed; not re-reviewing\n' "$slug"
 else
-  prompt="Read $CAP_HOME/rules/code.md, then review every change in this
-worktree since $since (git diff $since, plus any uncommitted change).
-Report concrete defects: what is wrong, where, and the failure it causes. State
-what you checked and what you verified as working, whether or not you found a
-defect. Do not edit files. End with a single line, exactly: GATE: PASS or
-GATE: FAIL."
-
   # Gate B (cheap) runs every round; Gate A (expensive) only on --full (see
-  # docs/pipeline-notes.md). Both are roles, not models: cap-ask sizes each
-  # against the account's current window. Resolve both here, not per cap-ask call,
-  # so Gate B picks a different peer when both would use the same profile.
-  profiles=()
+  # docs/pipeline-notes.md). Both are roles, not models: each is sized
+  # against the account's current window. Resolve both here, not per
+  # reviewer, so Gate B picks a different peer when both would use the same
+  # profile.
+  reviewers=()
   gate_a=""
   if [ "$full" = 1 ]; then
     gate_a=$(role_profile_or_die gate-a)
-    profiles+=("A $gate_a")
+    reviewers+=(--reviewer "A=$gate_a@gate-a")
   fi
   gate_b=$(role_profile gate-b "$gate_a" || true)
   if [ -z "$gate_b" ]; then
@@ -73,7 +67,7 @@ GATE: FAIL."
       gate_b=$(role_profile_or_die gate-b)
     fi
   fi
-  profiles+=("B $gate_b")
+  reviewers+=(--reviewer "B=$gate_b@gate-b")
 
   # Scoped to $since, not always the full branch. gate_ready compares
   # against the full-branch fingerprint, so this only matches it when
@@ -82,48 +76,40 @@ GATE: FAIL."
 
   # Captured here, not after the review returns: task_lock only blocks
   # cap-commit/cap-send, never the task's own live agent, which is free to
-  # add a commit while cap-ask is still running. Recording that later HEAD
-  # would claim a commit as reviewed that closed after the diff did.
+  # add a commit while the reviewers are still running. Recording that later
+  # HEAD would claim a commit as reviewed that closed after the diff did.
   reviewed_commit=$(git -C "$CAP_TREE" rev-parse HEAD)
 
-  # Iterate an array, never a pipe or a here-string. cap-ask launches a harness
-  # that inherits the loop's stdin and eats the remaining profiles, so every
-  # gate after the first silently never runs while the command still exits 0.
-  # cap-verify had the same defect against its task list.
-  for pair in "${profiles[@]}"; do
-    read -r label profile <<<"$pair"
-    out=$out_dir/$slug.gate-$label.md
+  # Both reviewers run at once; nothing about one depends on the other.
+  # Recording their verdicts is the only part that stays serial, in order.
+  # CAP_ASK_KEY carries the fingerprint so a session a limit interrupted is
+  # never resumed against different code.
+  results=$(mktemp)
+  full_flag=()
+  [ "$full" = 0 ] || full_flag=(--full)
+  CAP_ASK_KEY=$fp "$CAP_BIN/cap-review" --slug "$slug" --tree "$CAP_TREE" --since "$since" \
+    --commit "$reviewed_commit" --fingerprint "$fp" --out-dir "$out_dir" --results "$results" \
+    "${full_flag[@]}" "${reviewers[@]}" </dev/null ||
+    warn "the gate reviewers did not run"
 
-    printf '## gate %s (%s)\n\n' "$label" "$profile"
-    # Don't abort on cap-ask failure; session-limit rejection leaves empty report.
-    # Write to temp, promote only after verdict extraction so mid-review death
-    # leaves the last good report intact. Pass CAP_ASK_KEY fingerprint to prevent
-    # a resumed round from restating a stale verdict against changed code.
-    tmp=$(mktemp)
-    if ! CAP_ASK_KEY=$fp "$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" </dev/null | tee "$tmp"; then
-      warn "gate $label ($profile) did not run to completion"
-    fi
-    printf '\n'
-
-    # No verdict, or a verdict with no evidence behind it (gate_has_evidence),
-    # means failed gate, not silent pass - recording either would claim a
-    # result nobody reached.
-    verdict=$(gate_verdict "$tmp")
-    if [ "$verdict" = UNKNOWN ] || ! gate_has_evidence "$tmp"; then
-      if [ "$verdict" = UNKNOWN ]; then
-        warn "gate $label ($profile) reached no verdict for $slug ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
-      else
-        warn "gate $label ($profile) said $verdict for $slug with nothing behind it ($(wc -c <"$tmp") bytes); keeping the previous report and not recording a result"
-      fi
-      rm -f "$tmp"
+  # A reviewer with no validated findings block has no verdict. A verdict is
+  # computed from findings that cover the diff, so an answer that is only a
+  # verdict, or covers none of the changed files, never reaches this record.
+  reports=()
+  while IFS=$'\t' read -r label verdict; do
+    if [ -z "$verdict" ]; then
       incomplete=1
       continue
     fi
-    mv "$tmp" "$out"
-    gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit"
-  done
+    gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit" "$since"
+    reports+=("$out_dir/$slug.gate-$label.md")
+  done < <(jq -r '[.label, (.verdict // "")] | @tsv' "$results")
+  pid=$!
+  wait "$pid" || { warn "$slug: could not read the gate results"; incomplete=1; }
+  [ -s "$results" ] || incomplete=1
+  rm -f "$results"
 
-  printf 'reports: %s/%s.gate-A.md %s/%s.gate-B.md\n' "$out_dir" "$slug" "$out_dir" "$slug"
+  [ "${#reports[@]}" = 0 ] || printf 'reports: %s\n' "${reports[*]}"
 fi
 
 # Exit status is the machine-readable verdict, so a caller can chain on it:

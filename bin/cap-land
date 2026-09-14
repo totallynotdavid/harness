@@ -192,11 +192,21 @@ pr)
 	;;
 esac
 
+# The gate record goes with the task when it is dropped below, so the misses
+# it holds are written into the project's conventions first. A task whose
+# misses could not be written is kept: dropping it would delete the only copy.
+ledgered=1
+if [ "$landed" = 1 ] && ! "$CAP_BIN/cap-ledger" "$slug"; then
+	ledgered=0
+	warn "could not record $slug's gate misses, so $slug is kept with its findings in $TASKS/$slug/findings.jsonl"
+	warn "fix the cause, run $CAP_BIN/cap-ledger $slug, then cap drop $slug"
+fi
+
 # A landed task has nothing left to hold. Panes outlived their tasks all day:
 # two hung builds and a dev server still answering HTTP 200 nearly three hours
 # after the work was finished, holding 1.5 GB between them while the box
 # thrashed and every other build slowed to a crawl.
-if [ "$landed" = 1 ] && pane_live "$slug"; then
+if [ "$landed" = 1 ] && [ "$ledgered" = 1 ] && pane_live "$slug"; then
 	printf 'releasing %s\n' "$slug"
 	"$CAP_BIN/cap-drop" "$slug" --force ||
 		warn "could not release $slug; run cap drop $slug"

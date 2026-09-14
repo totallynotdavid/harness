@@ -45,7 +45,8 @@ Important system rules that cannot be detected from a diff alone.
 
 ## Gate-miss ledger
 
-Record missed review findings, why they were missed, and how to prevent them.
+cap land writes an entry here for every blocker or major finding one gate raised
+on bytes an earlier gate round had passed. A miss a human caught is added by hand.
 EOF
 
 printf 'wrote %s\n' "$out"

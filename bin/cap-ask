@@ -1,322 +1,65 @@
-#!/usr/bin/env bash
-# cap-ask - run a profile in a pane and print its answer.
-. "$(dirname "$(readlink -f "$0")")/lib.sh"
+#!/usr/bin/env python3
+"""cap-ask - run a profile in a real session and print its answer."""
 
-if [ "${1:-}" = --list ]; then
-  printf 'PROFILE\tHARNESS\tMODEL\tEFFORT\n'
-  printf '%s\n' "$CAP_ASK_PROFILES" | awk 'NF==4{print $1"\t"$2"\t"$3"\t"$4}'
-  exit 0
-fi
+import os
+import sys
 
-profile=${1:?usage: cap ask <profile|@role> "<prompt>" [--dir D]}
-shift
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import caplib  # noqa: E402
 
-# Roles resolve at call time, not in config, so the window fill triggers a size
-# change without edits or restarts.
-case $profile in
-  @*)
-    role=${profile#@}
-    profile=$(role_profile_or_die "$role")
-    ;;
-esac
+USAGE = 'usage: cap ask <profile|@role> "<prompt>"|- [--dir D]'
 
-prompt=${1:?usage: cap ask <profile> "<prompt>"}
-shift || true
 
-dir=$PWD
-[ "${1:-}" = --dir ] && {
-  dir=${2:?}
-  shift 2
-}
+def list_profiles():
+    print("PROFILE\tHARNESS\tMODEL\tEFFORT")
+    for line in caplib.conf("CAP_ASK_PROFILES").splitlines():
+        fields = line.split()
+        if len(fields) == 4:
+            print("\t".join(fields))
+    return 0
 
-[ "$prompt" = "-" ] && prompt=$(cat)
 
-# ask_profile dies inside the command substitution, which only kills the
-# subshell. Without this the run carried on with an empty harness and reported
-# " is not installed" underneath the real error.
-pair=$(ask_profile "$profile") || exit 1
-read -r harness model effort <<<"$pair"
+def parse(argv):
+    if len(argv) < 2:
+        raise caplib.CapError(USAGE)
+    spec, prompt, rest = argv[0], argv[1], argv[2:]
+    directory = os.getcwd()
+    while rest:
+        if rest[0] == "--dir" and len(rest) > 1:
+            directory = rest[1]
+            rest = rest[2:]
+        else:
+            raise caplib.CapError(USAGE)
+    if prompt == "-":
+        prompt = sys.stdin.read()
+    if not prompt.strip():
+        raise caplib.CapError("nothing to ask")
+    if not os.path.isdir(directory):
+        raise caplib.CapError(f"no such directory {directory}")
+    return spec, prompt, directory
 
-# Refuse a profile the account cannot actually run. The harness accepts any
-# model string on the command line and only fails on the first turn, which
-# would otherwise read as an agent problem rather than a configuration one.
-if ! problem=$(profile_check "$profile"); then
-  die "profile '$profile': $problem (run cap models)"
-fi
 
-have "$harness" || die "$harness is not installed"
+def main():
+    argv = sys.argv[1:]
+    if argv[:1] == ["--list"]:
+        return list_profiles()
+    spec, prompt, directory = parse(argv)
+    profile = caplib.resolve_profile(spec)
+    caplib.check_profile(profile)
 
-harness_trust "$harness" "$dir"
+    # An agent asked to work inside a task's worktree is held to that task's
+    # ground and its lock, the same as the task's own agent.
+    slug = caplib.task_for_tree(directory)
+    if slug:
+        caplib.task_lock(slug)
+        caplib.lib("task_owner_check", slug)
+        if not os.path.isfile(os.path.join(caplib.TASKS, slug, "owns")):
+            slug = None
 
-margs=()
-[ "$model" != '-' ] && margs=(--model "$model")
+    answer = caplib.ask(profile, prompt, directory, guard_slug=slug)
+    print(answer.text)
+    return 0
 
-resume_dir=$CAP_HOME/state/ask-resume
-mkdir -p "$CAP_HOME/state/ask" "$resume_dir"
-find "$CAP_HOME/state/ask" -name '*.jsonl' -mtime +7 -delete 2>/dev/null || true
-find "$resume_dir" -name '*.json' -mtime +7 -delete 2>/dev/null || true
 
-if [ "$harness" = claude ]; then
-  # Resume a session after a session-limit rejection (claude harness only).
-  # Key hashes (profile, dir, prompt_sha, CAP_ASK_KEY) so a lookup is one
-  # [ -f ] test; callers reusing a prompt must vary CAP_ASK_KEY or they
-  # resume a stale session - cap-gate passes its diff fingerprint for that.
-  # Resume policy is documented in docs/pipeline-notes.md.
-  psha=$(printf '%s' "$prompt" | sha256sum | cut -c1-16)
-  fp=${CAP_ASK_KEY:-}
-  key=$(printf '%s\x1f%s\x1f%s\x1f%s' "$profile" "$dir" "$psha" "$fp" | sha256sum | cut -c1-16)
-
-  match_file=$resume_dir/$key.json
-  [ -f "$match_file" ] || match_file=""
-
-  resume_id=""
-  resume_compact=0
-  if [ -n "$match_file" ]; then
-    prev_id=$(jq -r '.session_id // empty' "$match_file" 2>/dev/null || true)
-    prev_ctx=$(jq -r '.ctx_pct // empty' "$match_file" 2>/dev/null || true)
-    if [ -n "$prev_id" ]; then
-      if [ -n "$prev_ctx" ] && [ "$prev_ctx" -lt 30 ] 2>/dev/null; then
-        resume_id=$prev_id
-      elif [ "${CAP_ASK_RESUME:-}" = force ]; then
-        resume_id=$prev_id
-        resume_compact=1
-      else
-        warn "pending session $prev_id is at ${prev_ctx:-an unknown}% context (>=30%); starting fresh instead of resuming. Set CAP_ASK_RESUME=force to resume it (always compacts first)."
-      fi
-    fi
-  fi
-
-  continue_prompt="Continue exactly where you left off in this conversation and finish the task. If you already reached a final conclusion before being interrupted, just restate it clearly now."
-
-  if [ -n "$resume_id" ]; then
-    session_args=(--resume "$resume_id")
-    turns=()
-    # Compact-then-continue is two turns in the same session: /compact first,
-    # then the real continuation prompt, each its own headless call resuming
-    # the session the previous one just left off.
-    [ "$resume_compact" = 1 ] && turns+=("/compact")
-    turns+=("$continue_prompt")
-    jsonl="$CAP_HOME/state/ask/$resume_id.jsonl"
-  else
-    sid=$(new_uuid)
-    session_args=(--session-id "$sid")
-    turns=("$prompt")
-    jsonl="$CAP_HOME/state/ask/$sid.jsonl"
-  fi
-
-  result_json=""
-  rl_json=""
-  stderr_text=""
-  any_result=0
-  for turn_prompt in "${turns[@]}"; do
-    mapfile -t es < <(cap_env_scrub)
-    # shellcheck disable=SC2206 # CAP_AGENT_FLAGS is a flag string, split on purpose
-    cmd=(env "${es[@]}" "${CAP_CACHE_ENV[@]}" claude -p --output-format stream-json --verbose \
-      "${session_args[@]}" "${margs[@]}" $CAP_AGENT_FLAGS "$turn_prompt")
-    turn_out=$(mktemp)
-    turn_err=$(mktemp)
-    # Each turn's own file, read below rather than appended to $jsonl first,
-    # so a turn that dies without a result reads as exactly that instead of
-    # matching an earlier turn's result still sitting in the transcript.
-    # pane_dispatch's own exit code is discarded: is_error in the result
-    # event below is what decides whether the turn actually failed.
-    pane_dispatch "$dir" "ask-$(basename "$dir")-$profile" "$turn_out" "$turn_err" "${cmd[@]}" || true
-    cat "$turn_out" >>"$jsonl"
-    result_json=$(jq -c 'select(.type == "result")' "$turn_out" 2>/dev/null | tail -1) || true
-    [ -n "$result_json" ] && any_result=1
-    # Not every turn emits a rate_limit_event; keep the last real one seen
-    # across a multi-turn call (compact-then-continue) rather than let a
-    # later turn's silence erase an earlier turn's genuine reading.
-    turn_rl=$(jq -c 'select(.type == "rate_limit_event")' "$turn_out" 2>/dev/null | tail -1) || true
-    [ -n "$turn_rl" ] && rl_json=$turn_rl
-    # Captured per turn for the same reason: a startup failure on this turn
-    # must not read as silence.
-    stderr_text=$(cat "$turn_err" 2>/dev/null || true)
-    rm -f "$turn_out" "$turn_err"
-    [ -n "$result_json" ] || break
-    [ "$(jq -r '.is_error' <<<"$result_json")" = true ] && break
-    # A queued /compact can come back is_error:false having compacted
-    # nothing ("Not enough messages to compact.", confirmed live) - the
-    # harness's own signal that a session too large by token count is not
-    # large enough by its own message-count heuristic. Running the
-    # continuation turn after that would resume the same uncompacted
-    # session CAP_ASK_RESUME=force exists to prevent.
-    if [ "$turn_prompt" = "/compact" ] &&
-      [ "$(jq -r '.result // empty' <<<"$result_json")" = "Not enough messages to compact." ]; then
-      die "claude declined to compact session $resume_id (\"Not enough messages to compact.\"); refusing to run the continuation turn against it uncompacted. Retry without CAP_ASK_RESUME=force, or clear $match_file."
-    fi
-    session_args=(--resume "$(jq -r '.session_id' <<<"$result_json")")
-  done
-
-  if [ -z "$result_json" ]; then
-    # A resume attempt where no turn produced a result has proven that
-    # session unresumable, same as the "no conversation found" case below -
-    # clear it so the same key does not replay this failure forever. A
-    # compact-then-continue call where the compact turn DID produce a
-    # result (any_result=1) has already disproven that, even though the
-    # continuation turn is the one that ended up empty here.
-    [ -n "$resume_id" ] && [ "$any_result" = 0 ] && rm -f "$match_file"
-    jsonl_note=""
-    [ -s "$jsonl" ] && jsonl_note=" See $jsonl."
-    die "claude produced no result event for its last turn; no output on stdout.${stderr_text:+ stderr: $stderr_text}$jsonl_note"
-  fi
-
-  session_id=$(jq -r '.session_id' <<<"$result_json")
-  is_error=$(jq -r '.is_error' <<<"$result_json")
-  subtype=$(jq -r '.subtype // empty' <<<"$result_json")
-  terminal_reason=$(jq -r '.terminal_reason // empty' <<<"$result_json")
-  api_error_status=$(jq -r '.api_error_status // empty' <<<"$result_json")
-  errors=$(jq -r '(.errors // []) | join("; ")' <<<"$result_json" 2>/dev/null || true)
-  answer=$(jq -r '.result // empty' <<<"$result_json")
-
-  rl_status=$(jq -r '.rate_limit_info.status // empty' <<<"$rl_json" 2>/dev/null || true)
-  # jq on empty input exits 0 printing nothing; guard prevents rl_resets="" when
-  # no rate-limit event fired (session limits caught via api_error_status only).
-  rl_resets=0
-  [ -n "$rl_json" ] && rl_resets=$(jq -r '.rate_limit_info.resetsAt // 0' <<<"$rl_json" 2>/dev/null || echo 0)
-  # Headless calls render no status line, so this is the only place a claude
-  # profile's quota ever gets recorded.
-  [ -n "$rl_json" ] && { usage_write "$session_id" "$dir" "$rl_json" "$result_json" "$model" || true; }
-
-  # A session limit is an account rejection, read from the structured result
-  # (api_error_status 429 or rate_limit_info.status "rejected"), never from
-  # its prose.
-  session_limit=0
-  if [ "$is_error" = true ] && { [ "$rl_status" = rejected ] || [ "$api_error_status" = 429 ]; }; then
-    session_limit=1
-  fi
-
-  if [ "$session_limit" = 1 ]; then
-    # ctx_pct is live context occupancy: the last usage.iterations[] entry
-    # against the profile's own model, not the cumulative usage.* totals
-    # (session-wide spend, not what's still in context) and not a rejected
-    # turn's missing iteration (unusable, so it reads as full, never empty,
-    # since <30 is what lets the next call resume uncompacted).
-    ctx_pct=$(jq -r --arg model "$model" "$CAP_MODEL_PICK_JQ"'
-      (.usage.iterations[-1]) as $it
-      | if $it == null or $it.cache_read_input_tokens == null then 100 else
-          (($it.input_tokens // 0) + ($it.cache_read_input_tokens // 0) +
-           ($it.cache_creation_input_tokens // 0) + ($it.output_tokens // 0)) as $used
-          | (pick_model($model).value.contextWindow // 200000) as $win
-          | ($used / $win * 100 | floor)
-        end
-    ' <<<"$result_json" 2>/dev/null || echo 100)
-    profile_block "$profile" "$rl_resets"
-    # A fresh run (resume_id empty) that was itself rejected must not
-    # overwrite a still-pending record from the session it chose not to
-    # resume - docs/pipeline-notes.md promises CAP_ASK_RESUME=force can still
-    # recover that interrupted review, and this near-empty fresh session's
-    # record would silently replace it. Only write when there is nothing
-    # pending to lose, or when this run really did resume the pending one.
-    if [ -n "$resume_id" ] || [ -z "$match_file" ]; then
-      jq -n --arg p "$profile" --arg d "$dir" --arg ps "$psha" --arg fp "$fp" \
-        --arg sid "$session_id" --argjson ctx "${ctx_pct:-100}" \
-        '{profile: $p, dir: $d, prompt_sha: $ps, fingerprint: $fp, session_id: $sid, ctx_pct: $ctx}' \
-        >"$resume_dir/$key.json" 2>/dev/null || true
-    fi
-    # Read back what profile_block and the resume record actually hold
-    # rather than recomputing from this run's own local variables, so the
-    # message can never name a reset time or session force would not
-    # actually act on - including the pending record just left untouched.
-    reset_h=$(date -d "@$(profile_block_until "$profile")" '+%Y-%m-%d %H:%M' 2>/dev/null || echo 'an unknown time')
-    if [ "$rl_resets" -gt "$(now)" ] 2>/dev/null; then
-      reset_note="resets $reset_h"
-    else
-      reset_note="no reset time reported; held until $reset_h as a fallback"
-    fi
-    pending_sid=$(jq -r '.session_id // empty' "$resume_dir/$key.json" 2>/dev/null || true)
-    pending_ctx=$(jq -r '.ctx_pct // empty' "$resume_dir/$key.json" 2>/dev/null || true)
-    # Say what a plain retry actually does: resume policy is <30% resumes,
-    # >=30% starts fresh unless CAP_ASK_RESUME=force is set.
-    if [ -z "$pending_sid" ]; then
-      resume_note="Retrying this exact call later starts fresh."
-    elif [ -n "$pending_ctx" ] && [ "$pending_ctx" -lt 30 ] 2>/dev/null; then
-      resume_note="Retrying this exact call later will resume session $pending_sid (recorded at ${pending_ctx}% context)."
-    else
-      resume_note="Retrying this exact call later starts fresh (recorded at ${pending_ctx:-unknown}% context, at or above the resume threshold); set CAP_ASK_RESUME=force to resume session $pending_sid instead."
-    fi
-    die "claude harness hit its session limit ($reset_note); no result to return.${errors:+ $errors.}${stderr_text:+ stderr: $stderr_text} $resume_note $profile is out of its tier until then."
-  fi
-
-  # blocking_limit, prompt_too_long and rapid_refill_breaker are the installed
-  # harness's own context_limit group (claude 2.1.268 source): the
-  # conversation overran the auto-compact window, not an account rejection.
-  # rl_resets on this path is the last normal rate_limit_event, not a
-  # rejection, so blocking the profile on it would hold a healthy profile out
-  # of its tier for nothing.
-  case "$terminal_reason" in
-  blocking_limit | prompt_too_long | rapid_refill_breaker)
-    if [ "$is_error" = true ]; then
-      die "claude harness hit its context limit (terminal_reason $terminal_reason), not a session limit; no result to return.${errors:+ $errors.}${stderr_text:+ stderr: $stderr_text} Retry with a shorter prompt or a fresh session; waiting will not help, this profile still has quota. See $jsonl."
-    fi
-    ;;
-  esac
-
-  if [ "$is_error" = true ]; then
-    # A resumed session the harness reports gone proves itself unresumable
-    # too; any other failure, including a session-limit rejection (handled
-    # above), might still be there, so the record survives those instead.
-    if [ -n "$resume_id" ] && grep -qi 'no conversation found' <<<"$errors"; then
-      rm -f "$match_file"
-    fi
-    # The harness sometimes puts the identical string in both places (a dead
-    # session's own error text and its stderr), which read twice otherwise.
-    stderr_note=""
-    [ -n "$stderr_text" ] && [ "$stderr_text" != "$errors" ] && stderr_note=" stderr: $stderr_text"
-    die "claude harness reported an error (subtype ${subtype:-unknown}, terminal_reason ${terminal_reason:-unknown}, api_error_status ${api_error_status:-none}); no result to return.${errors:+ $errors.}$stderr_note See $jsonl."
-  fi
-
-  # A clean answer supersedes any pending record for this exact call,
-  # whether this run resumed it or started fresh - the review it named is
-  # done and recorded, so nothing is left for a later force retry to find.
-  [ -n "$match_file" ] && rm -f "$match_file"
-
-  printf '%s\n' "$answer"
-  exit 0
-fi
-
-if [ "$harness" = codex ]; then
-  # A profile's effort is part of what the profile means: terra at xhigh is
-  # the reviewer, terra at its default is a different reviewer.
-  [ "$effort" != '-' ] && margs+=(-c "model_reasoning_effort=$effort")
-
-  sid=$(new_uuid)
-  jsonl="$CAP_HOME/state/ask/$sid.jsonl"
-  last_msg=$(mktemp)
-
-  mapfile -t es < <(cap_env_scrub)
-  cmd=(env "${es[@]}" "${CAP_CACHE_ENV[@]}" codex exec --json --output-last-message "$last_msg" \
-    -C "$dir" "${margs[@]}" --dangerously-bypass-approvals-and-sandbox "$prompt")
-  codex_err=$(mktemp)
-  rc=0
-  pane_dispatch "$dir" "ask-$(basename "$dir")-$profile" "$jsonl" "$codex_err" "${cmd[@]}" || rc=$?
-  stderr_text=$(cat "$codex_err" 2>/dev/null || true)
-  rm -f "$codex_err"
-
-  # rc and last_msg are this run's own outcome; codex_limit_reached is
-  # separate account state that can be stale by design (a cache, or a
-  # retrospective rollout reading) and says nothing about whether this run
-  # completed. A completed run is checked and printed on its own merits;
-  # the rate-limit reading only matters once this run has already failed,
-  # where it names the reason instead of leaving it as a bare exit code.
-  if [ "$rc" != 0 ] || [ ! -s "$last_msg" ]; then
-    reached=$(codex_limit_reached)
-    if [ -n "$reached" ]; then
-      read -r _ codex_resets _ <<<"$(usage_read codex)"
-      profile_block "$profile" "$codex_resets"
-      rm -f "$last_msg"
-      die "codex harness reported a rate limit ($reached); no result to return. $profile is out of its tier until $(date -d "@$(profile_block_until "$profile")" '+%H:%M' 2>/dev/null || echo 'an unknown time')."
-    fi
-    err=$(jq -r 'select(.type == "turn.failed") | .error.message // empty' "$jsonl" 2>/dev/null | tail -1) || true
-    rm -f "$last_msg"
-    jsonl_note=""
-    [ -s "$jsonl" ] && jsonl_note=" See $jsonl."
-    die "codex harness produced no result (exit $rc)${err:+: $err}.${stderr_text:+ stderr: $stderr_text}$jsonl_note"
-  fi
-
-  printf '%s\n' "$(<"$last_msg")"
-  rm -f "$last_msg"
-  exit 0
-fi
-
-die "unknown harness '$harness'"
+caplib.run_main(main)
