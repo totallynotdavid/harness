@@ -1,137 +1,138 @@
-#!/usr/bin/env bash
-# cap-statusline - Claude Code status line that also records account quota.
-#
-# Claude Code hands the status line a JSON payload on stdin that already
-# contains what Captain needs to size its dispatches: the model this session is
-# running and the account's live rate-limit windows. Recording it here costs
-# nothing and needs no agent, no API call, and no knowledge of the user's plan.
-# Every session Captain starts renders this same status line, so the whole fleet
-# keeps the reading fresh.
-#
-# Wire it up in ~/.claude/settings.json:
-#   "statusLine": { "type": "command", "command": "<captain>/bin/cap-statusline" }
-#
-# This runs on every render. It must never fail and never block: a status line
-# that errors is a status line the user stops trusting.
-# A session Captain dispatched passes its own CAP_HOME, so the reading lands
-# in the Captain that is waiting on it.
-CAP_HOME=${CAP_HOME:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}
-export CAP_HOME
+#!/usr/bin/env python3
+"""Render Claude's status line and record its quota reading."""
 
-exec python3 -c '
-import json, math, os, sys, time
-
-home = os.environ["CAP_HOME"]
-
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
+import json
+import math
+import os
+import sys
+import time
 
 
-def get(*path):
-    cur = d
-    for k in path:
-        if not isinstance(cur, dict):
+CAP_HOME = os.environ.get("CAP_HOME") or os.path.dirname(
+    os.path.dirname(os.path.realpath(__file__))
+)
+
+
+def field(payload, *path):
+    value = payload
+    for key in path:
+        if not isinstance(value, dict):
             return None
-        cur = cur.get(k)
-    return cur
+        value = value.get(key)
+    return value
 
 
-def window(name):
-    w = get("rate_limits", name)
-    if not isinstance(w, dict):
+def rate_window(payload, name):
+    window = field(payload, "rate_limits", name)
+    if not isinstance(window, dict):
         return None
-    pct = w.get("used_percentage")
-    # Explicit half-away-from-zero, not Python round, which rounds half to
-    # even. mise run test asserts the recorded values.
-    if isinstance(pct, (int, float)):
-        pct = math.floor(pct + 0.5)
-    return {"pct": pct, "resets_at": w.get("resets_at")}
+
+    percent = window.get("used_percentage")
+    if isinstance(percent, (int, float)):
+        # Claude reports fractional percentages. Captain displays whole values
+        # with half values rounded up.
+        percent = math.floor(percent + 0.5)
+    return {"pct": percent, "resets_at": window.get("resets_at")}
 
 
-# --- the status line itself -------------------------------------------------
-parts = []
+def render_status(payload):
+    parts = []
 
-model = get("model", "display_name")
-if model:
-    parts.append(str(model))
+    model = field(payload, "model", "display_name")
+    if model:
+        parts.append(str(model))
 
-used = get("context_window", "used_percentage")
-left = get("context_window", "remaining_percentage")
-if used is not None and left is not None:
-    parts.append("ctx %.0f%% used  %.0f%% left" % (used, left))
+    used = field(payload, "context_window", "used_percentage")
+    remaining = field(payload, "context_window", "remaining_percentage")
+    if used is not None and remaining is not None:
+        parts.append(f"ctx {used:.0f}% used  {remaining:.0f}% left")
 
-tin = get("context_window", "total_input_tokens")
-tout = get("context_window", "total_output_tokens")
-if tin is not None and tout is not None:
-    parts.append("in:%s out:%s" % (tin, tout))
+    input_tokens = field(payload, "context_window", "total_input_tokens")
+    output_tokens = field(payload, "context_window", "total_output_tokens")
+    if input_tokens is not None and output_tokens is not None:
+        parts.append(f"in:{input_tokens} out:{output_tokens}")
 
-rate = []
-for label, name in (("5h", "five_hour"), ("7d", "seven_day")):
-    w = window(name)
-    if w and w["pct"] is not None:
-        rate.append("%s:%.0f%%" % (label, w["pct"]))
-if rate:
-    parts.append(" ".join(rate))
+    rate = []
+    for label, name in (("5h", "five_hour"), ("7d", "seven_day")):
+        window = rate_window(payload, name)
+        if window and window["pct"] is not None:
+            rate.append(f"{label}:{window['pct']:.0f}%")
+    if rate:
+        parts.append(" ".join(rate))
 
-sys.stdout.write("  |  ".join(parts))
+    return "  |  ".join(parts)
 
-# --- the recording ----------------------------------------------------------
-# Anything below here is best effort. The line is already printed.
-try:
-    session = get("session_id") or "unknown"
-    snap = {
-        "at": int(time.time()),
-        "session_id": session,
-        # Which account these windows belong to. A reading from one harness
-        # says nothing about another harness quota.
-        "harness": "claude",
-        "model_id": get("model", "id") or "",
-        "model": get("model", "display_name") or "",
-        "cwd": get("workspace", "current_dir") or get("cwd") or "",
-        "project_dir": get("workspace", "project_dir") or "",
-        "five_hour": window("five_hour"),
-        "seven_day": window("seven_day"),
-        "spend_limit": window("spend_limit"),
-        # How full the context of this session is. cap ask reads it to decide
-        # whether a session a limit interrupted is small enough to resume.
-        "ctx_pct": math.floor(used + 0.5) if isinstance(used, (int, float)) else None,
-    }
 
-    d_usage = os.path.join(home, "state", "usage")
-    os.makedirs(d_usage, exist_ok=True)
-    path = os.path.join(d_usage, session + ".json")
-
-    # Renders are frequent and most of them carry the same numbers. Rewrite
-    # only when a window actually moved, or when the reading is old enough
-    # that a reader would start calling it stale.
+def save_usage(payload):
     try:
-        with open(path) as fh:
-            prev = json.load(fh)
-    except Exception:
-        prev = None
-    if prev is not None:
-        same = all(prev.get(k) == snap[k] for k in ("five_hour", "seven_day", "spend_limit", "model_id", "ctx_pct"))
-        if same and snap["at"] - int(prev.get("at", 0)) < 20:
-            sys.exit(0)
+        session = field(payload, "session_id") or "unknown"
+        used = field(payload, "context_window", "used_percentage")
+        snapshot = {
+            "at": int(time.time()),
+            "session_id": session,
+            # Usage readers filter account readings by harness.
+            "harness": "claude",
+            "model_id": field(payload, "model", "id") or "",
+            "model": field(payload, "model", "display_name") or "",
+            "cwd": field(payload, "workspace", "current_dir")
+            or field(payload, "cwd")
+            or "",
+            "project_dir": field(payload, "workspace", "project_dir") or "",
+            "five_hour": rate_window(payload, "five_hour"),
+            "seven_day": rate_window(payload, "seven_day"),
+            "spend_limit": rate_window(payload, "spend_limit"),
+            # cap ask uses this to decide whether a stopped session can resume.
+            "ctx_pct": math.floor(used + 0.5)
+            if isinstance(used, (int, float))
+            else None,
+        }
 
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(snap, fh)
-    os.replace(tmp, path)
+        usage_dir = os.path.join(CAP_HOME, "state", "usage")
+        os.makedirs(usage_dir, exist_ok=True)
+        path = os.path.join(usage_dir, session + ".json")
 
-    # Drop readings from sessions that ended. A day is far past any window.
-    cutoff = snap["at"] - 86400
-    for name in os.listdir(d_usage):
-        if not name.endswith(".json"):
-            continue
-        p = os.path.join(d_usage, name)
         try:
-            if os.path.getmtime(p) < cutoff:
-                os.remove(p)
-        except OSError:
-            pass
-except Exception:
-    pass
-'
+            with open(path) as fh:
+                previous = json.load(fh)
+        except Exception:
+            previous = None
+
+        fields = ("five_hour", "seven_day", "spend_limit", "model_id", "ctx_pct")
+        unchanged = previous is not None and all(
+            previous.get(key) == snapshot[key] for key in fields
+        )
+        if unchanged and snapshot["at"] - int(previous.get("at", 0)) < 20:
+            return
+
+        temporary = path + ".tmp"
+        with open(temporary, "w") as fh:
+            json.dump(snapshot, fh)
+        os.replace(temporary, path)
+
+        cutoff = snapshot["at"] - 86400
+        for name in os.listdir(usage_dir):
+            if not name.endswith(".json"):
+                continue
+            candidate = os.path.join(usage_dir, name)
+            try:
+                if os.path.getmtime(candidate) < cutoff:
+                    os.remove(candidate)
+            except OSError:
+                pass
+    except Exception:
+        # A broken status recording must never break Claude's status line.
+        pass
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+
+    sys.stdout.write(render_status(payload))
+    save_usage(payload)
+    return 0
+
+
+raise SystemExit(main())

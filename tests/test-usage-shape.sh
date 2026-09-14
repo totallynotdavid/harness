@@ -20,36 +20,48 @@ status=0
 n=0
 
 reading() {
-	local sid=$1 five=$2 seven=$3 ctx=$4 spend=${5:-null}
-	jq -nc --arg sid "$sid" --argjson f "$five" --argjson s "$seven" --argjson c "$ctx" --argjson sp "$spend" '{
-		session_id: $sid, model: {id: "claude-haiku-4-5", display_name: "Haiku"}, workspace: {},
-		context_window: {used_percentage: $c, remaining_percentage: (100 - $c)},
-		rate_limits: ({
-			five_hour: {used_percentage: $f, resets_at: 1900000000},
-			seven_day: {used_percentage: $s, resets_at: 1900003600}}
-			+ (if $sp == null then {} else {spend_limit: {used_percentage: $sp, resets_at: 1900000000}} end))}' |
-		CAP_HOME=$scratch bin/cap-statusline >/dev/null
+  local sid=$1 five=$2 seven=$3 ctx=$4 spend=${5:-null}
+  jq -nc \
+    --arg sid "$sid" \
+    --argjson f "$five" \
+    --argjson s "$seven" \
+    --argjson c "$ctx" \
+    --argjson sp "$spend" \
+    '{
+			session_id: $sid,
+			model: {id: "claude-haiku-4-5", display_name: "Haiku"},
+			workspace: {},
+			context_window: {used_percentage: $c, remaining_percentage: (100 - $c)},
+			rate_limits: ({
+				five_hour: {used_percentage: $f, resets_at: 1900000000},
+				seven_day: {used_percentage: $s, resets_at: 1900003600}}
+				+ (if $sp == null then {}
+				   else {spend_limit: {used_percentage: $sp, resets_at: 1900000000}}
+				   end))
+		}' |
+    CAP_HOME=$scratch bin/cap-statusline >/dev/null
 }
 
 # 46.5 and 57.5 are the half-boundary values that flip between
 # half-away-from-zero and half-to-even rounding.
 check_reading() {
-	local pct=$1 want=$2 sid got
-	n=$((n + 1))
-	sid="s-$n"
-	reading "$sid" "$pct" 1 "$pct"
-	for key in .at .harness .five_hour.pct .five_hour.resets_at .seven_day.pct .ctx_pct; do
-		if [ "$(jq "$key == null" "$CAP_USAGE_DIR/$sid.json")" = true ]; then
-			printf 'test-usage-shape: cap-statusline wrote no %s\n' "$key" >&2
-			status=1
-		fi
-	done
-	got=$(jq .five_hour.pct "$CAP_USAGE_DIR/$sid.json")
-	if [ "$got" != "$want" ]; then
-			printf 'test-usage-shape: %s%% recorded as %s, want %s\n' "$pct" "$got" "$want" >&2
-		status=1
-	fi
-	rm -f "$CAP_USAGE_DIR/$sid.json"
+  local pct=$1 want=$2 sid got
+  n=$((n + 1))
+  sid="s-$n"
+  reading "$sid" "$pct" 1 "$pct"
+  for key in .at .harness .five_hour.pct .five_hour.resets_at .seven_day.pct .ctx_pct; do
+    if [ "$(jq "$key == null" "$CAP_USAGE_DIR/$sid.json")" = true ]; then
+      printf 'test-usage-shape: cap-statusline wrote no %s\n' "$key" >&2
+      status=1
+    fi
+  done
+  got=$(jq .five_hour.pct "$CAP_USAGE_DIR/$sid.json")
+  if [ "$got" != "$want" ]; then
+    printf 'test-usage-shape: %s%% recorded as %s, want %s\n' \
+      "$pct" "$got" "$want" >&2
+    status=1
+  fi
+  rm -f "$CAP_USAGE_DIR/$sid.json"
 }
 
 check_reading 0 0
@@ -67,8 +79,10 @@ jq -n --argjson at "$(($(now) - ttl - 100))" '{at: $at, session_id: "stale", har
 reading fresh-low 2 3 10
 read -r pct _ _ <<<"$(usage_read claude)"
 if [ "$pct" = 93 ]; then
-		printf 'test-usage-shape: a spend_limit older than CAP_USAGE_TTL (%ss) still won usage_read\n' "$ttl" >&2
-	status=1
+  printf \
+    'test-usage-shape: a spend_limit older than CAP_USAGE_TTL (%ss) still won usage_read\n' \
+    "$ttl" >&2
+  status=1
 fi
 rm -f "$CAP_USAGE_DIR"/*.json
 
@@ -77,8 +91,8 @@ jq -n --argjson at "$at" '{at: $at, session_id: "live", harness: "claude", five_
 jq -n --argjson at "$((at + 1))" '{at: $at, session_id: "newer", harness: "claude", five_hour: {pct: 2, resets_at: 1900000000}, seven_day: {pct: 3, resets_at: 1900003600}, spend_limit: null}' >"$CAP_USAGE_DIR/newer.json"
 read -r pct _ _ <<<"$(usage_read claude)"
 if [ "$pct" != 40 ]; then
-	printf 'test-usage-shape: a still-fresh spend_limit (40) did not survive a newer record with none (got %s)\n' "$pct" >&2
-	status=1
+  printf 'test-usage-shape: a still-fresh spend_limit (40) did not survive a newer record with none (got %s)\n' "$pct" >&2
+  status=1
 fi
 
 [ "$status" = 0 ] && printf 'test-usage-shape: %d readings recorded in the shape usage_read reads, spend_limit staleness holds\n' "$n"
