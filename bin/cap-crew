@@ -8,8 +8,7 @@ json=0
 rows=""
 
 for s in $(task_slugs); do
-	(task_load "$s") || continue
-
+	[ -f "$TASKS/$s/task.env" ] || continue
 	. "$TASKS/$s/task.env"
 
 	st=$(task_state "$s")
@@ -20,8 +19,6 @@ for s in $(task_slugs); do
 	# Shown because the ceiling cap-send enforces is otherwise invisible until
 	# it refuses. A task drifting past 40% needs finishing or restarting, and
 	# the captain can only plan that if the number is on the board.
-	# No % sign: the rows are replayed through `printf "$rows"`, which would
-	# read one as a format specifier.
 	ctx=$(pane_context_pct "$s" 2>/dev/null || true)
 	[ -n "$ctx" ] || ctx="-"
 
@@ -36,7 +33,7 @@ for s in $(task_slugs); do
 done
 
 if [ "$json" = 1 ]; then
-	printf "$rows" |
+	printf '%s' "$rows" |
 		awk -F'\t' 'NF{printf "{\"task\":\"%s\",\"project\":\"%s\",\"kind\":\"%s\",\"model\":\"%s\",\"status\":\"%s\",\"work\":\"%s\",\"age\":\"%s\",\"ctx\":\"%s\",\"stack\":\"%s\"}\n",$1,$2,$3,$4,$5,$6,$7,$8,$9}'
 	exit 0
 fi
@@ -48,5 +45,5 @@ fi
 
 {
 	printf 'TASK\tPROJECT\tKIND\tMODEL\tSTATUS\tWORK\tAGE\tCTX\tSTACK\n'
-	printf "$rows"
+	printf '%s' "$rows"
 } | column -t -s"$(printf '\t')"

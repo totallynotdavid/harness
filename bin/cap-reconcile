@@ -33,7 +33,7 @@ done < "$PROJECTS"
 if [ -n "$rows" ]; then
 	{
 		printf 'PROJECT\tBRANCH\tOPEN\n'
-		printf "$rows"
+		printf '%s' "$rows"
 	} | column -t -s"$(printf '\t')"
 else
 	echo "nothing open locally"

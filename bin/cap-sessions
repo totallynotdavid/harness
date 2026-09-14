@@ -57,5 +57,5 @@ fi
 
 {
 	printf 'PID\tHARNESS\tKIND\tRSS\tAGE\tWHERE\n'
-	printf "$rows"
+	printf '%s' "$rows"
 } | column -t -s"$(printf '\t')"
