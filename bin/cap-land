@@ -65,10 +65,8 @@ bad_messages=$(commit_rule_report "$CAP_TREE" "$CAP_BASE")
 	die "repair them, then land again"
 }
 
-# A branch that shares no ancestor with its base is not a change to the base,
-# it is a replacement of it. aula-integrate-fix rebuilt all twenty-two commits
-# from scratch to deliver seven lines, and landing it would have meant force
-# pushing over a master that was already published.
+# A branch with no common ancestor would replace the base history instead of
+# adding a change to it. Refuse it before any delivery operation.
 if [ -n "$CAP_BRANCH" ] &&
 	git -C "$CAP_REPO" rev-parse --verify -q "$CAP_BASE" >/dev/null 2>&1; then
 	mb=$(git -C "$CAP_REPO" merge-base "$CAP_BASE" "$CAP_BRANCH" 2>/dev/null || true)
@@ -76,8 +74,7 @@ if [ -n "$CAP_BRANCH" ] &&
 		die "$CAP_BRANCH shares no commit with $CAP_BASE; it would replace the history rather than add to it"
 fi
 
-case $CAP_MODE in
-local)
+land_local() {
 	git -C "$CAP_REPO" rev-parse --verify "$CAP_BASE" >/dev/null 2>&1 ||
 		die "no base branch $CAP_BASE"
 
@@ -110,9 +107,9 @@ local)
 
 	printf 'merged %s into %s (%s commits)\n' "$CAP_BRANCH" "$CAP_BASE" "$commits"
 	landed=1
-	;;
+}
 
-pr)
+land_pr() {
 	have gh || die "gh not installed; install it or use local mode"
 
 	# GitHub needs the PR base ref on the remote.
@@ -125,18 +122,8 @@ pr)
 	repo_url=$(git -C "$CAP_REPO" remote get-url origin)
 	head=$(git -C "$CAP_TREE" rev-parse HEAD)
 
-	# A push needs a moment to propagate before GitHub will accept a PR
-	# against it. 5 attempts x 3s (15s total) was not enough in practice -
-	# hit repeatedly (see paper-cuts.md) with the retry loop giving up
-	# while a manual `gh pr create` moments later succeeded immediately.
-	# Longer backoff, and the real stderr surfaced on failure instead of
-	# discarded, so a future failure states its actual cause instead of
-	# just "could not open a PR".
-	# Two commands, two error files. Sharing one meant the `pr view` probe
-	# overwrote whatever `pr create` had just said, so every failure was
-	# reported as view's "no pull requests found for branch" - true, and
-	# never the reason. local-env's branch pushed fine and the die message
-	# named the probe instead of the create that actually failed.
+	# GitHub may not expose a pushed branch immediately. Retry with separate
+	# error capture for creation and the open-PR probe.
 	url=""
 	create_err=$(mktemp)
 	view_err=$(mktemp)
@@ -212,8 +199,11 @@ pr)
 	else
 		printf 'not merged. Run: cap land %s --merge\n' "$slug"
 	fi
-	;;
+}
 
+case $CAP_MODE in
+local) land_local ;;
+pr) land_pr ;;
 *)
 	die "unknown mode '$CAP_MODE'"
 	;;
@@ -229,10 +219,7 @@ if [ "$landed" = 1 ] && ! "$CAP_BIN/cap-ledger" "$slug"; then
 	warn "fix the cause, run $CAP_BIN/cap-ledger $slug, then cap drop $slug"
 fi
 
-# A landed task has nothing left to hold. Panes outlived their tasks all day:
-# two hung builds and a dev server still answering HTTP 200 nearly three hours
-# after the work was finished, holding 1.5 GB between them while the box
-# thrashed and every other build slowed to a crawl.
+# A landed task has no remaining worktree or agent session to hold.
 if [ "$landed" = 1 ] && [ "$ledgered" = 1 ] && pane_live "$slug"; then
 	printf 'releasing %s\n' "$slug"
 	"$CAP_BIN/cap-drop" "$slug" --force ||

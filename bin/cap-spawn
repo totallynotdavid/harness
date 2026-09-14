@@ -2,39 +2,41 @@
 # cap-spawn - start an agent in its own worktree and terminal.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-slug=${1:-}; project=${2:-}; shift 2 2>/dev/null || true
-[ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [--owns GLOB] [--scout] [--heavy|--light] [-f BRIEF]"
-case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]";; esac
+parse_args() {
+  slug=${1:-}; project=${2:-}; shift 2 2>/dev/null || true
+  [ -n "$slug" ] && [ -n "$project" ] || die "usage: cap spawn <slug> <project> [-m MODEL] [-e EFFORT] [--owns GLOB] [--scout] [--heavy|--light] [-f BRIEF]"
+  case $slug in *[!a-zA-Z0-9._-]*) die "slug must be [a-zA-Z0-9._-]";; esac
 
-model=""
-tier_override=""
-effort=""
-harness=$CAP_AGENT_HARNESS
-harness_set=0
-kind=ship
-base=""
-brief_src=""
-parent=""
-owns=""
-while [ $# -gt 0 ]; do
-  case $1 in
-    -m|--model)   model=${2:?}; shift 2 ;;
-    -e|--effort)  effort=${2:?}; shift 2 ;;
-    -H|--harness) harness=${2:?}; harness_set=1; shift 2 ;;
-    --base)       base=${2:?}; shift 2 ;;
-    --stack)      parent=${2:?}; shift 2 ;;
-    --owns)       owns="$owns ${2:?}"; shift 2 ;;
-    -f|--brief)   brief_src=${2:?}; shift 2 ;;
-    --scout)      kind=scout; shift ;;
-    # The captain choosing capability, which is always allowed. Quota still
-    # applies: an override picks the tier, admission still picks the account.
-    --heavy)      [ -z "$tier_override" ] || die "use --heavy or --light, not both"
-                  tier_override=heavy; shift ;;
-    --light)      [ -z "$tier_override" ] || die "use --heavy or --light, not both"
-                  tier_override=cheap; shift ;;
-    *) die "unknown flag $1" ;;
-  esac
-done
+  model=""
+  tier_override=""
+  effort=""
+  harness=$CAP_AGENT_HARNESS
+  harness_set=0
+  kind=ship
+  base=""
+  brief_src=""
+  parent=""
+  owns=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -m|--model)   model=${2:?}; shift 2 ;;
+      -e|--effort)  effort=${2:?}; shift 2 ;;
+      -H|--harness) harness=${2:?}; harness_set=1; shift 2 ;;
+      --base)       base=${2:?}; shift 2 ;;
+      --stack)      parent=${2:?}; shift 2 ;;
+      --owns)       owns="$owns ${2:?}"; shift 2 ;;
+      -f|--brief)   brief_src=${2:?}; shift 2 ;;
+      --scout)      kind=scout; shift ;;
+      --heavy)      [ -z "$tier_override" ] || die "use --heavy or --light, not both"
+                    tier_override=heavy; shift ;;
+      --light)      [ -z "$tier_override" ] || die "use --heavy or --light, not both"
+                    tier_override=cheap; shift ;;
+      *) die "unknown flag $1" ;;
+    esac
+  done
+}
+
+parse_args "$@"
 
 repo=$(proj_path "$project")
 mode=$(proj_mode "$project")
@@ -146,6 +148,7 @@ if [ "$avail" -lt "$need" ]; then
 	die "run cap drop on finished tasks, or clear state/peaks/$project to re-measure"
 fi
 
+prepare_worktree() {
 dir=$(task_dir "$slug")
 
 # Locked before checking existence, not after: a check made first can go
@@ -192,7 +195,7 @@ cleanup() {
   [ -z "$branch" ] || git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
   rm -rf "$dir"
 }
-trap cleanup EXIT
+cap_exit_add cleanup
 
 cat > "$dir/task.env" <<EOF
 CAP_SLUG=$slug
@@ -251,6 +254,9 @@ if [ "$kind" = ship ]; then
   esac
   rm -f "$plog"
 fi
+}
+
+prepare_worktree
 
 report=$CAP_HOME/notes/$project/$slug.md
 if [ "$kind" = scout ]; then

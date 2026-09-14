@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Tell the captain what is waiting for a decision, without being asked.
 #
-# Across two sessions on 2026-09-09 the captain typed "check progress" eight
-# times, plus "i think it finished?", "did we push to a remote?" and "do we have
-# uncommitted, unpushed work?". Every one of those answers already existed on
-# disk. Polling is the captain paying a turn for state a hook can hand over for
-# free.
+# Task state is already on disk. Report decisions that are waiting for the
+# captain when a prompt starts, so the captain does not need to poll for it.
 #
 # This runs on every prompt and prints nothing at all while nothing needs him,
 # so it costs no context until the moment it has something to say.

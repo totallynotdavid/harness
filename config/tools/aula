@@ -5,10 +5,6 @@
 # layers/certificates/scripts/convert-fonts.py uses them to regenerate the
 # .ttf files the repo already ships, if the woff2 sources ever change.
 #
-# weasyprint is left over from the aula-render-alternatives scout task and is
-# not used by the codebase.
-
 mise typst
 mise python@3.14
-sh   pip install weasyprint
 sh   pip install fonttools

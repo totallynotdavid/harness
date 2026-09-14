@@ -30,11 +30,8 @@ task_load "$slug"
 # still only happens under the lock further down; this is read-only.
 [ "$take" = 1 ] || task_owner_check "$slug"
 
-# A dead pane used to end the command here, which left the captain holding
-# work the agent should be doing: local-env's pane died mid-round and the
-# correction meant for it had to be applied by hand. The task record still
-# holds everything cap-spawn used to open the session in the first place, so
-# bring it back rather than dropping the message.
+# A task record retains the session inputs needed for recovery. Restart a dead
+# session from that record so the message reaches the agent that owns the task.
 #
 # The revived session gets the instruction inside its opening prompt rather
 # than as a second turn. Launching it on the contract alone and then sending
@@ -94,10 +91,8 @@ if ! agent_live "$slug"; then
 	exit 0
 fi
 
-# A session near its limit is the failure that made aula-integrate report tests
-# passing while seven files errored: it ran out of context mid-verification and
-# summarised optimistically. The ceiling is checked before delivering, so the
-# message never reaches an agent already too full to act on it.
+# A session near its limit can stop before it finishes and still summarize
+# optimistically. Check the ceiling before delivering the message.
 #
 # The recovery is compaction, matching what cap-ask already does before it
 # resumes a large session. --force fills the session the ceiling exists to
@@ -140,11 +135,9 @@ if [ "$force" = 0 ] && [ -n "$ctx" ] && [ "$ctx" -ge "$CAP_SEND_CTX_MAX" ] 2>/de
 	fi
 fi
 
-# Held only around the delivery itself, never waited for - see
-# docs/pipeline-notes.md, "cap-send and the task lock", for why. Busy means
-# queued, not refused, but ownership is still checked first: momentarily
-# free is not the same as this session having any right to the task.
-if task_try_lock "$slug"; then
+deliver_message() {
+	# Hold the lock only around delivery. Busy sessions queue the message.
+	if task_try_lock "$slug"; then
 	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
 	# Flushed explicitly here, ahead of this call's own message, so an older
@@ -196,3 +189,6 @@ else
 	printf 'queued for %s: busy (%s); delivered once whoever holds it exits cleanly\n' \
 		"$slug" "$(cat "$TASKS/$slug/.lock" 2>/dev/null || echo 'held by another cap command')"
 fi
+}
+
+deliver_message

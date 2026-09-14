@@ -94,6 +94,45 @@ def test_completion_state():
             fail("completion reporter did not claim the record")
 
 
+def test_exit_handlers():
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        (home / "config").mkdir()
+        (home / "state").mkdir()
+        (home / "config/captain.conf").write_text((ROOT / "config/captain.conf").read_text())
+        marker = home / "handlers"
+        script = f'''. "{ROOT / "bin/lib.sh"}"
+first() {{ printf 'first:%s\\n' "$?" >>"{marker}"; }}
+second() {{ printf 'second:%s\\n' "$?" >>"{marker}"; }}
+cap_exit_add first
+cap_exit_add second
+[ "$(type -t trap)" = builtin ]
+exit 7
+'''
+        proc = subprocess.run(["bash", "-c", script], env=dict(os.environ, CAP_HOME=str(home)))
+        if proc.returncode != 7:
+            fail(f"exit-handler fixture exited {proc.returncode}, expected 7")
+        if marker.read_text().splitlines() != ["first:7", "second:7"]:
+            fail(f"exit handlers did not run in order: {marker.read_text()!r}")
+
+
+def test_library_source_is_pure():
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        (home / "config").mkdir()
+        (home / "state").mkdir()
+        (home / "config/captain.conf").write_text((ROOT / "config/captain.conf").read_text())
+        subprocess.run(["git", "init", "-q", str(home)], check=True)
+        proc = subprocess.run(
+            ["bash", "-c", f'. "{ROOT / "bin/lib.sh"}"'],
+            env=dict(os.environ, CAP_HOME=str(home)),
+        )
+        if proc.returncode != 0:
+            fail("sourcing lib.sh failed in the pure-source fixture")
+        if (home / ".git/hooks/commit-msg").exists():
+            fail("sourcing lib.sh installed a Git hook")
+
+
 def test_review_manifest():
     with tempfile.TemporaryDirectory() as tmp:
         old_tasks = caplib.TASKS
@@ -120,6 +159,8 @@ def test_review_manifest():
 
 test_prompt_transport()
 test_completion_state()
+test_exit_handlers()
+test_library_source_is_pure()
 test_review_manifest()
 if "cap_completion_report" not in (ROOT / "bin/hooks/crew-status.sh").read_text():
     fail("crew-status hook does not read completion state")

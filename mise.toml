@@ -11,7 +11,7 @@ shfmt = "3.14.1"
 [tasks.lint]
 description = "shellcheck every shell script in bin/"
 # cap-history is python. SC1091 is a sourced file shellcheck cannot follow.
-run = "shellcheck -S warning -e SC1091 $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lint-* bin/hooks/*.sh)"
+run = "shellcheck -S warning -e SC1091 $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/lint-* bin/hooks/*.sh)"
 
 [tasks.check]
 description = "run Captain's lint and check tasks"
@@ -33,6 +33,7 @@ depends = [
   "check:verify-output",
   "check:doctor",
   "check:papercuts",
+  "check:comments",
   "check:syntax",
 ]
 
@@ -100,9 +101,13 @@ run = "bin/lint-doctor"
 description = "fail when paper-cuts.md is not the rendering of paper-cuts.jsonl, or an entry's subject is not part of Captain"
 run = "bin/lint-papercuts"
 
+[tasks."check:comments"]
+description = "reject incident history in source comments"
+run = "bin/lint-comments"
+
 [tasks."check:syntax"]
 description = "parse every shell and python script without running it"
-run = "for f in $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lint-* bin/hooks/*.sh); do bash -n \"$f\" || exit 1; done; for f in bin/caplib.py $(grep -lE '^#!.*python' bin/cap-* bin/lint-*); do python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' \"$f\" || exit 1; done"
+run = "for f in $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/lint-* bin/hooks/*.sh); do bash -n \"$f\" || exit 1; done; for f in bin/caplib.py $(grep -lE '^#!.*python' bin/cap-* bin/lint-*); do python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' \"$f\" || exit 1; done"
 
 [tasks.format]
 run = "find . -type f -name '*.sh' -exec shfmt -ln bash -i 2 -w {} +"

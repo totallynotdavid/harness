@@ -84,18 +84,15 @@ failed=()
 # anything actually ran before it records a commit as verified.
 ran=0
 
-# Every check runs with stdin closed. A check that inherits this script's
-# stdin consumes the rest of the task list feeding the loop below, so only the
-# first check runs and cap-verify still exits 0: `mise run check` (docker
-# compose underneath) swallowed the list and check:certificate never ran.
+# Every check runs with stdin closed. A child that reads this script's stdin
+# could consume the input used by the check loop and prevent later checks from
+# running.
 # Record the high-water mark while the project's own tooling runs. This is the
 # only place the harness watches a real build, so it is the only place a
 # capacity number can come from that is not a guess.
 peak_kb=0
-# A script that finishes its work and then refuses to exit looks exactly like
-# one still working, so the gate needs a ceiling to call it failed. `nuxt
-# build` does this whenever the dev database directory already exists, which
-# is why the ceiling is not theoretical.
+# A script that finishes its work and refuses to exit needs a ceiling so the
+# gate can classify it as failed.
 CAP_VERIFY_MAX=${CAP_VERIFY_MAX:-900}
 capped() {
   local pid rc
@@ -188,54 +185,50 @@ on_exit() {
     printf '%s verified at %s\n' "$CAP_PROJECT" "${sha:0:12}"
   fi
 }
-trap on_exit EXIT
+cap_exit_add on_exit
 
-# A mise.toml that only pins tools is not a task runner. Aula uses one to fix
-# the `typst` version and keeps its commands as package scripts, so an empty
-# task list here falls through to package.json rather than failing the gate.
-if [ -f mise.toml ] && have mise; then
-  tasks=$(
-    {
-      grep -oE '^\[tasks\."?[A-Za-z0-9_:.-]+"?\]' mise.toml |
-        sed -E 's/^\[tasks\."?([^"]+)"?\]/\1/'
-      awk '/^\[tasks\]$/{f=1;next} /^\[/{f=0} f && /^[A-Za-z0-9_-]+[[:space:]]*=/{sub(/[[:space:]]*=.*/,""); print}' mise.toml
-    } | sort -u
-  )
-  # A top-level check task is the project's aggregate. Run it once instead of
-  # also discovering and repeating each check it depends on.
+mise_tasks() {
+  {
+    grep -oE '^\[tasks\."?[A-Za-z0-9_:.-]+"?\]' mise.toml |
+      sed -E 's/^\[tasks\."?([^"]+)"?\]/\1/'
+    awk '/^\[tasks\]$/{f=1;next} /^\[/{f=0} f && /^[A-Za-z0-9_-]+[[:space:]]*=/{sub(/[[:space:]]*=.*/,""); print}' mise.toml
+  } | sort -u
+}
+
+run_mise_checks() {
+  [ -f mise.toml ] && have mise || return 1
+  local tasks matched
+  tasks=$(mise_tasks)
+  # The aggregate owns its dependencies. Running it once avoids repeating them.
   if printf '%s\n' "$tasks" | grep -qx 'check'; then
     matched=check
   else
     matched=$(printf '%s\n' "$tasks" | grep -E '^(test|lint|typecheck|check|format-check)([:.-].*)?$' || true)
   fi
-  # Read the list into an array first, so the loop body never has the list
-  # itself as its stdin.
-  if [ -n "$matched" ]; then
-    mapfile -t list <<<"$matched"
-    for t in "${list[@]}"; do
-      [ -n "$t" ] || continue
-      run mise run "$t"
-    done
-    ran=1
-    report_result "${#list[@]}" task
-    exit $status
-  fi
-fi
+  [ -n "$matched" ] || return 1
 
-if [ -f package.json ]; then
-  pm=npm
+  mapfile -t list <<<"$matched"
+  for t in "${list[@]}"; do
+    [ -n "$t" ] || continue
+    run mise run "$t"
+  done
+  ran=1
+  report_result "${#list[@]}" task
+  return 0
+}
+
+run_package_checks() {
+  [ -f package.json ] || return 1
+  local pm=npm scripts matched
   [ -f pnpm-lock.yaml ] && pm=pnpm
   [ -f yarn.lock ] && pm=yarn
   have jq || die "$slug: jq is required to read package.json scripts"
   scripts=$(jq -r '.scripts // {} | keys[]' package.json 2>/dev/null || true)
-  # `build` belongs here: a project whose tests pass but which does not
-  # compile is not verified.
-  # build runs last, not alphabetically. It is the script that exhausts memory
-  # on a constrained box, so everything cheaper banks a pass before the run is
-  # at risk.
+  # Build runs last because it is usually the most expensive check.
   matched=$(printf '%s\n' "$scripts" | grep -E '^(test|lint|typecheck|check|build)$' |
     sort -k1,1 | awk '$0 == "build" { b = $0; next } { print } END { if (b) print b }' || true)
   [ -n "$matched" ] || die "$slug: no test/lint/typecheck scripts found in $CAP_TREE/package.json"
+
   mapfile -t list <<<"$matched"
   for s in "${list[@]}"; do
     [ -n "$s" ] || continue
@@ -243,7 +236,11 @@ if [ -f package.json ]; then
   done
   ran=1
   report_result "${#list[@]}" script
-  exit $status
+  return 0
+}
+
+if run_mise_checks || run_package_checks; then
+  exit "$status"
 fi
 
 # A task in a project with no checks Captain can find has nothing to run, and

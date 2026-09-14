@@ -362,35 +362,45 @@ def trust(harness, directory):
         codex_trust_hooks()
 
 
+def claude_session_argv(model, effort, prompt, *, session_id=None, resume=None, guard_slug=None):
+    argv = ["claude"]
+    if model and model != "-":
+        argv += ["--model", model]
+    if effort:
+        argv += ["--effort", effort]
+    argv += ["--settings", claude_settings(guard_slug)]
+    argv += shlex.split(conf("CAP_AGENT_FLAGS", "--permission-mode bypassPermissions"))
+    if resume:
+        argv += ["--resume", resume]
+    elif session_id:
+        argv += ["--session-id", session_id]
+    return argv + ([prompt] if prompt else [])
+
+
+def codex_session_argv(model, effort, prompt, *, resume=None, guard_slug=None):
+    # codex's --output-schema exists only for exec, which is print mode.
+    # Structured output travels in the answer and Captain validates it.
+    argv = ["codex"]
+    if resume:
+        argv += ["resume", resume]
+    if model and model != "-":
+        argv += ["--model", model]
+    if effort:
+        argv += ["-c", f"model_reasoning_effort={effort}"]
+    argv += codex_hook_overrides() + ["--dangerously-bypass-approvals-and-sandbox"]
+    if guard_slug:
+        warn(f"{guard_slug}: --owns is not enforced under codex; the guard is a claude hook")
+    return argv + ([prompt] if prompt else [])
+
+
 def session_argv(harness, model, effort, prompt, *, session_id=None, resume=None, guard_slug=None):
-    """The one command line a Captain session starts with, for either harness."""
+    """Build the command line for one supported session harness."""
     if harness == "claude":
-        argv = ["claude"]
-        if model and model != "-":
-            argv += ["--model", model]
-        if effort:
-            argv += ["--effort", effort]
-        argv += ["--settings", claude_settings(guard_slug)]
-        argv += shlex.split(conf("CAP_AGENT_FLAGS", "--permission-mode bypassPermissions"))
-        if resume:
-            argv += ["--resume", resume]
-        elif session_id:
-            argv += ["--session-id", session_id]
-        return argv + ([prompt] if prompt else [])
+        return claude_session_argv(
+            model, effort, prompt, session_id=session_id, resume=resume, guard_slug=guard_slug
+        )
     if harness == "codex":
-        # codex's --output-schema exists only for exec, which is print mode.
-        # Structured output travels in the answer and Captain validates it.
-        argv = ["codex"]
-        if resume:
-            argv += ["resume", resume]
-        if model and model != "-":
-            argv += ["--model", model]
-        if effort:
-            argv += ["-c", f"model_reasoning_effort={effort}"]
-        argv += codex_hook_overrides() + ["--dangerously-bypass-approvals-and-sandbox"]
-        if guard_slug:
-            warn(f"{guard_slug}: --owns is not enforced under codex; the guard is a claude hook")
-        return argv + ([prompt] if prompt else [])
+        return codex_session_argv(model, effort, prompt, resume=resume, guard_slug=guard_slug)
     raise CapError(f"unknown harness '{harness}'")
 
 
@@ -606,6 +616,41 @@ def codex_turn_error(session):
     return None
 
 
+def fresh_turn(session):
+    fresh = [f for f in turn_files(session.turn_dir) if f not in session.seen]
+    if not fresh:
+        return None
+    name = fresh[0]
+    session.seen.add(name)
+    with open(os.path.join(session.turn_dir, name)) as fh:
+        payload = json.load(fh)
+    session.session_id = payload.get("session_id") or session.session_id
+    return payload
+
+
+def has_fresh_turn(session):
+    return any(f not in session.seen for f in turn_files(session.turn_dir))
+
+
+def check_pane_progress(session, warned_blocked, idle_since):
+    if not pane_exists(session.pane):
+        raise TurnLost(f"{session.label}: pane {session.pane} no longer exists")
+    status = pane_status(session.pane)
+    if not warned_blocked and status == "blocked":
+        warn(f"{session.label}: waiting on a prompt; answer it in pane {session.pane}")
+        warned_blocked = True
+    if status not in ("idle", "done"):
+        return warned_blocked, None
+    if idle_since is None:
+        return warned_blocked, time.time()
+    if time.time() - idle_since >= IDLE_GRACE and not has_fresh_turn(session):
+        raise TurnLost(
+            f"{session.label}: the {session.harness} session went idle without ending its turn. "
+            f"Its pane showed:\n{pane_tail(session.pane)}"
+        )
+    return warned_blocked, idle_since
+
+
 def wait_turn(session, max_wait=None):
     """Block until the session's next turn ends, and return its payload.
 
@@ -624,13 +669,8 @@ def wait_turn(session, max_wait=None):
         # Read before the turn files: a session writes its last turn file
         # before it exits, so one that exited has no turn file still to come.
         exited = os.path.exists(os.path.join(session.turn_dir, "exited"))
-        fresh = [f for f in turn_files(session.turn_dir) if f not in session.seen]
-        if fresh:
-            name = fresh[0]
-            session.seen.add(name)
-            with open(os.path.join(session.turn_dir, name)) as fh:
-                payload = json.load(fh)
-            session.session_id = payload.get("session_id") or session.session_id
+        payload = fresh_turn(session)
+        if payload is not None:
             return payload
         polls += 1
         if session.harness == "codex" and (exited or polls % 3 == 0):
@@ -639,28 +679,32 @@ def wait_turn(session, max_wait=None):
                 raise TurnFailed(f"{session.label}: codex turn failed: {error}")
         if exited:
             raise TurnLost(f"{session.label}: the {session.harness} session exited before its turn ended. Its pane showed:\n{pane_tail(session.pane)}")
-        # herdr is asked every few seconds, not every poll: a turn file is
-        # the signal, herdr only catches a pane that died or went quiet.
         if polls % 3 == 0:
-            if not pane_exists(session.pane):
-                raise TurnLost(f"{session.label}: pane {session.pane} no longer exists")
-            status = pane_status(session.pane)
-            if not warned_blocked and status == "blocked":
-                warn(f"{session.label}: waiting on a prompt; answer it in pane {session.pane}")
-                warned_blocked = True
-            # herdr's done is idle that no client has looked at yet.
-            if status not in ("idle", "done"):
-                idle_since = None
-            elif idle_since is None:
-                idle_since = time.time()
-            elif time.time() - idle_since >= IDLE_GRACE and not [f for f in turn_files(session.turn_dir) if f not in session.seen]:
-                raise TurnLost(f"{session.label}: the {session.harness} session went idle without ending its turn. Its pane showed:\n{pane_tail(session.pane)}")
+            warned_blocked, idle_since = check_pane_progress(session, warned_blocked, idle_since)
         if time.time() >= deadline:
             raise TurnTimeout(f"{session.label}: still running after {max_wait}s. Its pane showed:\n{pane_tail(session.pane)}")
         time.sleep(1)
 
 
+def submit_codex(session, text):
+    if not session.session_id:
+        return False
+    proc = subprocess.run(
+        ["codex", "queue", "--thread", session.session_id, "--message", text],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode == 0:
+        return True
+    warn(f"{session.label}: codex queue failed ({proc.stderr.strip()}), falling back to pane_type")
+    return False
+
+
 def submit(session, text):
+    """Deliver a follow-up message through the session's available input path."""
+    if session.harness == "codex" and submit_codex(session, text):
+        return
     pane_type(session.pane, text)
 
 
@@ -682,33 +726,39 @@ def read_jsonl(path):
         return
 
 
-def transcript_answer(harness, path):
-    """The last assistant text of the latest turn, read from the transcript.
-
-    The Stop payload's last_assistant_message is empty when a turn's final
-    message is a tool call with no text.
-    """
+def claude_transcript_answer(path):
     texts = []
     for entry in read_jsonl(path or ""):
-        if harness == "claude":
-            msg = entry.get("message") or {}
-            if entry.get("type") == "user" and is_prompt(msg.get("content")):
-                texts = []
-            if entry.get("type") == "assistant":
-                for block in msg.get("content") or []:
-                    if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
-                        texts.append(block["text"])
-        else:
-            payload = entry.get("payload") or {}
-            if entry.get("type") != "response_item" or payload.get("type") != "message":
-                continue
-            if payload.get("role") == "user":
-                texts = []
-            if payload.get("role") == "assistant":
-                for block in payload.get("content") or []:
-                    if block.get("type") == "output_text" and block.get("text", "").strip():
-                        texts.append(block["text"])
+        msg = entry.get("message") or {}
+        if entry.get("type") == "user" and is_prompt(msg.get("content")):
+            texts = []
+        if entry.get("type") == "assistant":
+            for block in msg.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
+                    texts.append(block["text"])
     return texts[-1] if texts else ""
+
+
+def codex_transcript_answer(path):
+    texts = []
+    for entry in read_jsonl(path or ""):
+        payload = entry.get("payload") or {}
+        if entry.get("type") != "response_item" or payload.get("type") != "message":
+            continue
+        if payload.get("role") == "user":
+            texts = []
+        if payload.get("role") == "assistant":
+            for block in payload.get("content") or []:
+                if block.get("type") == "output_text" and block.get("text", "").strip():
+                    texts.append(block["text"])
+    return texts[-1] if texts else ""
+
+
+def transcript_answer(harness, path):
+    """Read the latest assistant text when the turn payload has no answer."""
+    if harness == "claude":
+        return claude_transcript_answer(path)
+    return codex_transcript_answer(path)
 
 
 def is_prompt(content):
@@ -825,14 +875,15 @@ def window_pct(harness, session_id, transcript, since):
     return (((last or {}).get("rate_limits") or {}).get("primary") or {}).get("used_percent")
 
 
-def usage_now(harness):
-    """The account's 5h utilization right before a dispatch, and where it came from."""
-    if harness == "codex":
-        try:
-            limits = json.loads(lib("codex_rate_limits", check=False) or "{}")
-        except json.JSONDecodeError:
-            limits = {}
-        return (limits.get("primary") or {}).get("used_percent"), limits.get("source") or "none"
+def codex_usage_now():
+    try:
+        limits = json.loads(lib("codex_rate_limits", check=False) or "{}")
+    except json.JSONDecodeError:
+        limits = {}
+    return (limits.get("primary") or {}).get("used_percent"), limits.get("source") or "none"
+
+
+def claude_usage_now():
     newest = {}
     try:
         names = [n for n in os.listdir(USAGE) if n.endswith(".json")]
@@ -850,6 +901,11 @@ def usage_now(harness):
     if pct is None:
         return None, "none"
     return pct, f"status line, {now() - newest['at']}s old"
+
+
+def usage_now(harness):
+    """Read the account's 5h utilization before a dispatch."""
+    return codex_usage_now() if harness == "codex" else claude_usage_now()
 
 
 def record_cost(session, profile, window_start, transcript):
@@ -942,18 +998,11 @@ def pending_resume(profile, key):
 CONTINUE = "Continue exactly where you left off in this conversation and finish the task. If you already reached a final conclusion before being interrupted, just restate it clearly now."
 
 
-def ask(profile, prompt, directory, *, label=None, validate=None, repairs=2, guard_slug=None):
-    """Run one question in a real session and return its validated answer.
-
-    validate(text) returns a list of problems. Each problem list goes back
-    into the same live session as a correction turn, so a malformed report
-    is repaired by the agent that wrote it instead of re-reviewed from zero.
-    """
+def prepare_ask(profile, prompt, directory, label, guard_slug):
     directory = os.path.realpath(directory)
     prune(os.path.join(HOME, "state", "ask"))
     prune(resume_dir())
     effort = effective_effort(profile)
-    label = label or f"ask-{os.path.basename(directory)}-{profile.name}"
     key = resume_key(profile, directory, prompt, label)
     resume, record_path = pending_resume(profile, key)
     turn_dir = os.path.join(HOME, "state", "ask", uuid.uuid4().hex)
@@ -973,27 +1022,73 @@ def ask(profile, prompt, directory, *, label=None, validate=None, repairs=2, gua
     session = launch(directory, label, argv, turn_dir)
     track(session)
     session.session_id = sid or resume or ""
+    return {
+        "key": key,
+        "record_path": record_path,
+        "resume": resume,
+        "window_start": window_start,
+        "session": session,
+    }
+
+
+def run_ask_turns(session, profile, directory, validate, repairs, record_path, label):
+    transcript = ""
+    attempt = 0
+    while True:
+        payload = wait_turn(session)
+        transcript = payload.get("transcript_path") or transcript
+        refresh_live(session, profile, directory)
+        classify(payload)
+        text = turn_answer(profile.harness, payload)
+        problems = validate(text) if validate else ([] if text.strip() else ["the answer was empty"])
+        if not problems:
+            if record_path:
+                try_remove(record_path)
+            return Answer(text, session.session_id), transcript
+        if attempt >= repairs:
+            raise InvalidAnswer(f"{label}: answer still invalid after {repairs} correction(s): " + "; ".join(problems))
+        attempt += 1
+        submit(session, correction(problems))
+
+
+def finish_ask(session, profile, window_start, transcript):
+    """Record usage and release the pane after every dispatch outcome."""
+    start = session_start(session)
+    session.session_id = session.session_id or start.get("session_id") or ""
+    record_cost(session, profile, window_start, transcript or start.get("transcript_path") or "")
+    unpublish_live(session)
+    untrack(session)
+    pane_close(session.pane)
+
+
+def ask(profile, prompt, directory, *, label=None, validate=None, repairs=2, guard_slug=None):
+    """Run one question in a real session and return its validated answer."""
+    directory = os.path.realpath(directory)
+    label = label or f"ask-{os.path.basename(directory)}-{profile.name}"
+    context = prepare_ask(profile, prompt, directory, label, guard_slug)
+    session = context["session"]
     transcript = ""
     try:
         publish_live(session, profile, directory)
-        attempt = 0
-        while True:
-            payload = wait_turn(session)
-            transcript = payload.get("transcript_path") or transcript
-            refresh_live(session, profile, directory)
-            classify(payload)
-            text = turn_answer(profile.harness, payload)
-            problems = validate(text) if validate else ([] if text.strip() else ["the answer was empty"])
-            if not problems:
-                if record_path:
-                    try_remove(record_path)
-                return Answer(text, session.session_id)
-            if attempt >= repairs:
-                raise InvalidAnswer(f"{label}: answer still invalid after {repairs} correction(s): " + "; ".join(problems))
-            attempt += 1
-            submit(session, correction(problems))
+        answer, transcript = run_ask_turns(
+            session,
+            profile,
+            directory,
+            validate,
+            repairs,
+            context["record_path"],
+            label,
+        )
+        return answer
     except SessionLimit as e:
-        limit_reached(profile, session, key, resume, record_path, str(e))
+        limit_reached(
+            profile,
+            session,
+            context["key"],
+            context["resume"],
+            context["record_path"],
+            str(e),
+        )
     except TurnFailed:
         if profile.harness == "codex":
             reached = lib("codex_limit_reached").strip()
@@ -1001,14 +1096,7 @@ def ask(profile, prompt, directory, *, label=None, validate=None, repairs=2, gua
                 codex_limit(profile, reached)
         raise
     finally:
-        # A turn that failed before any payload still ran: codex's
-        # SessionStart names its rollout, which holds what it spent.
-        start = session_start(session)
-        session.session_id = session.session_id or start.get("session_id") or ""
-        record_cost(session, profile, window_start, transcript or start.get("transcript_path") or "")
-        unpublish_live(session)
-        untrack(session)
-        pane_close(session.pane)
+        finish_ask(session, profile, context["window_start"], transcript)
 
 
 def prune(directory, days=7):
@@ -1104,14 +1192,43 @@ def substantive(value):
     return isinstance(value, str) and len(value.split()) >= 3
 
 
-def validate_findings(report, changed, tree):
-    """Problems with a findings report, as sentences the reviewer can act on.
+def validate_finding(index, finding, changed, tree, covered):
+    where = f"findings[{index}]"
+    if not isinstance(finding, dict):
+        return [f"{where} must be an object"]
+    problems = []
+    path = finding.get("file")
+    if not isinstance(path, str) or not known_path(path, changed, tree):
+        problems.append(f"{where}.file {path!r} is not a file in this worktree")
+    else:
+        covered.add(path)
+        line_problem = check_line(finding.get("line"), path, tree)
+        if line_problem:
+            problems.append(f"{where}.line {line_problem}")
+    if finding.get("severity") not in SEVERITIES:
+        problems.append(f"{where}.severity must be one of {', '.join(SEVERITIES)}")
+    if finding.get("confidence") not in CONFIDENCE:
+        problems.append(f"{where}.confidence must be one of {', '.join(CONFIDENCE)}")
+    if not substantive(finding.get("claim")):
+        problems.append(f"{where}.claim must say what is wrong and the failure it causes")
+    return problems
 
-    A report is accepted only when every changed file is accounted for, in
-    a finding or in a note of what was checked. That is what separates a
-    review from a bare verdict: nothing the reviewer says about coverage is
-    taken on trust, it is compared with the diff.
-    """
+
+def validate_checked(index, checked, changed, tree, covered):
+    where = f"checked[{index}]"
+    if not isinstance(checked, dict):
+        return [f"{where} must be an object"]
+    path = checked.get("file")
+    if not isinstance(path, str) or not known_path(path, changed, tree):
+        return [f"{where}.file {path!r} is not a file in this worktree"]
+    if not substantive(checked.get("note")):
+        return [f"{where}.note must say what you verified in {path}"]
+    covered.add(path)
+    return []
+
+
+def validate_findings(report, changed, tree):
+    """Validate findings and require coverage for every changed file."""
     if not isinstance(report, dict):
         return ["the json block must be an object with findings and checked"]
     problems = []
@@ -1124,38 +1241,10 @@ def validate_findings(report, changed, tree):
         problems.append("checked must be a list")
         checked = []
     covered = set()
-    for i, f in enumerate(findings):
-        where = f"findings[{i}]"
-        if not isinstance(f, dict):
-            problems.append(f"{where} must be an object")
-            continue
-        path = f.get("file")
-        if not isinstance(path, str) or not known_path(path, changed, tree):
-            problems.append(f"{where}.file {path!r} is not a file in this worktree")
-        else:
-            covered.add(path)
-            line_problem = check_line(f.get("line"), path, tree)
-            if line_problem:
-                problems.append(f"{where}.line {line_problem}")
-        if f.get("severity") not in SEVERITIES:
-            problems.append(f"{where}.severity must be one of {', '.join(SEVERITIES)}")
-        if f.get("confidence") not in CONFIDENCE:
-            problems.append(f"{where}.confidence must be one of {', '.join(CONFIDENCE)}")
-        if not substantive(f.get("claim")):
-            problems.append(f"{where}.claim must say what is wrong and the failure it causes")
-    for i, c in enumerate(checked):
-        where = f"checked[{i}]"
-        if not isinstance(c, dict):
-            problems.append(f"{where} must be an object")
-            continue
-        path = c.get("file")
-        if not isinstance(path, str) or not known_path(path, changed, tree):
-            problems.append(f"{where}.file {path!r} is not a file in this worktree")
-            continue
-        if not substantive(c.get("note")):
-            problems.append(f"{where}.note must say what you verified in {path}")
-            continue
-        covered.add(path)
+    for i, finding in enumerate(findings):
+        problems.extend(validate_finding(i, finding, changed, tree, covered))
+    for i, item in enumerate(checked):
+        problems.extend(validate_checked(i, item, changed, tree, covered))
     missing = [p for p in changed if p not in covered]
     if missing:
         problems.append("these changed files are in neither findings nor checked: " + ", ".join(missing))

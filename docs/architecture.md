@@ -4,24 +4,24 @@ Captain is a shell CLI. Each part of its state has one source of truth.
 
 | Concern | Source | Code |
 | --- | --- | --- |
-| Projects | `config/projects.tsv` | `bin/cap-map`, `bin/lib.sh` |
-| Models and profiles | `config/captain.conf` | `bin/lib.sh`, `bin/cap-spawn` |
-| Tasks | `state/tasks/<slug>/` | `bin/cap-spawn`, `bin/lib.sh` |
+| Projects | `config/projects.tsv` | `bin/cap-map`, `bin/lib/` |
+| Models and profiles | `config/captain.conf` | `bin/lib/`, `bin/cap-spawn` |
+| Tasks | `state/tasks/<slug>/` | `bin/cap-spawn`, `bin/lib/` |
 | Worktrees | Git and `CAP_WORK_ROOT` | `bin/cap-spawn`, `bin/cap-drop` |
-| Restack snapshots | `state/restacks/` | `bin/cap-restack`, `bin/lib.sh` |
+| Restack snapshots | `state/restacks/` | `bin/cap-restack`, `bin/lib/` |
 | Waves | `state/waves/<name>.tsv` | `bin/cap-wave` |
-| Worktree provisioning | `config/tools/<project>` and lockfile detection | `bin/lib.sh`, `bin/cap-spawn` |
+| Worktree provisioning | `config/tools/<project>` and lockfile detection | `bin/lib/`, `bin/cap-spawn` |
 | Verified commits | `state/verified/<project>/` | `bin/cap-verify` |
 | Path ownership | `CAP_OWNS` in `task.env` | `bin/cap-spawn`, `bin/hooks/guard-task-paths.sh` |
-| Measured memory cost | `state/peaks/<project>` | `bin/cap-verify`, `bin/lib.sh` |
-| Package-manager caches | `CAP_CACHE_ROOT` | `bin/lib.sh` |
+| Measured memory cost | `state/peaks/<project>` | `bin/cap-verify`, `bin/lib/` |
+| Package-manager caches | `CAP_CACHE_ROOT` | `bin/lib/` |
 | Project conventions | `cases/<project>/conventions.md` | `bin/cap-conventions`, `bin/cap-check` |
 | Notes and reports | `notes/<project>/` | task and scout commands |
 | Project list | `map.md` (generated, untracked) | `bin/cap-map` |
 | Skill sources | `config/skill-sources.tsv` | `bin/cap-skills`, `bin/cap-explore` |
 | Installed skills | `.claude/skills/` | `bin/cap-skills` |
 
-`bin/cap` sends each command to its `bin/cap-*` script. `bin/lib.sh` contains shared helpers for config, projects, tasks, panes, and Git.
+`bin/cap` sends each command to its `bin/cap-*` script. `bin/lib.sh` loads the ordered modules in `bin/lib/`; each module owns one shared concern such as configuration, tasks, panes, or Git.
 
 Captain does not copy project source into this repo. Tasks use Git worktrees under `CAP_WORK_ROOT`.
 

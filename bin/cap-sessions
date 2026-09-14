@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # cap-sessions - every agent session live on this machine, cap-owned or not.
 #
-# cap crew only knows the tasks this hub spawned. It cannot see a second captain
-# session sharing state/tasks/, a hand-started claude sitting in a project
-# worktree, or a crew pane whose task record was already dropped. All three
-# happened on 2026-09-09, and two of them cost work: two cap-gate runs raced on
-# local-env, and cap/aula-integrate landed while a fix branched from it was
-# still open.
+# cap crew only knows the tasks this hub spawned. This command also finds
+# harness processes started by another captain or directly in a project
+# worktree, including panes whose task record was dropped.
 #
 # The kernel already knows all of this, so nothing here is recorded or tracked.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"

@@ -7,7 +7,7 @@ set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/.."
 
-mapfile -t files < <(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/hooks/*.sh)
+mapfile -t files < <(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/hooks/*.sh)
 
 # A candidate is in tail position when every significant line after it, out to
 # the end of its function or the end of the file, is a block closer.

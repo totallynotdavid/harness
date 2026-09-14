@@ -33,14 +33,9 @@ reviewable=$((reviewable + $(git -C "$CAP_TREE" ls-files --others --exclude-stan
 reviewable=$((reviewable + $(git -C "$CAP_TREE" diff --name-only | wc -l)))
 [ "$reviewable" != 0 ] || die "$slug's worktree has no changes against $CAP_BASE; nothing to clean up"
 
-# Name the commands, and specifically never git status. Two cleanup passes have
-# now skipped local-env's .devstack/, which is seventeen files and the bulk of
-# that task's change, because `git status --porcelain` collapses an untracked
-# directory into the single line `?? .devstack/`. The pass was reading the
-# command it was given and the command was hiding the files. ls-files lists
-# them, which is why cap check has always used it. A third pass on a committed
-# worktree found the tree clean and stopped, so the diff is named against the
-# merge base rather than left to the reader.
+# Name the commands instead of relying on `git status`. `git status --porcelain`
+# collapses an untracked directory into one entry, while `ls-files` lists every
+# file. Use the merge base so committed work remains visible to cleanup.
 prompt="Read $CAP_HOME/rules/comments.md and the Readability section of
 $CAP_HOME/rules/code.md, then apply them to every file this worktree changes
 against $CAP_BASE.

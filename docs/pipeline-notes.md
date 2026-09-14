@@ -401,3 +401,28 @@ from its transcript, and the account's 5h window before and after, labelled acco
 because anything else running at the time moves it as well. `cap budget` reads both back. Warnings that change what the captain does next, a
 gate that did not complete or a tier naming a profile that does not exist, still go to
 stderr.
+
+## A related-defect cluster is one task, not several gated separately
+
+On 2026-09-11 through 2026-09-13, hardening Captain's own task locking, ownership handoff,
+and `cap-send` queue flush went through 125 gate-a/gate-b rounds over two days, all at
+standard tier (`crew` on sonnet). The commits from that window are a long chain of narrow
+fixes to the same subsystem: `Fix lock discipline`, `Distinguish live and usable when
+queuing`, `Report partial undo when some refs were locked or owned`, `Preserve exit status
+in trap handlers`. Each fix closed the one edge case its gate round found and exposed the
+next one at a boundary the fix did not cover, because each round saw only its own diff.
+
+A later task covering the same class of defect (dispatcher hardening, task resource
+cleanup, gate review state) shipped twelve clean commits in under two hours with almost no
+rework, run as one wide-scope task at heavy tier (`crew` on opus) instead of Captain's
+default of one small task per defect. The tier change alone does not explain the
+difference: a stronger model asked to fix the same defect in the same narrow, one-diff-at-
+a-time shape would still only produce a better version of the same narrow fix, and would
+still miss the interaction with the next defect over. Seeing the related defects together
+in one dispatch is what let the fix address the subsystem instead of one symptom at a time.
+
+When several open defects or paper cuts touch the same subsystem, especially anything
+touching shared concurrent state such as locks, ownership, or a message queue, bundle them
+into one task before dispatching it, and size that task at heavy tier. Splitting related
+work into Captain's default shape of small, separately gated tasks is the wrong shape for
+this class of defect regardless of which model runs each one.

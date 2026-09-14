@@ -51,6 +51,11 @@ ensure_user_entrypoint() {
   fi
 }
 
+ensure_repo_setup() {
+	ensure_user_entrypoint
+	git_ensure_attribution_hook "$CAP_HOME" 2>/dev/null || true
+}
+
 # One "key<TAB>value" line per fact, sorted, so two hosts' reports diff line
 # by line. Values are what differs between hosts, never timestamps.
 report() {
@@ -135,13 +140,13 @@ REMOTE
 }
 
 case ${1:-} in
-'') ensure_user_entrypoint; report | sort ;;
+'') ensure_repo_setup; report | sort ;;
 --diff)
-  ensure_user_entrypoint
+  ensure_repo_setup
   diff_report "${2:?$usage}"
   ;;
 --remote)
-  ensure_user_entrypoint
+  ensure_repo_setup
   host=${2:?$usage}
   shift 2
   remote_path=""

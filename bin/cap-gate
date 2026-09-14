@@ -47,6 +47,7 @@ review_pid_live() {
   case $cmd in *cap-review*) return 0 ;; esac
   return 1
 }
+# shellcheck disable=SC2329 # Registered with cap_exit_add below.
 review_cleanup() {
   local rc=$?
   if [ -n "$review_pid" ] && review_pid_live "$review_pid"; then
@@ -57,9 +58,53 @@ review_cleanup() {
   review_close_panes
   return "$rc"
 }
-trap review_cleanup EXIT
-trap 'review_cleanup; exit 130' INT
-trap 'review_cleanup; exit 143' TERM HUP
+cap_exit_add review_cleanup
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
+review_manifest_recover() {
+	local fp=$1 needed_reviewers=$2 review_state review_pid_saved saved_reviewers old_results
+	review_results=""
+	if [ -f "$review_manifest" ] && [ "$(jq -r '.fingerprint // empty' "$review_manifest" 2>/dev/null || true)" = "$fp" ]; then
+		review_state=$(jq -r '.state // empty' "$review_manifest" 2>/dev/null || true)
+		review_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
+		review_pid_saved=$(jq -r '.pid // empty' "$review_manifest" 2>/dev/null || true)
+		saved_reviewers=$(jq -r '.reviewers[]' "$review_manifest" 2>/dev/null | sort | tr '\n' ' ' || true)
+		if [ "$review_state" = complete ] && [ -s "$review_results" ] && [ "$saved_reviewers" = "$needed_reviewers" ]; then
+			printf '%s\n' "$slug: adopting the completed review left by an interrupted gate"
+		else
+			review_pid_live "$review_pid_saved" && kill -TERM "$review_pid_saved" 2>/dev/null || true
+			review_close_panes
+			rm -f "$review_manifest" "$review_results"
+			review_results=""
+		fi
+	elif [ -f "$review_manifest" ]; then
+		review_pid_saved=$(jq -r '.pid // empty' "$review_manifest" 2>/dev/null || true)
+		review_pid_live "$review_pid_saved" && kill -TERM "$review_pid_saved" 2>/dev/null || true
+		review_close_panes
+		old_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
+		rm -f "$review_manifest"
+		[ -z "$old_results" ] || rm -f "$old_results"
+	fi
+}
+
+record_review_results() {
+	local label verdict pid
+	reports=()
+	while IFS=$'\t' read -r label verdict; do
+		if [ -z "$verdict" ]; then
+			incomplete=1
+			continue
+		fi
+		gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit" "$since"
+		reports+=("$out_dir/$slug.gate-$label.md")
+	done < <(jq -r '[.label, (.verdict // "")] | @tsv' "$review_results")
+	pid=$!
+	wait "$pid" || { warn "$slug: could not read the gate results"; incomplete=1; }
+	[ -s "$review_results" ] || incomplete=1
+	rm -f "$review_manifest" "$review_results"
+	[ "${#reports[@]}" = 0 ] || printf 'reports: %s\n' "${reports[*]}"
+}
 
 sync_base "$CAP_TREE" "$CAP_BASE" ||
   die "$slug: worktree is mid-conflict after syncing onto $CAP_BASE; resolve before gating (see docs/pipeline-notes.md)"
@@ -131,27 +176,7 @@ else
     needed_reviewers+="${reviewers[review_i]%%=*} "
   done
   needed_reviewers=$(printf '%s\n' "$needed_reviewers" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')
-  if [ -f "$review_manifest" ] && [ "$(jq -r '.fingerprint // empty' "$review_manifest" 2>/dev/null || true)" = "$fp" ]; then
-    review_state=$(jq -r '.state // empty' "$review_manifest" 2>/dev/null || true)
-    review_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
-    review_pid_saved=$(jq -r '.pid // empty' "$review_manifest" 2>/dev/null || true)
-    saved_reviewers=$(jq -r '.reviewers[]' "$review_manifest" 2>/dev/null | sort | tr '\n' ' ' || true)
-    if [ "$review_state" = complete ] && [ -s "$review_results" ] && [ "$saved_reviewers" = "$needed_reviewers" ]; then
-      printf '%s\n' "$slug: adopting the completed review left by an interrupted gate"
-    else
-      review_pid_live "$review_pid_saved" && kill -TERM "$review_pid_saved" 2>/dev/null || true
-      review_close_panes
-      rm -f "$review_manifest" "$review_results"
-      review_results=""
-    fi
-  elif [ -f "$review_manifest" ]; then
-    review_pid_saved=$(jq -r '.pid // empty' "$review_manifest" 2>/dev/null || true)
-    review_pid_live "$review_pid_saved" && kill -TERM "$review_pid_saved" 2>/dev/null || true
-    review_close_panes
-    old_results=$(jq -r '.results // empty' "$review_manifest" 2>/dev/null || true)
-    rm -f "$review_manifest"
-    [ -z "$old_results" ] || rm -f "$old_results"
-  fi
+  review_manifest_recover "$fp" "$needed_reviewers"
 
   if [ -n "$review_results" ]; then
     :
@@ -176,21 +201,7 @@ else
     # A reviewer with no validated findings block has no verdict. A verdict is
     # computed from findings that cover the diff, so an answer that is only a
     # verdict, or covers none of the changed files, never reaches this record.
-    reports=()
-    while IFS=$'\t' read -r label verdict; do
-      if [ -z "$verdict" ]; then
-        incomplete=1
-        continue
-      fi
-      gate_record "$slug" "$label" "$verdict" "$fp" "$reviewed_commit" "$since"
-      reports+=("$out_dir/$slug.gate-$label.md")
-    done < <(jq -r '[.label, (.verdict // "")] | @tsv' "$review_results")
-    pid=$!
-    wait "$pid" || { warn "$slug: could not read the gate results"; incomplete=1; }
-    [ -s "$review_results" ] || incomplete=1
-    rm -f "$review_manifest" "$review_results"
-
-    [ "${#reports[@]}" = 0 ] || printf 'reports: %s\n' "${reports[*]}"
+    record_review_results
   fi
 fi
 

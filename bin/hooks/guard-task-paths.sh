@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # Keep a task inside the paths it declared.
 #
-# The captain partitions the tree at dispatch. Nothing enforced the partition,
-# so four agents each wrote package.json, vitest.config.ts, .env.example and
-# the lockfile, and the merge had to be done by hand. A task that cannot reach
-# the repository root cannot start that fight, which also means dependencies
-# must be settled in the foundation before any fan-out.
+# The captain partitions the tree at dispatch. A task that cannot reach the
+# repository root cannot collide with another task's shared setup files, so
+# dependencies must be settled before a fan-out.
 #
 # Silent for every write inside the task's own ground, and for anything outside
 # the worktree entirely, such as the session scratchpad.
@@ -39,10 +37,8 @@ case $path in
 esac
 
 # An agent must not be able to edit the declaration that constrains it.
-# state/ holds every task's `owns`, and this hook used to wave through
-# anything outside the worktree, so the first agent to hit a false block
-# rewrote its own glob to widen it and carried on. A guard a subject can
-# rewrite is not a guard. notes/ stays writable: a scout report lands there.
+# state/ holds every task's `owns`; notes/ stays writable so a scout can leave
+# its report there.
 case $path in
 "$CAP_HOME"/state/*)
 	printf 'BLOCKED: %s cannot write to Captain state. %s constrains this task.\n' \

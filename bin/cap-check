@@ -6,34 +6,36 @@ repo=""
 base=""
 project=""
 
-# Locked for read consistency against a concurrent mutator, but never
-# claims ownership: an inspection is not the session-length commitment
-# --take makes elsewhere.
-slug=""
-if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
-	slug=$1
-	task_load "$1"
-	task_lock "$1"
-	repo=$CAP_TREE
-	base=$CAP_BASE
-	project=$CAP_PROJECT
-	shift
-else
-	while [ $# -gt 0 ]; do
-		case $1 in
-		--repo)
-			project=${2:?}
-			repo=$(proj_path "$2")
-			shift 2
-			;;
-		--base)
-			base=${2:?}
-			shift 2
-			;;
-		*) die "usage: cap check <slug> | cap check --repo <project> [--base REF]" ;;
-		esac
-	done
-fi
+resolve_target() {
+	# Lock inspection for consistency, without claiming session ownership.
+	slug=""
+	if [ -n "${1:-}" ] && [ -d "$TASKS/${1:-}" ]; then
+		slug=$1
+		task_load "$1"
+		task_lock "$1"
+		repo=$CAP_TREE
+		base=$CAP_BASE
+		project=$CAP_PROJECT
+		shift
+	else
+		while [ $# -gt 0 ]; do
+			case $1 in
+			--repo)
+				project=${2:?}
+				repo=$(proj_path "$2")
+				shift 2
+				;;
+			--base)
+				base=${2:?}
+				shift 2
+				;;
+			*) die "usage: cap check <slug> | cap check --repo <project> [--base REF]" ;;
+			esac
+		done
+	fi
+}
+
+resolve_target "$@"
 
 [ -n "$repo" ] || die "usage: cap check <slug> | cap check --repo <project> [--base REF]"
 : "${base:=$(git_base "$repo")}"
@@ -91,11 +93,8 @@ outside() {
 	fi
 }
 
-# `git diff` only sees tracked files, so a new file, which is most of what an
-# agent writes, appeared in `changed` above but contributed no added lines to
-# any check below. The em-dash gate reported ok on a page carrying two of
-# them. Untracked files are diffed against /dev/null so they arrive in the
-# same +-prefixed form as an edit to an existing file.
+# `git diff` only sees tracked files. Diff untracked files against /dev/null so
+# they reach the same checks as edits to existing files.
 diff_text=$({
 	git -C "$repo" diff -U0 "$diff_from"
 	git -C "$repo" ls-files --others --exclude-standard -z |
@@ -196,6 +195,7 @@ if [ -f "$conv" ] && grep -q '^```surfaces' "$conv"; then
 	# Read once into a variable: a `while ... done < <(sed ...)` loop can't
 	# tell sed failing from an empty surfaces block, and either way reports
 	# ok silently.
+	# shellcheck disable=SC2016 # Backticks are literal markdown fences.
 	surfaces=$(sed -n '/^```surfaces/,/^```$/p' "$conv") ||
 		note "could not read the surface map in $conv"
 	while read -r trigger _arrow required; do

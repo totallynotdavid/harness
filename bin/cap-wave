@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
 # cap-wave - dispatch a set of tasks whose paths cannot collide.
 #
-# cap spawn takes one slug. A collision is a property of a set of tasks and not
-# of any member, so a single-task command structurally cannot see one coming.
-# That is why four agents each wrote their own package.json, vitest.config.ts,
-# .env.example and lockfile, and why the merge afterwards had to be done by
-# hand and still reported done while the suite was broken.
-#
-# The wave is the unit that can. Partitioning the tree is the plan, so the
-# command that refuses an overlapping partition is the command that forces the
-# planning to happen.
+# cap spawn takes one slug. A collision is a property of a set of tasks, so a
+# single-task command cannot detect it. A wave makes the partition explicit and
+# refuses overlapping ownership before any agent starts.
 #
 #   state/waves/<name>.tsv
 #     # project: aula
