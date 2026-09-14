@@ -41,7 +41,7 @@ Run `cap help` for all flags.
 | `cap budget` | Show measured quota, and what each dispatch role resolves to now. |
 | `cap models [--refresh]` | Show what each harness offers, and check the profile table against it. |
 | `cap papercut add <subject> "<text>"` | Log a problem with Captain. The subject is a part of Captain (`cap papercut subjects`); a project is refused. |
-| `cap papercut close <id> "<fix>"` | Close a paper cut and say what fixed it. |
+| `cap papercut close <id>` | Remove a fixed paper cut. |
 | `cap explore <owner/repo> [--fresh]` | Clone a repo for inspection. |
 | `cap history --repo <name>\|--task <slug> [opts]` | Search past agent sessions. |
 | `cap conventions <project>` | Create project conventions. |

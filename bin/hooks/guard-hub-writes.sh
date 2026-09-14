@@ -41,7 +41,7 @@ esac
 
 case "$resolved" in
 "$hub"/paper-cuts.md | "$hub"/paper-cuts.jsonl)
-  printf 'BLOCKED: %s is the paper-cut ledger. Use cap papercut add <subject> "<text>" or cap papercut close <id> "<fix>".\n' "$path" >&2
+  printf 'BLOCKED: %s is the paper-cut ledger. Use cap papercut add <subject> "<text>" or cap papercut close <id>.\n' "$path" >&2
   exit 2
   ;;
 "$hub"/*) exit 0 ;;

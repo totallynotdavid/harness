@@ -28,8 +28,8 @@ if len(ids) != len(set(ids)):
 for e in entries:
     if e.get("subject") not in allowed:
         problems.append(f"#{e.get('id')} has subject {e.get('subject')!r}, which is not part of Captain")
-    if e.get("status") not in ("open", "closed"):
-        problems.append(f"#{e.get('id')} has status {e.get('status')!r}")
+    if e.get("status") != "open":
+        problems.append(f"#{e.get('id')} is not open; remove fixed entries")
 
 try:
     with open(papercut.MARKDOWN) as fh:
