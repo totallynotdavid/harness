@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# cap-doctor - describe this host's Captain environment, or compare it with another's.
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+usage="usage: cap doctor [--diff REPORT]   (REPORT is another host's cap doctor output)"
+
+# One "key<TAB>value" line per fact, sorted, so two hosts' reports diff line
+# by line. Values are what differs between hosts, never timestamps.
+report() {
+  local tool v
+  for tool in bash git jq python3 mise herdr claude codex gh shellcheck shfmt flock; do
+    if have "$tool"; then
+      v=$("$tool" --version 2>&1 | grep -m1 '[0-9]' | tr '\t' ' ') || true
+      [ -n "$v" ] || v="present, version unreadable"
+    else
+      v=missing
+    fi
+    printf 'tool %s\t%s\n' "$tool" "$v"
+  done
+  printf 'captain commit\t%s\n' "$(git -C "$CAP_HOME" rev-parse --short HEAD 2>/dev/null || echo none)"
+  printf 'captain dirty files\t%s\n' "$(git_dirty "$CAP_HOME")"
+  printf 'captain bin checksum\t%s\n' "$(cd "$CAP_HOME" && find bin -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)"
+  printf 'projects registered\t%s\n' "$(grep -c . "$PROJECTS" 2>/dev/null || echo 0)"
+  printf 'projects.tsv checksum\t%s\n' "$(sha256sum "$PROJECTS" 2>/dev/null | cut -c1-16 || echo none)"
+  printf 'env HERDR_ENV\t%s\n' "${HERDR_ENV:+set}"
+  printf 'env CAP_WORK_ROOT\t%s\n' "$CAP_WORK_ROOT"
+  printf 'gh auth\t%s\n' "$(gh auth status >/dev/null 2>&1 && echo ok || echo 'not logged in')"
+  printf 'claude status line\t%s\n' "$(jq -r '.statusLine.command // "none"' "$HOME/.claude/settings.json" 2>/dev/null || echo none)"
+  # Under pipefail a failing codex fails the pipeline after head has printed,
+  # so the fallback is applied to the captured line, not chained with ||.
+  v=$(codex login status 2>&1 | head -1) || true
+  printf 'codex login\t%s\n' "${v:-unknown}"
+  printf 'harness default\t%s\n' "$CAP_AGENT_HARNESS"
+}
+
+case ${1:-} in
+'') report | sort ;;
+--diff)
+  other=${2:?$usage}
+  [ -f "$other" ] || die "no report at $other"
+  if diff <(report | sort) <(sort "$other") >/dev/null; then
+    printf 'no differences\n'
+  else
+    printf '%s\n' "- this host, + $other"
+    diff <(report | sort) <(sort "$other") | grep '^[<>]' | sed 's/^</-/; s/^>/+/'
+  fi
+  ;;
+*) die "$usage" ;;
+esac

@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""lint-papercuts - fail when paper-cuts.md is not what paper-cuts.jsonl renders to.
+
+The markdown is output. An entry written into it by hand never reaches the
+ledger, so it would be lost the next time cap papercut writes, and this is
+where that edit is caught instead.
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import sys
+
+sys.dont_write_bytecode = True
+BIN = os.path.dirname(os.path.realpath(__file__))
+os.environ.setdefault("CAP_HOME", os.path.dirname(BIN))
+sys.path.insert(0, BIN)
+spec = importlib.util.spec_from_loader("cap_papercut", importlib.machinery.SourceFileLoader("cap_papercut", os.path.join(BIN, "cap-papercut")))
+papercut = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(papercut)
+
+problems = []
+entries = papercut.load()
+allowed = set(papercut.subjects()) | {papercut.MIGRATED}
+ids = [e.get("id") for e in entries]
+if len(ids) != len(set(ids)):
+    problems.append("paper-cuts.jsonl has duplicate ids")
+for e in entries:
+    if e.get("subject") not in allowed:
+        problems.append(f"#{e.get('id')} has subject {e.get('subject')!r}, which is not part of Captain")
+    if e.get("status") not in ("open", "closed"):
+        problems.append(f"#{e.get('id')} has status {e.get('status')!r}")
+
+try:
+    with open(papercut.MARKDOWN) as fh:
+        on_disk = fh.read()
+except OSError:
+    on_disk = ""
+if on_disk != papercut.render(entries):
+    problems.append("paper-cuts.md differs from what paper-cuts.jsonl renders; log entries with cap papercut, never by editing the markdown")
+
+if problems:
+    for p in problems:
+        print(f"lint-papercuts: {p}", file=sys.stderr)
+    sys.exit(1)
+print(f"lint-papercuts: {len(entries)} entries, paper-cuts.md is their rendering")

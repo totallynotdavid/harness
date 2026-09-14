@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""cap-launch - start a task's agent session in a pane (used by cap spawn and cap send).
+
+Prints "<pane> <tab> <session id>" once the session is starting, with "-"
+for a codex session, whose id is chosen by codex and recorded in turns/session.start. The session keeps running
+after this returns; its turns land in state/tasks/<slug>/turns.
+"""
+
+import argparse
+import os
+import sys
+import uuid
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import caplib  # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="cap-launch")
+    ap.add_argument("--task", required=True)
+    ap.add_argument("--dir", required=True)
+    ap.add_argument("--harness", required=True, choices=["claude", "codex"])
+    ap.add_argument("--model", default="-")
+    ap.add_argument("--effort", default="")
+    ap.add_argument("--guard", action="store_true", help="hold the agent to the task's owns list")
+    ap.add_argument("prompt")
+    args = ap.parse_args()
+
+    caplib.task_lock(args.task)
+    caplib.trust(args.harness, args.dir)
+    turn_dir = os.path.join(caplib.TASKS, args.task, "turns")
+    session_id = str(uuid.uuid4()) if args.harness == "claude" else None
+    argv = caplib.session_argv(
+        args.harness,
+        args.model,
+        args.effort,
+        args.prompt,
+        session_id=session_id,
+        guard_slug=args.task if args.guard else None,
+    )
+    session = caplib.launch(args.dir, args.task, argv, turn_dir, env={"CAP_TASK": args.task})
+    print(f"{session.pane} {session.tab} {session_id or '-'}")
+    return 0
+
+
+caplib.run_main(main)
