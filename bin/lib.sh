@@ -1447,6 +1447,41 @@ gate_ready() {
 # both cap-commit (strips it) and cap-land (refuses on it).
 AI_TRAILER_RE='^(claude|codex)-session:|generated with \[(claude code|codex)\]|^co-authored-by:[[:space:]]*(claude|codex|chatgpt|gpt)\b|^co-authored-by:.*<noreply@(anthropic|openai)\.com>'
 
+# cap-commit and cap-land only see a task branch. A captain session editing
+# CLAUDE.md or config/captain.conf commits straight to the hub with plain
+# `git commit`, a path neither of them touches, and a harness's own commit
+# template can carry AI_TRAILER_RE's lines onto that commit with nothing
+# to strip them. A commit-msg hook fires on that path too and git hooks
+# live in the git dir every worktree of one repo shares, so installing it
+# once from any of them covers the hub and every task worktree alike.
+# Idempotent and cheap enough to call from every cap command: the common
+# case is one stat plus a grep, and a failure (no git dir, no write
+# access) is swallowed by the caller rather than breaking the command.
+git_ensure_attribution_hook() {
+  local tree=$1 gitdir hook
+  gitdir=$(git -C "$tree" rev-parse --git-common-dir 2>/dev/null) || return 0
+  case $gitdir in /*) ;; *) gitdir=$tree/$gitdir ;; esac
+  hook=$gitdir/hooks/commit-msg
+  [ -f "$hook" ] && grep -qF "$AI_TRAILER_RE" "$hook" 2>/dev/null && return 0
+  mkdir -p "$gitdir/hooks" || return 0
+  cat >"$hook" <<HOOK || return 0
+#!/usr/bin/env bash
+# Installed by git_ensure_attribution_hook (bin/lib.sh). rules/commits.md's
+# no-AI-attribution rule, applied to the message before the commit is
+# written rather than left for someone to remember or a later pass to
+# strip. Silently drops matching lines; refuses only if nothing is left.
+msg_file=\$1
+stripped=\$(grep -viE '$AI_TRAILER_RE' "\$msg_file") || true
+if [ -z "\$(printf '%s' "\$stripped" | tr -d '[:space:]')" ]; then
+  printf 'commit-msg: message is nothing but AI attribution; write a real one\n' >&2
+  exit 1
+fi
+printf '%s\n' "\$stripped" >"\$msg_file"
+HOOK
+  chmod +x "$hook" 2>/dev/null || true
+}
+git_ensure_attribution_hook "$CAP_HOME" 2>/dev/null || true
+
 # Every AI-credited line in tree $1's $2..HEAD range, one per output line,
 # prefixed with the short hash of the commit it is in. A plain
 # `git log --format='commit %h:%n%B' | grep -in` cannot do this: grep prints
