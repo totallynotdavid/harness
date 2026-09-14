@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# cap-verify - run a task's own test/lint/typecheck commands directly, no
-# model session. Answers "is this actually fixed" deterministically for
-# anything the project's own tooling can check, instead of spending a gate
-# round to re-derive the same answer (see docs/pipeline-notes.md).
+# cap-verify - run project-defined checks without a model session.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 # Two subjects, one procedure. A task is verified in its worktree; a project is

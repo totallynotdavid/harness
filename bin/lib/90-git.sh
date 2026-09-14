@@ -7,16 +7,9 @@ git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
 # block another session's land.
 git_dirty_tracked() { git -C "$1" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' '; }
 
-# Sync a worktree onto the current tip of its base branch before review, so
-# an unrelated task landing on base since this one branched never gets
-# misread by a gate as this branch deleting/reverting that feature (see
-# docs/pipeline-notes.md, "Stale-base false positives"). Safe by
-# construction: proceeds only when both the merge and any stash reapply are
-# conflict-free. On any conflict it leaves the worktree exactly as a human
-# doing this by hand would (merge aborted, or mid-conflict with the original
-# work recoverable from the stash) and reports rather than guessing.
-# Returns 1 only when the worktree is left mid-conflict and should not be
-# gated this round.
+# Merge the current base into a worktree before review. A merge conflict falls
+# back to the stale diff. A stash reapply conflict returns 1 with the worktree
+# left for the task's agent to resolve.
 sync_base() {
   local tree=$1 base=$2 base_tip merge_base dirty stashed=0
 
@@ -36,12 +29,12 @@ sync_base() {
   if ! git -C "$tree" merge "$base" --no-edit >/dev/null 2>&1; then
     git -C "$tree" merge --abort >/dev/null 2>&1
     [ "$stashed" = 1 ] && git -C "$tree" stash pop >/dev/null 2>&1
-    warn "$tree: $base moved and merging it conflicts; gating the stale diff as-is (see docs/pipeline-notes.md)"
+    warn "$tree: $base moved and merging it conflicts; gating the stale diff as-is (see docs/operations.md)"
     return 0
   fi
 
   if [ "$stashed" = 1 ] && ! git -C "$tree" stash pop >/dev/null 2>&1; then
-    warn "$tree: merged $base, but reapplying stashed work conflicts. The worktree is now mid-conflict; not gating this round. Resolve it (see docs/pipeline-notes.md), ideally by asking the task's own agent to run 'git stash pop' and fix the conflict itself."
+    warn "$tree: merged $base, but reapplying stashed work conflicts. The worktree is now mid-conflict; not gating this round. Resolve it (see docs/operations.md), ideally by asking the task's own agent to run 'git stash pop' and fix the conflict itself."
     return 1
   fi
 
@@ -138,13 +131,7 @@ step_ran() {
   [ "$(jq -r --arg s "$step" '.[$s].round // -1' "$f" 2>/dev/null)" = "$(task_round "$slug")" ]
 }
 
-# Record one profile's verdict for a task at the fingerprint it reviewed.
-# state/tasks/<slug>/gate.json holds the latest verdict per profile label
-# (A, B), each tagged with the fingerprint it was reviewed at, so a reader
-# can tell whether a PASS still describes the code currently in the tree.
-# $commit is HEAD at review time, so the next incremental round for this
-# profile knows where its last review left off. $since is where that review's
-# diff started, the range $fp was taken over.
+# Store a profile's verdict with the fingerprint and range it reviewed.
 gate_record() {
   local slug=$1 label=$2 verdict=$3 fp=$4 commit=$5 since=$6
   local f=$TASKS/$slug/gate.json tmp prev
@@ -240,11 +227,7 @@ gate_review_since() {
   printf '%s' "$since"
 }
 
-# Whether a task is ready to land: both A and B last passed, and both did so
-# reviewing the exact code currently in the tree (same fingerprint on both,
-# matching the tree's fingerprint right now). Anything else - one profile
-# never run, a FAIL, or a fingerprint mismatch from code changing since -
-# means "not established as ready" and is reported as such, not guessed at.
+# A task is ready only when both profiles passed the current fingerprint.
 gate_ready() {
   local slug=$1 tree=$2 base=$3
   local f=$TASKS/$slug/gate.json cur a_v a_fp b_v b_fp
@@ -273,21 +256,11 @@ gate_failed_here() {
   jq -e --arg fp "$cur" '[.A, .B] | map(select(. != null and .verdict == "FAIL" and .fingerprint == $fp)) | length > 0' "$f" >/dev/null 2>&1
 }
 
-# Captain removes generated attribution after the agent writes a plan. A human
-# co-author remains valid metadata. Match session links, generated-with
-# bylines, and Co-Authored-By lines naming a known model or vendor address.
+# Match generated session links, bylines, and model or vendor co-authors.
 AI_TRAILER_RE='^(claude|codex)-session:|generated with \[(claude code|codex)\]|^co-authored-by:[[:space:]]*(claude|codex|chatgpt|gpt)\b|^co-authored-by:.*<noreply@(anthropic|openai)\.com>'
 
-# cap-commit and cap-land only see a task branch. A captain session editing
-# CLAUDE.md or config/captain.conf commits straight to the hub with plain
-# `git commit`, a path neither of them touches, and a harness's own commit
-# template can carry AI_TRAILER_RE's lines onto that commit. A commit-msg hook
-# fires on that path too and git hooks
-# live in the git dir every worktree of one repo shares, so installing it
-# once from any of them covers the hub and every task worktree alike.
-# Idempotent and cheap enough to call from every cap command: the common
-# case is one stat plus a grep, and a failure (no git dir, no write
-# access) is swallowed by the caller rather than breaking the command.
+# Install the attribution filter in the shared Git directory. All worktrees
+# then use the same hook, including direct commits in the Captain checkout.
 git_ensure_attribution_hook() {
   local tree=$1 gitdir hook
   gitdir=$(git -C "$tree" rev-parse --git-common-dir 2>/dev/null) || return 0

@@ -75,7 +75,6 @@ def _interrupted(signum, frame):
     raise KeyboardInterrupt
 
 
-# --- bin/lib.sh ------------------------------------------------------------
 
 
 def lib(func, *args, check=True):
@@ -125,7 +124,6 @@ def iso_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# --- profiles --------------------------------------------------------------
 
 
 @dataclass
@@ -173,7 +171,6 @@ def check_profile(profile):
         raise CapError(f"{profile.harness} is not installed")
 
 
-# --- tasks -----------------------------------------------------------------
 
 
 def task_field(slug, key):
@@ -233,7 +230,6 @@ def task_lock(slug):
     os.environ["CAP_LOCKS"] = " ".join(held + [slug])
 
 
-# --- launch environment ----------------------------------------------------
 
 SCRUBBED = (
     "ANTHROPIC_MODEL",
@@ -404,7 +400,6 @@ def session_argv(harness, model, effort, prompt, *, session_id=None, resume=None
     raise CapError(f"unknown harness '{harness}'")
 
 
-# --- herdr -----------------------------------------------------------------
 
 
 def herdr(*args, check=True):
@@ -460,7 +455,6 @@ def pane_type(pane, text):
     herdr("pane", "send-keys", pane, "enter", check=False)
 
 
-# --- sessions --------------------------------------------------------------
 
 
 def live_path(session):
@@ -708,7 +702,6 @@ def submit(session, text):
     pane_type(session.pane, text)
 
 
-# --- reading a turn --------------------------------------------------------
 
 
 def read_jsonl(path):
@@ -791,7 +784,6 @@ def classify(payload):
     raise CapError(f"claude harness reported {error}{': ' + details if details else ''}")
 
 
-# --- cost ------------------------------------------------------------------
 
 
 def claude_tokens(transcript, since):
@@ -938,7 +930,6 @@ def record_cost(session, profile, window_start, transcript):
     lib("dispatch_log_json", json.dumps(record), check=False)
 
 
-# --- one question, one answer ----------------------------------------------
 
 
 class InvalidAnswer(CapError):
@@ -1164,7 +1155,6 @@ def codex_limit(profile, reached):
     raise CapError(f"codex harness reported a rate limit ({reached}); no result to return. {profile.name} is out of its tier until {when}.")
 
 
-# --- structured findings ---------------------------------------------------
 
 SEVERITIES = ("blocker", "major", "minor")
 CONFIDENCE = ("confirmed", "suspected")

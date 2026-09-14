@@ -106,19 +106,15 @@ record_review_results() {
 }
 
 sync_base "$CAP_TREE" "$CAP_BASE" ||
-  die "$slug: worktree is mid-conflict after syncing onto $CAP_BASE; resolve before gating (see docs/pipeline-notes.md)"
+  die "$slug: worktree is mid-conflict after syncing onto $CAP_BASE; resolve before gating (see docs/operations.md)"
 
 full_since=$(diff_base "$CAP_TREE" "$CAP_BASE")
 reviewable=$(reviewable_files "$CAP_TREE" "$full_since") ||
   die "$slug: could not determine the reviewable diff"
 [ -n "$reviewable" ] || die "$slug has no reviewable changes against $CAP_BASE; the work is already in the base"
 
-# --full reviews the whole branch. A plain round reviews only what changed
-# since gate B's own last PASS, so a task 24 rounds in re-reviews the
-# round's own diff, not machinery two rounds already passed unchanged.
-# Only gate B ever runs a plain round (below), so only its last commit
-# matters here. Empty means nothing has changed since that PASS at all:
-# nothing to review, so this round runs no reviewer and touches no record.
+# A full round reviews the branch. A plain round reviews changes since gate B's
+# last PASS. An empty range needs no reviewer and keeps the existing record.
 if [ "$full" = 1 ]; then
   since=$full_since
 else
@@ -132,12 +128,8 @@ mkdir -p "$out_dir" "$TASKS/$slug"
 if [ -z "$since" ]; then
   printf '%s: nothing has changed since gate B last passed; not re-reviewing\n' "$slug"
 else
-  # Gate B (cheap) runs every plain round; Gate A (expensive) joins a full
-  # round. A profile that already passed this exact full fingerprint can be
-  # reused, so --full does not pay for an identical review twice.
-  # Both are roles, not models: each is sized against the account's current
-  # window. Resolve them here, not per reviewer, so Gate B picks a different
-  # peer when both would use the same profile.
+  # Gate B runs every plain round. Gate A joins full rounds. Reuse a profile
+  # that already passed this fingerprint.
   fp=$(gate_fingerprint_from "$CAP_TREE" "$since")
   reviewers=()
   gate_a=""
@@ -158,16 +150,11 @@ else
     reviewers+=(--reviewer "B=$gate_b@gate-b")
   fi
 
-  # Captured here, not after the review returns: task_lock only blocks
-  # cap-commit/cap-send, never the task's own live agent, which is free to
-  # add a commit while the reviewers are still running. Recording that later
-  # HEAD would claim a commit as reviewed that closed after the diff did.
+  # Capture HEAD before review. The live agent can add a commit while reviewers
+  # run, and that commit must not enter this review's record.
   reviewed_commit=$(git -C "$CAP_TREE" rev-parse HEAD)
 
-  # Both reviewers run at once; nothing about one depends on the other.
-  # Recording their verdicts is the only part that stays serial, in order.
-  # CAP_ASK_KEY carries the fingerprint so a session a limit interrupted is
-  # never resumed against different code.
+  # Reviewers run in parallel. The fingerprint also keys session resumption.
   review_results=""
   review_manifest=$TASKS/$slug/review.json
   needed_reviewers=""
@@ -197,9 +184,7 @@ else
   fi
 
   if [ -n "$review_results" ]; then
-    # A reviewer with no validated findings block has no verdict. A verdict is
-    # computed from findings that cover the diff, so an answer that is only a
-    # verdict, or covers none of the changed files, never reaches this record.
+    # Record only reports that contain validated findings for the diff.
     record_review_results
   fi
 fi

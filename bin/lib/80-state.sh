@@ -225,8 +225,7 @@ task_agent_state() {
 
 # One helper answers "what state is this task in": task_agent_state
 # decides whether it is working, git and gate.json decide what is ready,
-# and the log is consulted only to name why it stopped. See
-# docs/pipeline-notes.md, "Task state is not a log word".
+# and the log is consulted only to name why it stopped.
 task_state() {
   local slug=$1 agent tree base verb
 

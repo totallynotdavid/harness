@@ -30,19 +30,11 @@ text=$*
 
 task_load "$slug"
 
-# Checked before anything else below, including the context ceiling and any
-# compaction it triggers: compacting another session's agent is the one
-# irreversible thing this command can do. task_owner_claim (the write)
-# still only happens under the lock further down; this is read-only.
+# Check ownership before compaction. The write happens under the task lock.
 [ "$take" = 1 ] || task_owner_check "$slug"
 
-# A task record retains the session inputs needed for recovery. Restart a dead
-# session from that record so the message reaches the agent that owns the task.
-#
-# The revived session gets the instruction inside its opening prompt rather
-# than as a second turn. Launching it on the contract alone and then sending
-# would race a turn that has already started, and the pane would be busy
-# exactly when the message arrived.
+# Restart a dead session from its task record and put the message in its
+# opening prompt.
 revive() {
 	local dir=$TASKS/$slug kick guard=() pane tabid session_id kick_file
 	task_load "$slug"
@@ -76,17 +68,13 @@ $text"
 	task_env_set "$slug" CAP_PANE "$pane"
 	task_env_set "$slug" CAP_TAB "$tabid"
 	task_env_set "$slug" CAP_SESSION_ID "$session_id"
-	# A fresh pane has a fresh input box - whatever the old one may have had
-	# sitting unsent in it died with it.
 	queue_clear_untrusted "$slug"
 	warn "$slug: the session was not running; restarted it on $CAP_MODEL and delivered the message in its opening prompt"
 }
 
 if ! agent_live "$slug"; then
-	# Reviving starts a whole new session, rare and disruptive enough to die
-	# loudly on contention rather than queue this call's own message.
-	# task_lock's own release flush still delivers anything already queued
-	# for the dead session once this process exits below.
+	# Restarting a session needs exclusive access. Existing queued messages
+	# flush when this command releases the task.
 	task_lock "$slug"
 	if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 	revive
@@ -96,12 +84,7 @@ if ! agent_live "$slug"; then
 	exit 0
 fi
 
-# A session near its limit can stop before it finishes and still summarize
-# optimistically. Check the ceiling before delivering the message.
-#
-# The recovery is compaction, matching what cap-ask already does before it
-# resumes a large session. --force fills the session the ceiling exists to
-# protect; cap drop throws away the worktree - both worse than compacting.
+# Compact a session before sending when it reaches the context ceiling.
 compact_pane() {
 	local deadline waited=0 now
 	warn "$slug: at $ctx% context; compacting before the message goes in"
@@ -145,16 +128,9 @@ deliver_message() {
 	if task_try_lock "$slug"; then
 		if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
-		# Flushed explicitly here, ahead of this call's own message, so an older
-		# queued correction lands first instead of racing the exit-time flush
-		# every locking command now gets. A non-zero return means something
-		# ahead of this call's own text was typed but never confirmed, or a
-		# stranded claim could not be recovered - the pane's state is not to be
-		# trusted, so this call's own text goes in behind it, not out of order.
+		# Drain queued messages ahead of the new one.
 		if queue_flush "$slug" && pane_usable "$slug"; then
-			# Typed but never confirmed a turn started, on failure: must never
-			# be typed again by anyone, so it is logged as unconfirmed rather
-			# than queued for a later flush to retry.
+			# Do not retry text that may already be in the pane.
 			pane_submit "$slug" "$text" || {
 				queue_mark_untrusted "$slug"
 				printf 'unconfirmed: sent by %s: %s\n' \
@@ -162,11 +138,8 @@ deliver_message() {
 				die "$slug: typed into the pane but never confirmed a turn started; will not be retried automatically - check by hand: cap peek $slug"
 			}
 
-			# A turn has started, so the task is not done, and cap send is the one
-			# place that knows this for certain. Named by pid, not "the captain":
-			# with more than one captain, only the pid tells them apart. Flattened
-			# to one line (task_status_verb/task_status_latest treat one line as
-			# one event) but kept in full: a truncated message hides what was asked.
+			# A confirmed turn means the task is working. Keep the full message
+			# in one log event so a later status read can explain it.
 			sent_by=$(session_label "$(session_identity)")
 			sent=$(printf '%s' "$text" | tr '\n' ' ')
 			printf 'working: sent by %s: %s\n' "$sent_by" "$sent" >>"$TASKS/$slug/status.log"

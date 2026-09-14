@@ -5,31 +5,10 @@ ask_profile() {
     die "unknown ask profile '$1' (see config/captain.conf)"
 }
 
-# --- dispatch sizing -------------------------------------------------------
-#
-# Captain never asks what plan the account is on. It reads the rate-limit
-# windows the harness already reports to the status line, which bin/cap-statusline
-# records for every session in the fleet, and it remembers which profiles the
-# harness has actually rejected. Those two facts are enough to pick a model,
-# and both are measurements rather than settings, so the same configuration
-# behaves correctly on a plan Captain has never seen.
-
 CAP_USAGE_DIR=$CAP_HOME/state/usage
 CAP_BLOCK_DIR=$CAP_HOME/state/usage/blocked
 
 usage_files() { compgen -G "$CAP_USAGE_DIR/*.json" >/dev/null 2>&1; }
-
-# --- what the harness offers -----------------------------------------------
-#
-# Profile names a model and reasoning effort. Codex publishes both; Captain
-# asks instead of guessing so invalid profiles fail early (cap models), not
-# three minutes into a review. The catalog never carries tier assignments
-# (which model is the right reviewer for critical work); that judgment stays
-# in config/captain.conf.
-#
-# The claude harness publishes no equivalent, so its profiles go unchecked.
-# Its aliases (opus, sonnet, haiku, fable) resolve at session start and the
-# status line reports what they resolved to, which is discovery after the fact.
 
 # One JSON-RPC round trip to the codex app-server. The server answers
 # asynchronously and interleaves notifications, so this holds the request pipe
@@ -128,20 +107,6 @@ profile_check() {
   return 1
 }
 
-# The codex harness has no status line hook, so nothing records a reading for
-# it as it runs. Two places have one anyway.
-#
-# The app-server answers account/rateLimits/read with the windows as they stand
-# right now. That is the reading Captain wants, because the moment it most needs
-# to know whether codex has room is the moment no codex session is running.
-#
-# Failing that, every turn appends a token_count event to the session's rollout,
-# carrying the same two windows under snake_case names. It is a real reading but
-# a retrospective one: it is exactly as old as the last codex turn.
-#
-# Both records also carry plan_type ("plus", "pro"). Captain does not read it.
-# Knowing the percentage is measuring the account; knowing the plan is
-# describing it, and a description is the thing that goes stale.
 codex_rollout() {
   find "$HOME/.codex/sessions" -type f -name 'rollout-*.jsonl' -mmin -1440 \
     -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
@@ -186,18 +151,8 @@ codex_rate_limits() {
   codex_rollout_limits | jq -e '. + {source: "rollout"}' 2>/dev/null
 }
 
-# Measured utilization for one harness, as "<percent> <resets_at> <source>". The
-# percent is the fullest window that harness reports, because the tightest
-# window is the one that will stop the next dispatch.
-#
-# Readings are per harness on purpose. An Anthropic window says nothing about
-# an OpenAI one, and sizing a codex rung against a claude meter would be the
-# same mistake as hardcoding a model: a number that describes a different
-# account.
-#
-# Prints "- - none" when nothing recent enough exists, which every caller reads
-# as "no reason to hold back", never as "full". Refusing to work because the
-# meter is unreadable would be worse than the problem the meter solves.
+# Print the fullest recent window as "<percent> <resets_at> <source>".
+# "- - none" means there is no usable reading, not that the account is full.
 usage_read() {
   local harness=${1:-claude} cutoff out
   cutoff=$(($(now) - ${CAP_USAGE_TTL:-900}))
@@ -308,16 +263,9 @@ profile_blocked() {
   return 1
 }
 
-# Sizing is a harness decision, so it reports to a file rather than to whoever
-# is watching. A captain running cap spawn is an agent too: a line of routine
-# "role crew -> sonnet" chatter on every dispatch spends its context to tell it
-# something it did not ask for and cannot act on. cap budget reads this back
-# when the answer needs explaining.
 CAP_DISPATCH_LOG=$CAP_USAGE_DIR/dispatch.jsonl
 
-# One JSON object per line. A sizing decision (kind "size") is written here
-# when a role picks a profile; bin/caplib.py writes what the dispatch then
-# cost (kind "cost") to the same log through dispatch_log_json.
+# Store sizing decisions and dispatch costs as one JSON object per line.
 dispatch_log() {
   dispatch_log_json "$(jq -nc --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg caller "${0##*/}" \
     --arg role "$1" --arg profile "$2" --arg harness "$3" --arg pct "$4" \
@@ -327,7 +275,6 @@ dispatch_log() {
 dispatch_log_json() {
   mkdir -p "$CAP_USAGE_DIR" 2>/dev/null || return 0
   printf '%s\n' "$1" >>"$CAP_DISPATCH_LOG" 2>/dev/null || return 0
-  # Keep the tail, drop the history. Nobody audits a dispatch from last month.
   if [ "$(stat -c %s "$CAP_DISPATCH_LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
     tail -n 400 "$CAP_DISPATCH_LOG" >"$CAP_DISPATCH_LOG.tmp" 2>/dev/null &&
       mv "$CAP_DISPATCH_LOG.tmp" "$CAP_DISPATCH_LOG"
