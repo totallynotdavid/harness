@@ -1,56 +1,36 @@
 # Working rules
 
-<!-- Shared working rules. Repository-specific instructions belong in the repository that owns the code. -->
-
 ## Write plainly
 
-This comes first because it applies to everything else on this page: comments, commit
-messages, reports, and every string a user reads.
+Use short sentences. Name the subject. Cut filler and repeated context.
+Prefer direct code and direct prose.
 
-Plain, direct language. Short sentences, one idea each. Name the subject. Cut filler that
-repeats context. Dumb and clear beats clever.
+## Work
 
-An em dash is the usual sign that a sentence is carrying two ideas at once. When you reach
-for one, the sentence almost always reads better split in two, so split it. The character
-is a symptom, not the problem, and it is not banned.
+Investigate the repository, its history, and its documentation before asking
+for facts they can answer. State the decision you made so it can be corrected.
+Ask only when the repository cannot settle the choice.
 
-The same reading applies to length. A comment that grows into a paragraph is usually
-defending a decision rather than explaining one, so look at the code before you polish the
-prose.
+Keep each function responsible for one thing. Keep side effects at explicit
+boundaries. Put shared state behind the module that owns it. Add dependencies
+through the project's package manager.
 
-## Implementing
+## Verify
 
-Investigate before asking. Most questions are answered by the repository, its history, or
-its docs. Decide from that evidence, then state the decision so it can be overridden.
-Ask only for facts the repository cannot provide. Ask before writing code around an
-undecided choice.
+Use the real test suite and one direct check of the behavior you changed. Show
+the output that proves a failure. Treat an unverified claim as unknown.
 
-Add dependencies through the package manager's command (`npm install`, `uv add`,
-`cargo add`, and so on). Do not hand-edit the manifest.
+## Comments and documentation
 
-Comments earn their place when they explain non-obvious intent, a rejected alternative, or
-an external quirk. Comments must not restate code or summarize material that belongs in a
-document. They must not narrate how the code used to work or what used to fail; the
-commit message carries that. Use a repository comment checklist when one exists.
+Comments preserve local knowledge that names and structure cannot express:
+invariants, external behavior, constraints, or a non-obvious decision. They do
+not narrate control flow or history.
 
-## Diagnosing
+Put workflow and subsystem explanations in the document responsible for them.
+Keep one source of truth for each rule. Read rules/comments.md before a comment
+cleanup and the focused document before changing a documented contract.
 
-When a server, API, or log stream is live and reachable, inspect it before reading source
-to guess. Source shows intent. Live state shows behavior. State conclusions at the level of
-confidence the evidence supports.
+## Commit
 
-## Verifying
-
-Use the project's real test suite plus one direct check, such as a dev server, curl, or
-REPL. A scratch test that checks one literal output is not verification.
-
-## Documenting
-
-Update documentation after the implementation it describes is accepted. Do not document a
-moving design twice.
-
-## Committing
-
-Follow repository commit rules when they exist. Never add an AI credit, session link, or
-`Co-Authored-By` trailer unless the repository explicitly requires it.
-
+Follow the repository's commit rules. Never add an AI credit, session link, or
+Co-Authored-By trailer unless the repository explicitly requires it.

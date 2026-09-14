@@ -5,7 +5,8 @@ description: Dispatch project work to agents in isolated worktrees, supervise th
 
 # Crew
 
-`docs/commands.md` is the command reference. `docs/concepts.md` defines the lifecycle.
+`docs/commands.md` is the command reference. `docs/concepts.md` defines the runtime
+model. `docs/operations.md` records live recovery and review contracts.
 This skill defines the brief, supervision, and decision boundaries.
 
 ## Write the brief

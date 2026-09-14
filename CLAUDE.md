@@ -2,30 +2,28 @@
 
 # Captain
 
-This repo stores briefs, plans, reports, cases, and task records. Project worktrees store
-source changes. `CAP_WORK_ROOT` keeps those worktrees outside this repo so project agents
-do not inherit its instructions through an ancestor directory.
+This repository stores briefs, plans, reports, cases, and task records. Project
+worktrees store source changes. CAP_WORK_ROOT keeps those worktrees outside this
+repository so project agents do not inherit these instructions.
 
-Read `map.md` for the project inventory; `cap map` generates it from this
-machine, so it is not tracked. Run `cap reconcile` for the current task state.
-Use `cap help` for command flags. Read the focused document in `docs/` when a workflow
-needs explanation.
+The operator's session is:
 
-The usual delivery path is:
+1. Orient from the project map and current task state.
+2. Write a brief with an outcome and evidence.
+3. Dispatch the task into an isolated project worktree.
+4. Supervise the session and inspect its output.
+5. Check, verify, and review the result.
+6. Commit and land only after the result is accepted.
 
-1. Write a brief here.
-2. Run `cap spawn` to create the worktree and start the agent session.
-3. Supervise with `cap crew` and `cap watch`.
-4. Run `cap check`, then `cap cleanup`.
-5. Run `cap commit` and `cap land` only after the result is accepted.
+Agents leave source changes uncommitted. Captain owns checks, commit creation,
+delivery, and the decision to land or discard work.
 
-Agents do not commit or deliver. The captain decides whether work lands or is discarded.
-`cap check` compares tracked worktree changes with the base and lists untracked files.
+Read docs/operations.md when a gate, check, session, quota reading, or queued
+message behaves unexpectedly. Read docs/architecture.md for state ownership and
+module boundaries. Read docs/commands.md for command flags.
 
-For comment cleanup, read `rules/comments.md`. For commit shape, read `rules/commits.md`.
-For code style, read `rules/code.md`. For gate economics and known pipeline pitfalls
-(stale-base false positives, the trust-file race, session-limit recognition), read
-`docs/pipeline-notes.md` before running many `cap gate` rounds on the same task.
+Read rules/comments.md for comment cleanup, rules/commits.md for commit shape,
+and rules/code.md for code structure.
 
 ## Delivery economics
 
