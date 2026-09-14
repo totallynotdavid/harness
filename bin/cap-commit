@@ -92,7 +92,6 @@ Do not edit source files or the commit plan. Do not push."
 
 "$CAP_BIN/cap-ask" "$profile" "$prompt" --dir "$CAP_TREE" --label "commit-$slug"
 
-# shellcheck disable=SC1083 # HEAD^{tree} is git syntax, not a brace group
 final_tree=$(git -C "$CAP_TREE" rev-parse HEAD^{tree})
 if [ "$final_tree" = "$snap_tree" ]; then
   :
@@ -206,7 +205,6 @@ the plan. Do not push."
 	}
 fi
 
-# shellcheck disable=SC1083 # HEAD^{tree} is git syntax, not a brace group
 final_tree=$(git -C "$CAP_TREE" rev-parse HEAD^{tree})
 [ "$final_tree" = "$snap_tree" ] ||
 	die "$slug's history no longer matches its code after message repair: compare with: git -C $CAP_TREE diff $snap_ref HEAD"

@@ -1,6 +1,4 @@
-# This module is sourced by bin/lib.sh. Keep its public helpers stable.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 # A field of /proc/<pid>/stat, numbered from 1 (state) the way proc(5)
 # numbers them after the process name: 2 is ppid, 20 is starttime. The name

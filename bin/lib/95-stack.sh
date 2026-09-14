@@ -1,6 +1,4 @@
-# This module is sourced by bin/lib.sh. Keep its public helpers stable.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 # Stacked tasks follow their parent's recorded branch tip.
 

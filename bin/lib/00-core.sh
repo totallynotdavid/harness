@@ -1,6 +1,4 @@
-# This module is sourced by bin/lib.sh. Keep its public helpers stable.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 die() {
   printf 'cap: %s\n' "$*" >&2
@@ -30,7 +28,6 @@ task_load() {
   local f=$TASKS/$1/task.env
   [ -f "$f" ] || die "no such task '$1'"
 
-  # shellcheck disable=SC1090
   . "$f"
 }
 task_slugs() { [ -d "$TASKS" ] && ls -1 "$TASKS" 2>/dev/null || true; }

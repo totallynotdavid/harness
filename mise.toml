@@ -1,6 +1,5 @@
-# Captain gates itself. shellcheck already catches SC2318 (local var
-# expansion order); the check: tasks below cover shapes it has no
-# diagnostic for.
+# Captain gates itself. The project-wide ShellCheck exceptions live in
+# .shellcheckrc; the checks below cover shapes ShellCheck cannot diagnose.
 
 [tools]
 gh = "2.100.0"
@@ -10,8 +9,7 @@ shfmt = "3.14.1"
 
 [tasks.lint]
 description = "shellcheck every shell script in bin/ and tests/"
-# cap-history is python. SC1091 is a sourced file shellcheck cannot follow.
-run = "shellcheck -S warning -e SC1091 $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/hooks/*.sh tests/run tests/*.sh tests/static/lint-*)"
+run = "shellcheck --rcfile .shellcheckrc -S warning $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lib/*.sh bin/hooks/*.sh tests/run tests/*.sh tests/static/lint-*)"
 
 [tasks.test]
 description = "run Captain's behavior tests"

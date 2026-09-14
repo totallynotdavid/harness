@@ -10,7 +10,6 @@ rows=""
 for s in $(task_slugs); do
 	(task_load "$s") || continue
 
-	# shellcheck disable=SC1090
 	. "$TASKS/$s/task.env"
 
 	st=$(task_state "$s")

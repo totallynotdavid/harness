@@ -195,7 +195,6 @@ if [ -f "$conv" ] && grep -q '^```surfaces' "$conv"; then
 	# Read once into a variable: a `while ... done < <(sed ...)` loop can't
 	# tell sed failing from an empty surfaces block, and either way reports
 	# ok silently.
-	# shellcheck disable=SC2016 # Backticks are literal markdown fences.
 	surfaces=$(sed -n '/^```surfaces/,/^```$/p' "$conv") ||
 		note "could not read the surface map in $conv"
 	while read -r trigger _arrow required; do

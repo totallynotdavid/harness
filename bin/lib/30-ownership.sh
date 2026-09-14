@@ -1,6 +1,4 @@
-# This module is sourced by bin/lib.sh. Keep its public helpers stable.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 # Path ownership guard prevents collisions across tasks. Tasks declare paths
 # in state/tasks/<slug>/owns (one per line), never in task.env (which is sourced

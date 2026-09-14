@@ -1,6 +1,4 @@
-# This module is sourced by bin/lib.sh. Keep its public helpers stable.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 # Which commits the project's own tooling has actually passed on. cap-spawn
 # reads this to refuse forking a second task from a base nothing has verified.

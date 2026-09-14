@@ -1,6 +1,5 @@
 # bin/lib.sh - shared Captain configuration and module loader.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 set -euo pipefail
 
@@ -33,7 +32,6 @@ modules=(
   99-dispatch
 )
 for module in "${modules[@]}"; do
-  # shellcheck disable=SC1090
   . "$lib_dir/$module.sh"
 done
 unset lib_dir module modules

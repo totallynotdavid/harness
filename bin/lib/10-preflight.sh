@@ -1,6 +1,4 @@
-# This module is sourced by bin/lib.sh. Keep its public helpers stable.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 # Make worktree usable before agent starts. Worktrees have no dependencies
 # (node_modules is ignored). Runs every ecosystem's installer whose lockfile

@@ -1,6 +1,4 @@
-# This module is sourced by bin/lib.sh. Keep its public helpers stable.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 # One cap command per task at a time. Gate, check, commit, and land all
 # read-modify-write state/tasks/<slug>/. Lock is released on process exit.

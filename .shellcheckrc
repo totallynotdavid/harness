@@ -1,0 +1,13 @@
+# Captain checks each shell file on its own. Shared variables and sourced
+# functions therefore look unused or unresolved even though bin/lib.sh loads
+# them together.
+disable=SC1090
+disable=SC1091
+disable=SC2034
+
+# These are intentional forms that ShellCheck cannot identify from the source:
+# Git's HEAD^{tree} syntax, literal Markdown fences, and functions registered
+# through cap_exit_add.
+disable=SC1083
+disable=SC2016
+disable=SC2329

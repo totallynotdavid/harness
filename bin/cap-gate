@@ -47,7 +47,6 @@ review_pid_live() {
   case $cmd in *cap-review*) return 0 ;; esac
   return 1
 }
-# shellcheck disable=SC2329 # Registered with cap_exit_add below.
 review_cleanup() {
   local rc=$?
   if [ -n "$review_pid" ] && review_pid_live "$review_pid"; then

@@ -1,6 +1,4 @@
-# This module is sourced by bin/lib.sh. Keep its public helpers stable.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 # One line per queued message: pid (possibly empty, see session_identity),
 # a tab, then the text base64-encoded - not tr-flattened, so a multi-line

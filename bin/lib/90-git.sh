@@ -1,6 +1,4 @@
-# This module is sourced by bin/lib.sh. Keep its public helpers stable.
 # shellcheck shell=bash
-# shellcheck disable=SC2034
 
 git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
 
