@@ -81,7 +81,7 @@ Worth recording, because both are the failure mode the gates exist to prevent.
    the script with no output and exit 1. A gate that refuses correctly but says nothing is
    indistinguishable from a broken one. Fixed by swallowing the status deliberately, with
    a comment saying why.
-2. **The collision check hit the stale-base false positive** that `docs/pipeline-notes.md`
+2. **The collision check hit the stale-base false positive** that `docs/operations.md`
    already warns about. It diffed against the base *tip*, so after `aula-design-system`
    landed, every file in that merge looked like a change by every other task: 28 false
    positives on the first run. Fixed by diffing from the merge base.

@@ -1,39 +1,67 @@
 # Architecture
 
-Captain is a shell CLI. Each part of its state has one source of truth.
+Captain is a shell CLI with one source of truth for each kind of state. The
+entry point selects a command. The command loads shared modules. The modules
+read or update one state store under an explicit lock when the state is shared.
 
-| Concern | Source | Code |
+## Data ownership
+
+| Concern | Source | Main implementation |
 | --- | --- | --- |
-| Projects | `config/projects.tsv` | `bin/cap-map`, `bin/lib/` |
-| Models and profiles | `config/captain.conf` | `bin/lib/`, `bin/cap-spawn` |
-| Tasks | `state/tasks/<slug>/` | `bin/cap-spawn`, `bin/lib/` |
-| Worktrees | Git and `CAP_WORK_ROOT` | `bin/cap-spawn`, `bin/cap-drop` |
-| Restack snapshots | `state/restacks/` | `bin/cap-restack`, `bin/lib/` |
-| Waves | `state/waves/<name>.tsv` | `bin/cap-wave` |
-| Worktree provisioning | `config/tools/<project>` and lockfile detection | `bin/lib/`, `bin/cap-spawn` |
-| Verified commits | `state/verified/<project>/` | `bin/cap-verify` |
-| Path ownership | `CAP_OWNS` in `task.env` | `bin/cap-spawn`, `bin/hooks/guard-task-paths.sh` |
-| Measured memory cost | `state/peaks/<project>` | `bin/cap-verify`, `bin/lib/` |
-| Package-manager caches | `CAP_CACHE_ROOT` | `bin/lib/` |
-| Project conventions | `cases/<project>/conventions.md` | `bin/cap-conventions`, `bin/cap-check` |
-| Commit plans | `state/tasks/<slug>/commit-plan.json` | `bin/cap-commit`, `bin/cap-land` |
-| Behavior tests | `tests/` | `tests/run`, `mise run test` |
-| Static checks | `tests/static/lint-*` | `mise run lint`, `mise run check` |
-| Notes and reports | `notes/<project>/` | task and scout commands |
-| Project list | `map.md` (generated, untracked) | `bin/cap-map` |
-| Skill sources | `config/skill-sources.tsv` | `bin/cap-skills`, `bin/cap-explore` |
-| Installed skills | `.claude/skills/` | `bin/cap-skills` |
+| Projects | config/projects.tsv | bin/cap-map, bin/lib/ |
+| Models and profiles | config/captain.conf | bin/lib/, bin/cap-spawn |
+| Tasks | state/tasks/<slug>/ | bin/cap-spawn, bin/lib/ |
+| Worktrees | Git and CAP_WORK_ROOT | bin/cap-spawn, bin/cap-drop |
+| Restack snapshots | state/restacks/ | bin/cap-restack, bin/lib/ |
+| Waves | state/waves/<name>.tsv | bin/cap-wave |
+| Tool provisioning | config/tools/<project> and lockfiles | bin/lib/, bin/cap-spawn |
+| Verified project commits | state/verified/<project>/ | bin/cap-verify |
+| Path ownership | CAP_OWNS in task.env | bin/cap-spawn, bin/hooks/guard-task-paths.sh |
+| Memory measurements | state/peaks/<project> | bin/cap-verify, bin/lib/ |
+| Project conventions | cases/<project>/conventions.md | bin/cap-conventions, bin/cap-check |
+| Commit plans | state/tasks/<slug>/commit-plan.json | bin/cap-commit, bin/cap-land |
+| Behavior tests | tests/ | tests/run, mise run test |
+| Static checks | tests/static/lint-* | mise run lint, mise run check |
+| Reports and notes | notes/<project>/ | task and scout commands |
+| Project map | map.md | bin/cap-map |
+| Skill sources | config/skill-sources.tsv | bin/cap-skills, bin/cap-explore |
+| Installed skills | .claude/skills/ | bin/cap-skills |
 
-`bin/cap` sends each command to its `bin/cap-*` script. `bin/lib.sh` loads the ordered modules in `bin/lib/`; each module owns one shared concern such as configuration, tasks, panes, or Git.
+map.md and state/ are machine state. Their files are not product
+documentation unless a command explicitly records a report there.
 
-Captain does not copy project source into this repo. Tasks use Git worktrees under `CAP_WORK_ROOT`.
+## Command layers
 
-`cap land` moves finished work into project history or a remote pull request.
+- bin/cap resolves a command from this checkout's bin/ directory.
+- bin/cap-* scripts parse command arguments and own command-specific side effects.
+- bin/lib.sh loads shared modules in numeric order.
+- bin/lib/ modules own one cross-command concern: configuration, resources,
+  ownership, processes, locks, tasks, queues, state, Git, stacks, or dispatch.
+- bin/hooks/ protects the boundaries between a captain, an agent, and the
+  repositories they can write.
 
-## Branch naming
+The numbered modules are a load order, not a call graph. A module may use
+functions defined earlier in the load order. Keep a new shared function in the
+module that owns its state or external boundary.
 
-A ship task's branch is `cap/<slug>` - namespaced so Captain's own tooling can
-find and filter its branches (`git branch --list 'cap/*'`) without colliding
-with a human's branch of the same name. A `log/<slug>-<timestamp>` branch is
-a throwaway snapshot ref, created by `cap commit` to verify a history
-rewrite; it is deleted once verified, or kept for inspection if it is not.
+## State flow
+
+    brief
+      -> task.env and task worktree
+      -> agent output and status.log
+      -> check, verify, cleanup, and gate records
+      -> commit-plan.json and Git commits
+      -> pull request, merge, or scout report
+
+Commands that update task state take the task lock. cap send queues a message
+when a task is busy and delivers it after the holder releases the lock. Gate
+records include the fingerprint they reviewed, so a passing review is valid
+only for the tree it actually saw.
+
+## Branches
+
+A ship task uses cap/<slug>. The namespace lets Captain find its branches
+without colliding with a human branch of the same name. cap commit creates a
+temporary log/<slug>-<timestamp> snapshot while it rewrites the task history.
+The snapshot is deleted after the final tree matches the pre-commit tree and
+kept when the rewrite needs inspection.

@@ -1,6 +1,8 @@
 # Commands
 
-Run `cap help` for all flags.
+This is the exact command lookup for operators and maintainers. The
+[README](../README.md) describes the session that connects these commands.
+Run `cap help` when the installed script is the source of truth.
 
 ## Agents
 

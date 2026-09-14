@@ -1,81 +1,60 @@
-# Concepts
+# Runtime model
 
-## Captain and project worktrees
+Captain separates the operator's repository from the project repositories it
+works on.
 
-Captain stores briefs, notes, config, and task state. Project repos store the actual source code.
+## Repositories and worktrees
 
-Each task gets its own Git worktree under `CAP_WORK_ROOT`, outside the Captain repo. This prevents agents from changing Captain or inheriting its `CLAUDE.md`.
+This repository stores briefs, notes, configuration, and task state. Project
+repositories store project source. A task gets a project worktree under
+CAP_WORK_ROOT, outside this repository, so project agents cannot change Captain
+or inherit its CLAUDE.md.
 
-A `ship` task's worktree checks out a new branch, since its changes will be committed. A `scout` task never commits, so it gets a detached worktree with no branch instead - a clean, isolated view of the base, not the primary checkout's possibly-dirty working directory.
-
-An agent is told only what its task needs: where to work and what to leave uncommitted, not branch names, worktree paths, or how Captain will deliver the result.
+A ship task uses a branch because it will produce a deliverable. A scout task
+uses a detached worktree because it produces a report and no branch.
 
 ## Task lifecycle
 
-1. `cap spawn` creates the branch, worktree, task record, and agent session.
-2. `cap crew`, `cap peek`, and `cap watch` show what agents are doing.
-3. `cap check` checks changed and untracked files for problems.
-4. `cap cleanup` cleans up comments and readability.
-5. `cap commit` stages and commits the changes.
-6. `cap gate` runs two independent reviews before the work lands.
-7. `cap land` opens a pull request or merges the branch.
-8. `cap drop` removes the task after it is finished or explicitly discarded.
+The task record is the durable handoff between commands:
 
-`cap commit` snapshots the worktree's full state before a planner agent groups
-the changes, under a `log/<slug>-<timestamp>` branch. Captain then writes the
-planned commits. If the final commit sequence's tree matches the snapshot, the
-history is promoted and the snapshot is deleted. If it does not, `cap commit`
-fails and keeps the snapshot, since something changed the code, not just its
-shape.
+    brief -> spawned -> working -> checked -> reviewed -> committed -> landed
 
-A task can also be stacked on another task. `cap spawn --stack <parent-slug>` cuts it from the parent's branch instead of the base branch.
+The agent owns working. Captain owns checks, reviews, commit creation, and
+delivery. A task can stop at blocked, needs-input, or failed; those are reasons
+to inspect the record, not successful completion.
 
-`cap restack <slug>` moves stacked tasks onto the parent's current tip after it changes. `cap land <slug> --merge` does the same after the parent lands.
+The current status combines live pane state, gate records, and the task log.
+The log explains why a task stopped. It does not prove that the task is still
+running or ready to land.
 
-Agents write code. Captain handles commits, delivery, and cleanup.
+Stacked tasks add one dependency: a child records its parent's branch tip.
+Restacking moves the child onto a new parent tip and updates descendants in the
+same pass. The child worktree must be clean before that rewrite.
 
-## Project modes
+## Delivery modes
 
-`pr` pushes the branch and opens a pull request.
+- pr pushes a branch and opens a pull request.
+- local merges the branch into the configured base.
+- scout writes a report without delivering source changes.
 
-`local` merges the branch into the base branch.
+The project registry supplies the mode. A scout task always uses scout mode.
 
-`scout` writes a report without delivering code changes.
+## Dispatch roles
 
-## Models, profiles, tiers and roles
+A profile names a harness, model, and default effort. A role names the kind of
+work being dispatched. A tier groups profiles that can perform that role.
 
-A profile is a harness, a model and a default effort, named in `config/captain.conf`.
-`cap ask <profile>` runs a one-shot agent under one.
+Quota selects an available profile inside the role's tier. It does not lower
+the requested capability. If no profile in the tier is available, Captain
+waits by refusing the dispatch and reports the capacity it observed.
 
-A tier is a capability class: `heavy`, `standard`, `cheap`. Its members are interchangeable
-for the kind of thinking it names and live on different accounts on purpose. Tiers stop at
-`opus` and `terra`; the profiles above them belong to no tier and are asked for by name.
-
-A role is what a dispatch is for: `crew`, `scout`, `gate-a`, `gate-b`, `chore`. Each role
-belongs to a tier and does not leave it.
-
-Captain resolves a role at the moment of dispatch, from measurements only: the account's
-rate-limit windows, and whether a harness has actually rejected a profile. A full window
-moves work to a peer on another account. It never moves work to a smaller model, and when
-no peer is admissible Captain refuses and says when capacity returns.
-
-`cap budget` shows the readings, the tiers, and what each role resolves to.
-
-The model and effort a profile names are facts about the account, so Captain asks rather
-than trusting the table. The codex app-server answers `model/list` with every model the
-account can reach and the efforts each one accepts, and `cap models` prints that against
-`CAP_ASK_PROFILES`: a profile naming a model or an effort the account does not have is
-refused by `cap ask` and `cap spawn` before a session starts. The claude harness publishes
-no equivalent, so its aliases go unchecked and `cap models` reports only what the status
-line has watched a session resolve them to.
-
-Which tier a model belongs to is not in that answer and never will be. The catalog says
-`gpt-5.6-terra` exists and accepts `xhigh`. It does not say terra is the right reviewer for
-work that has to be right the first time. Facts are discovered; that judgment stays in
-`config/captain.conf`.
+cap budget exposes the measurements and the resulting choices. The catalog of
+models is a harness fact. Tier membership and role capability remain Captain's
+configuration.
 
 ## Project conventions
 
-`cases/<project>/conventions.md` stores project-specific checks.
-
-The project's own instruction files are still the source of truth. `cap conventions` creates the file. Update it when you find a check worth reusing.
+cases/<project>/conventions.md stores checks worth reusing for one project.
+The project repository's own instruction files remain authoritative. Captain
+records a convention when it helps a future task reach the project's checks
+without rediscovering them.
