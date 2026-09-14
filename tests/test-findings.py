@@ -153,8 +153,7 @@ for name, records, want in checks:
     if got != want:
         failures.append(f"ledger {name}: {got} miss(es), want {want}")
 
-# A ledger commit that fails is a failure, and the next run commits what the
-# failed one left written but uncommitted.
+# A failed ledger commit leaves its written entry for the next run.
 hub = tempfile.mkdtemp()
 os.makedirs(os.path.join(hub, "cases", "p"))
 book = os.path.join(hub, "cases", "p", "conventions.md")

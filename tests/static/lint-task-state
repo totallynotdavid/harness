@@ -2,8 +2,7 @@
 # lint-task-state - fail if cap-crew or crew-status.sh decide a task's
 # stopped/running state from a status.log verb instead of task_state.
 # herdr is the ground truth for whether a task has stopped; a status.log
-# verb only names a reason, never the state itself (see
-# docs/pipeline-notes.md, "Task state is not a log word").
+# verb only names a reason, never the state itself.
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/../.."
