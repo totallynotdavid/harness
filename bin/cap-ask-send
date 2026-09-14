@@ -38,7 +38,7 @@ def main():
     target = argv[0]
     rest = argv[1:]
     if rest and rest[0] == "--force":
-        rest = rest[1:]
+        raise caplib.CapError(USAGE)
     if rest and rest[0] == "--take":
         raise caplib.CapError("--take only applies to task agents")
     text = " ".join(rest)

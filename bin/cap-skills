@@ -88,7 +88,7 @@ case ${1:-list} in
     printf 'added %s from %s\n' "$name" "$spec"
     ;;
 
-  rm|remove)
+  rm)
     name=${2:?usage: cap skills rm <name>}
 
     grep -qE "/$name\$" "$SNAPSHOTS" 2>/dev/null ||

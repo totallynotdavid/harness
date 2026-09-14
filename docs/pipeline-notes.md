@@ -139,8 +139,8 @@ defect gate exists to catch.
 Each check's stdout and stderr first go to a regular log file, then `cap verify` copies
 that completed log to its own stdout. A detached service can keep the log open, but it
 cannot keep a caller's pipe open after `cap verify` exits. `cap doctor --remote HOST`
-asks the other host to locate its own Captain checkout, with `--path` for an explicit
-location, before comparing the two reports.
+asks the other host to resolve its Captain checkout from `CAP_HOME` or `cap` on its
+PATH, with `--path` for an explicit location, before comparing the two reports.
 
 The local doctor also keeps `~/.local/bin/cap` linked to the checkout and adds that
 directory to `~/.profile` when the profile does not already mention it. `bin/mise-doctor`

@@ -109,9 +109,8 @@ diff_report() {
 
 remote_report() {
   local host=$1 cap_path=${2:-}
-  # The remote shell discovers CAP_HOME from its environment, the cap binary
-  # on PATH, or a Captain checkout under HOME. The local host never guesses a
-  # path that only exists on the other machine.
+  # The remote shell takes CAP_HOME, or resolves the cap binary on PATH. The
+  # local host never guesses a path that only exists on the other machine.
   ssh "$host" bash -s -- "$cap_path" <<'REMOTE'
 set -euo pipefail
 
@@ -124,9 +123,6 @@ else
 	cap_bin=$(command -v cap 2>/dev/null || true)
 	if [ -n "$cap_bin" ]; then
 		cap_home=$(cd "$(dirname "$(readlink -f "$cap_bin")")/.." && pwd)
-	else
-		doctor=$(find "$HOME" -type f -path '*/bin/cap-doctor' -print -quit 2>/dev/null || true)
-		cap_home=${doctor%/bin/cap-doctor}
 	fi
 fi
 
@@ -157,10 +153,9 @@ case ${1:-} in
   if remote_report "$host" "$remote_path" >"$remote"; then
     diff_report "$remote"
     rc=$?
-    rm -f "$remote"
-    exit "$rc"
+  else
+    rc=$?
   fi
-  rc=$?
   rm -f "$remote"
   exit "$rc"
   ;;
