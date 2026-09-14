@@ -146,13 +146,22 @@ fi
 # Two signals about added comments, both reported rather than refused. A
 # comment that narrates history is stating what the commit message already
 # says, and a comment block past six lines is usually defending a decision
-# instead of explaining one. Both point at code worth a second look.
+# instead of explaining one. Both point at code worth a second look. Generated
+# Wails files are excluded, and a shebang is not a comment.
 printf '\n## comments\n'
 history=$(printf '%s\n' "$diff_text" | awk '
-	/^\+\+\+/ { next }
+	/^\+\+\+ / {
+		path = $0
+		sub(/^\+\+\+ (b\/|a\/)/, "", path)
+		generated = path ~ /(^|\/)frontend\/wailsjs\// ||
+			path ~ /(^|\/)build\/(windows|darwin)\//
+		next
+	}
+	generated { next }
+	/^\+[[:space:]]*#!/ { next }
 	/^\+[[:space:]]*(\/\/|#|\*|--)/ {
 		line = tolower($0)
-		if (line ~ /used to |previously|no longer|before this|originally|was (failing|timing|broken)|had to be/) {
+		if (line ~ /used to (be|have|[[:alpha:]]+ed)([[:space:]]|$)|previously|no longer|before this|originally|was (failing|timing|broken)|had to be/) {
 			print substr($0, 2)
 			if (++hits >= 8) exit
 		}
@@ -163,7 +172,16 @@ history=$(printf '%s\n' "$diff_text" | awk '
 }
 
 long=$(printf '%s\n' "$diff_text" | awk '
-	/^\+\+\+/ { next }
+	/^\+\+\+ / {
+		path = $0
+		sub(/^\+\+\+ (b\/|a\/)/, "", path)
+		generated = path ~ /(^|\/)frontend\/wailsjs\// ||
+			path ~ /(^|\/)build\/(windows|darwin)\//
+		n = 0
+		next
+	}
+	generated { next }
+	/^\+[[:space:]]*#!/ { n = 0; next }
 	/^\+[[:space:]]*(\/\/|#|\*|--)/ { n++; next }
 	{ if (n > 6) c++; n = 0 }
 	END { if (n > 6) c++; print c + 0 }')
