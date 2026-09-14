@@ -15,12 +15,12 @@ run = "shellcheck -S warning -e SC1091 $(grep -LE '^#!.*python' bin/cap bin/cap-
 description = "find a bare `[ cond ] && cmd` whose false status escapes into set -e"
 run = "bin/lint-andlist"
 
-[tasks."check:verdict"]
-description = "assert gate_verdict reads the verdict a report states, across known report shapes"
-run = "bin/lint-gate-verdict"
+[tasks."check:findings"]
+description = "assert cap gate accepts a review only when its findings cover the diff, and computes the verdict from them"
+run = "bin/lint-findings"
 
 [tasks."check:usage-shape"]
-description = "assert usage_write and bin/cap-statusline agree on the state/usage record shape and rounding"
+description = "assert bin/cap-statusline's own usage output matches its shape and rounding"
 run = "bin/lint-usage-shape"
 
 [tasks."check:procsub"]
@@ -39,9 +39,21 @@ run = "bin/lint-dead-flag"
 description = "fail if cap-crew or crew-status.sh read status.log as the sole evidence a task is running"
 run = "bin/lint-task-state"
 
+[tasks."check:gate-since"]
+description = "assert where a plain cap gate round reviews from after each kind of earlier PASS"
+run = "bin/lint-gate-since"
+
+[tasks."check:turn"]
+description = "assert a dispatcher reads answers, tool-call endings, harness failures and token counts from turn payloads"
+run = "bin/lint-turn"
+
+[tasks."check:papercuts"]
+description = "fail when paper-cuts.md is not the rendering of paper-cuts.jsonl, or an entry's subject is not part of Captain"
+run = "bin/lint-papercuts"
+
 [tasks."check:syntax"]
-description = "parse every shell script without running it"
-run = "for f in $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lint-* bin/hooks/*.sh); do bash -n \"$f\" || exit 1; done"
+description = "parse every shell and python script without running it"
+run = "for f in $(grep -LE '^#!.*python' bin/cap bin/cap-* bin/lib.sh bin/lint-* bin/hooks/*.sh); do bash -n \"$f\" || exit 1; done; for f in bin/caplib.py $(grep -lE '^#!.*python' bin/cap-* bin/lint-*); do python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' \"$f\" || exit 1; done"
 
 # No format-check task yet. shfmt would rewrite 1828 lines, because bin/ carries
 # two coexisting styles, and a gate that fails on every run teaches people to
