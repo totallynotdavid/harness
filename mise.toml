@@ -16,6 +16,7 @@ run = "shellcheck -S warning -e SC1091 $(grep -LE '^#!.*python' bin/cap bin/cap-
 [tasks.check]
 description = "run Captain's lint and check tasks"
 depends = [
+  "doctor",
   "lint",
   "check:andlist",
   "check:findings",
@@ -34,6 +35,10 @@ depends = [
   "check:papercuts",
   "check:syntax",
 ]
+
+[tasks.doctor]
+description = "diagnose mise and validate Captain's repository setup"
+run = "bin/mise-doctor"
 
 [tasks."check:andlist"]
 description = "find a bare `[ cond ] && cmd` whose false status escapes into set -e"

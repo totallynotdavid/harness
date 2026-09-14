@@ -142,6 +142,11 @@ cannot keep a caller's pipe open after `cap verify` exits. `cap doctor --remote 
 asks the other host to locate its own Captain checkout, with `--path` for an explicit
 location, before comparing the two reports.
 
+The local doctor also keeps `~/.local/bin/cap` linked to the checkout and adds that
+directory to `~/.profile` when the profile does not already mention it. `bin/mise-doctor`
+is the repository-facing setup check behind `mise run doctor`; the built-in `mise doctor`
+remains the host-level diagnostic.
+
 ## Task state is not a log word
 
 On 2026-09-11 `bin/hooks/crew-status.sh` stayed silent for ten minutes on a task that had

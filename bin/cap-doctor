@@ -4,10 +4,57 @@
 
 usage="usage: cap doctor [--diff REPORT] | cap doctor --remote HOST [--path CAP_HOME]"
 
+path_has() {
+  case ":${PATH:-}:" in
+    *":$1:"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Keep the link in ~/.local/bin so mise activation does not discard it when it
+# rebuilds the managed part of PATH.
+ensure_user_entrypoint() {
+  local user_bin=${CAP_USER_BIN:-$HOME/.local/bin}
+  local entry=$user_bin/cap source profile path_line profile_has_path=0
+
+  [ -x "$CAP_BIN/cap" ] || die "Captain entrypoint is missing: $CAP_BIN/cap"
+  source=$(readlink -f "$CAP_BIN/cap")
+  mkdir -p "$user_bin"
+
+  if [ -e "$entry" ] || [ -L "$entry" ]; then
+    [ "$(readlink -f "$entry" 2>/dev/null || true)" = "$source" ] ||
+      die "$entry already points to another command; move it before running cap doctor"
+  else
+    ln -s "$source" "$entry"
+  fi
+
+  if path_has "$user_bin"; then
+    return 0
+  fi
+
+  profile=${CAP_PROFILE:-$HOME/.profile}
+  if [ "$user_bin" = "$HOME/.local/bin" ]; then
+    path_line='export PATH="$HOME/.local/bin:$PATH"'
+  else
+    path_line=$(printf 'export PATH="%s:$PATH"' "$user_bin")
+  fi
+  if [ -f "$profile" ]; then
+    if [ "$user_bin" = "$HOME/.local/bin" ] && grep -Fq '$HOME/.local/bin' "$profile"; then
+      profile_has_path=1
+    elif grep -Fq "$user_bin" "$profile"; then
+      profile_has_path=1
+    fi
+  fi
+  if [ "$profile_has_path" -eq 0 ]; then
+    [ ! -s "$profile" ] || printf '\n' >>"$profile"
+    printf '%s\n' "$path_line" >>"$profile"
+  fi
+}
+
 # One "key<TAB>value" line per fact, sorted, so two hosts' reports diff line
 # by line. Values are what differs between hosts, never timestamps.
 report() {
-  local tool v
+  local tool v user_bin entry
   for tool in bash git jq python3 mise herdr claude codex gh shellcheck shfmt flock; do
     if have "$tool"; then
       v=$("$tool" --version 2>&1 | grep -m1 '[0-9]' | tr '\t' ' ') || true
@@ -24,6 +71,14 @@ report() {
   printf 'projects.tsv checksum\t%s\n' "$(sha256sum "$PROJECTS" 2>/dev/null | cut -c1-16 || echo none)"
   printf 'env HERDR_ENV\t%s\n' "${HERDR_ENV:+set}"
   printf 'env CAP_WORK_ROOT\t%s\n' "$CAP_WORK_ROOT"
+  user_bin=${CAP_USER_BIN:-$HOME/.local/bin}
+  entry=$user_bin/cap
+  printf 'cap user entrypoint\t%s\n' "$(readlink -f "$entry" 2>/dev/null || echo missing)"
+  if path_has "$user_bin"; then
+    printf 'cap user bin on PATH\tyes\n'
+  else
+    printf 'cap user bin on PATH\tno (open a new shell)\n'
+  fi
   printf 'gh auth\t%s\n' "$(gh auth status >/dev/null 2>&1 && echo ok || echo 'not logged in')"
   printf 'claude status line\t%s\n' "$(jq -r '.statusLine.command // "none"' "$HOME/.claude/settings.json" 2>/dev/null || echo none)"
   # Under pipefail a failing codex fails the pipeline after head has printed,
@@ -84,11 +139,13 @@ REMOTE
 }
 
 case ${1:-} in
-'') report | sort ;;
+'') ensure_user_entrypoint; report | sort ;;
 --diff)
+  ensure_user_entrypoint
   diff_report "${2:?$usage}"
   ;;
 --remote)
+  ensure_user_entrypoint
   host=${2:?$usage}
   shift 2
   remote_path=""

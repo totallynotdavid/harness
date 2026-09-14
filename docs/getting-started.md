@@ -5,7 +5,13 @@ Install Git, `mise`, Herdr, and Claude Code or Codex.
 
 ```sh
 mise install
+mise run doctor
 ```
+
+The repository doctor runs mise's host diagnostics, confirms this checkout's `mise.toml`
+is active, checks that its tools are installed, and validates the task graph. Running
+`cap doctor` also installs a `~/.local/bin/cap` link to this checkout so later shells can
+find Captain.
 
 Point Claude Code's status line at Captain, in `~/.claude/settings.json`. Captain reads the
 account's rate-limit windows from what the harness already hands that line, and uses them

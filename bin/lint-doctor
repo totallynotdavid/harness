@@ -17,10 +17,13 @@ chmod +x "$scratch/bin/ssh"
 mkdir -p "$scratch/remote-bin"
 ln -s "$root/bin/cap" "$scratch/remote-bin/cap"
 
-if ! result=$(CAP_HOME="$root" FAKE_REMOTE_BIN="$scratch/remote-bin" PATH="$scratch/bin:$PATH" "$root/bin/cap-doctor" --remote lint-host); then
+if ! result=$(HOME="$scratch/home" CAP_HOME="$root" FAKE_REMOTE_BIN="$scratch/remote-bin" PATH="$scratch/bin:$PATH" "$root/bin/cap-doctor" --remote lint-host); then
 	printf 'lint-doctor: SSH-backed comparison failed\n' >&2
 	exit 1
 fi
 
 [ "$result" = 'no differences' ]
+[ -L "$scratch/home/.local/bin/cap" ]
+[ "$(readlink -f "$scratch/home/.local/bin/cap")" = "$root/bin/cap" ]
+[ "$(grep -Fc 'export PATH="$HOME/.local/bin:$PATH"' "$scratch/home/.profile")" -eq 1 ]
 printf 'lint-doctor: remote Captain discovery and comparison work\n'
