@@ -270,23 +270,23 @@ usage_read() {
 usage_detail() {
   local harness=$1 src=$2
   case $harness:$src in
-    claude:cache) printf 'from the harness cache in ~/.claude.json' ;;
-    claude:*)
-      usage_files || return 0
-      jq -rs --arg h "$harness" '
+  claude:cache) printf 'from the harness cache in ~/.claude.json' ;;
+  claude:*)
+    usage_files || return 0
+    jq -rs --arg h "$harness" '
         map(select((.harness // "claude") == $h))
         | if length == 0 then "" else
             (max_by(.at)
              | "5h \(.five_hour.pct // 0 | floor)%, 7d \(.seven_day.pct // 0 | floor)%, read \(now - .at | floor)s ago")
           end' "$CAP_USAGE_DIR"/*.json 2>/dev/null || true
-      ;;
-    codex:*)
-      codex_rate_limits | jq -r '
+    ;;
+  codex:*)
+    codex_rate_limits | jq -r '
         (if .source == "app-server" then "live from the codex app-server"
          else "from the newest codex rollout" end) as $src
         | "5h \(.primary.used_percent // 0 | floor)%, 7d \(.secondary.used_percent // 0 | floor)%, \($src)"
       ' 2>/dev/null || true
-      ;;
+    ;;
   esac
 }
 

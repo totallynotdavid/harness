@@ -55,8 +55,11 @@ project_peak_record() {
   mkdir -p "$PEAKS"
   cur=$(cat "$PEAKS/$project" 2>/dev/null || echo 0)
   case $cur in '' | *[!0-9]*) cur=0 ;; esac
-  [ "$cur" -gt 0 ] || { printf '%s\n' "$mb" >"$PEAKS/$project"; return 0; }
-  next=$(( (cur * 3 + mb + 3) / 4 ))
+  [ "$cur" -gt 0 ] || {
+    printf '%s\n' "$mb" >"$PEAKS/$project"
+    return 0
+  }
+  next=$(((cur * 3 + mb + 3) / 4))
   [ "$next" -ge "$mb" ] || next=$mb
   printf '%s\n' "$next" >"$PEAKS/$project"
 }

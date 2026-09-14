@@ -57,8 +57,16 @@ owns_overlap() {
     pa=$(owns_prefix "$pa")/
     for pb in "${b[@]}"; do
       pb=$(owns_prefix "$pb")/
-      case $pa in "$pb"*) printf '%s overlaps %s\n' "${pa%/}" "${pb%/}"; return 0 ;; esac
-      case $pb in "$pa"*) printf '%s overlaps %s\n' "${pa%/}" "${pb%/}"; return 0 ;; esac
+      case $pa in "$pb"*)
+        printf '%s overlaps %s\n' "${pa%/}" "${pb%/}"
+        return 0
+        ;;
+      esac
+      case $pb in "$pa"*)
+        printf '%s overlaps %s\n' "${pa%/}" "${pb%/}"
+        return 0
+        ;;
+      esac
     done
   done
   return 1
@@ -70,7 +78,10 @@ owns_overlap() {
 owns_regex() {
   case $1 in
   *[*?]*) ;;
-  *) printf '^%s(/.*)?$' "$(printf '%s' "$1" | sed 's/[].^$+(){}|\[]/\\&/g')"; return ;;
+  *)
+    printf '^%s(/.*)?$' "$(printf '%s' "$1" | sed 's/[].^$+(){}|\[]/\\&/g')"
+    return
+    ;;
   esac
   printf '%s' "$1" | awk '{
     out = ""

@@ -12,12 +12,15 @@ set -u
 
 dir=${CAP_TURN_DIR:-}
 if [ -z "$dir" ] || ! mkdir -p "$dir" 2>/dev/null; then
-	cat >/dev/null
-	exit 0
+  cat >/dev/null
+  exit 0
 fi
 
 # Written whole, then renamed, so a reader never parses half a payload.
-tmp=$(mktemp "$dir/.event.XXXXXX" 2>/dev/null) || { cat >/dev/null; exit 0; }
+tmp=$(mktemp "$dir/.event.XXXXXX" 2>/dev/null) || {
+  cat >/dev/null
+  exit 0
+}
 cat >"$tmp"
 case ${1:-turn} in
 start) name=session.start ;;

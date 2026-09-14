@@ -68,7 +68,10 @@ preflight_tools() {
     case ${kind:-} in
     '' | \#*) continue ;;
     mise)
-      have mise || { warn "mise is not installed; cannot provide $rest"; continue; }
+      have mise || {
+        warn "mise is not installed; cannot provide $rest"
+        continue
+      }
       have "${rest%%@*}" && continue
       mise use -g "$rest" || warn "could not install $rest"
       ;;
@@ -101,7 +104,7 @@ compose_file() {
   files=$(find "$tree" -maxdepth 3 -type f \( \
     -name compose.yaml -o -name compose.yml -o \
     -name docker-compose.yaml -o -name docker-compose.yml \
-  \) -print 2>/dev/null || true)
+    \) -print 2>/dev/null || true)
   [ -n "$files" ] || return 0
   printf '%s\n' "$files" | sort | head -1
 }

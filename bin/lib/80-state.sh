@@ -90,7 +90,10 @@ pane_wait_working() {
 pane_agent_status() {
   local p
   p=$(task_pane "$1")
-  [ -n "$p" ] || { printf 'unknown'; return; }
+  [ -n "$p" ] || {
+    printf 'unknown'
+    return
+  }
   herdr agent get "$p" 2>/dev/null | jq -r '.result.agent.agent_status // "unknown"' 2>/dev/null ||
     printf 'unknown'
 }
@@ -150,7 +153,7 @@ task_status_lines() {
   if [ -f "$cursor" ]; then
     IFS= read -r start <"$cursor" || start=0
     case $start in
-      ''|*[!0-9]*) start=0 ;;
+    '' | *[!0-9]*) start=0 ;;
     esac
   fi
 
@@ -166,18 +169,21 @@ task_status_lines() {
   # A failed tail is invisible to the loop above: zero iterations reads the
   # same as nothing new logged. Caught here instead of moving the cursor
   # past a read that never happened.
-  wait "$pid" || { warn "$1: could not read status.log past byte $read_from"; return 0; }
+  wait "$pid" || {
+    warn "$1: could not read status.log past byte $read_from"
+    return 0
+  }
 
   printf '%s\n' "$start" >"$cursor"
 }
 
 task_status_verb() {
   case $1 in
-    done:*)       printf 'done' ;;
-    blocked:*)    printf 'blocked' ;;
-    needs-input:*) printf 'needs-input' ;;
-    failed:*)     printf 'failed' ;;
-    working:*)    printf 'working' ;;
+  done:*) printf 'done' ;;
+  blocked:*) printf 'blocked' ;;
+  needs-input:*) printf 'needs-input' ;;
+  failed:*) printf 'failed' ;;
+  working:*) printf 'working' ;;
   esac
 }
 
@@ -204,15 +210,18 @@ task_status_latest() {
 # all (unknown, or a harness herdr does not instrument).
 task_agent_state() {
   local slug=$1 agent age
-  pane_live "$slug" || { printf exited; return; }
+  pane_live "$slug" || {
+    printf exited
+    return
+  }
   agent=$(pane_agent_status "$slug")
   case $agent in
-    working | blocked) printf '%s' "$agent" ;;
-    idle | done) printf idle ;;
-    *)
-      age=$(task_state_stale_age "$slug")
-      if [ "$age" -ge "$CAP_IDLE_SECS" ]; then printf idle; else printf working; fi
-      ;;
+  working | blocked) printf '%s' "$agent" ;;
+  idle | done) printf idle ;;
+  *)
+    age=$(task_state_stale_age "$slug")
+    if [ "$age" -ge "$CAP_IDLE_SECS" ]; then printf idle; else printf working; fi
+    ;;
   esac
 }
 
@@ -225,7 +234,10 @@ task_state() {
 
   agent=$(task_agent_state "$slug")
   case $agent in
-    working | blocked) printf '%s' "$agent"; return ;;
+  working | blocked)
+    printf '%s' "$agent"
+    return
+    ;;
   esac
 
   # herdr has now settled *whether* it stopped; the log is read only for
@@ -236,7 +248,10 @@ task_state() {
   if [ "$agent" != exited ]; then
     verb=$(task_status_latest "$slug" 2>/dev/null || true)
     case $verb in
-      blocked | needs-input | failed) printf '%s' "$verb"; return ;;
+    blocked | needs-input | failed)
+      printf '%s' "$verb"
+      return
+      ;;
     esac
   fi
 

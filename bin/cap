@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
-# cap - run Captain commands.
 set -euo pipefail
 
-# CAP_HOME respects an inherited override, same as lib.sh (which this
-# script does not source). CAP_BIN never does: always this script's own
-# directory, so the dispatch below runs the sibling that shipped with it.
+# CAP_HOME may be overridden; CAP_BIN always points to this script's directory.
 CAP_HOME=${CAP_HOME:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}
-export CAP_HOME
 CAP_BIN=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+
+export CAP_HOME
 export CAP_BIN
 
 usage() {
-cat <<'EOF'
+  cat <<'EOF'
 cap <command> - run coding agents from one place.
 
 AGENTS
@@ -51,7 +49,7 @@ REPO
   cap reconcile [--remote]                    show open work across all projects
   cap papercut add <subject> "<text>"         log a problem in Captain (cap papercut subjects)
   cap project <name> [mode] [model]           show or change project settings
-  cap grant <slug> <path> [--take]             add a path to a task's ownership boundary
+  cap grant <slug> <path> [--take]            add a path to a task's ownership boundary
   cap skills list|add|rm|sync|diff            manage skill snapshots
   cap conventions <project>                   create project conventions
   cap explore <owner/repo> [--fresh]          clone a repo for inspection
@@ -65,10 +63,18 @@ Config:   config/captain.conf
 EOF
 }
 
-cmd=${1:-help}; shift || true
+cmd=${1:-help}
+shift || true
+
 case $cmd in
   spawn|crew|peek|send|watch|land|restack|drop|ask|budget|doctor|models|cleanup|commit|gate|step|map|reconcile|papercut|project|grant|skills|check|verify|conventions|explore|history|sessions|wave)
-    exec "$CAP_BIN/cap-$cmd" "$@" ;;
-  help|-h|--help) usage ;;
-  *) usage >&2; exit 1 ;;
+    exec "$CAP_BIN/cap-$cmd" "$@"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
 esac

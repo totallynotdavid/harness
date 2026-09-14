@@ -29,7 +29,7 @@ tree=$(task_field "$slug" CAP_TREE 2>/dev/null || true)
 [ -n "$tree" ] || exit 0
 
 path=$(printf '%s' "$input" |
-	jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')
+  jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')
 [ -n "$path" ] || exit 0
 case $path in
 /*) ;;
@@ -41,11 +41,11 @@ esac
 # its report there.
 case $path in
 "$CAP_HOME"/state/*)
-	printf 'BLOCKED: %s cannot write to Captain state. %s constrains this task.\n' \
-		"$slug" "${path#"$CAP_HOME"/}" >&2
-	printf 'Need it changed? Say so in your report; the captain changes it.\n' >&2
-	exit 2
-	;;
+  printf 'BLOCKED: %s cannot write to Captain state. %s constrains this task.\n' \
+    "$slug" "${path#"$CAP_HOME"/}" >&2
+  printf 'Need it changed? Say so in your report; the captain changes it.\n' >&2
+  exit 2
+  ;;
 esac
 
 case $path in
@@ -55,10 +55,10 @@ esac
 
 read -r -a globs <<<"$owns"
 if owns_claims "$rel" "${globs[@]}"; then
-	exit 0
+  exit 0
 fi
 
 printf 'BLOCKED: %s owns %s and nothing else. %s belongs to another task.\n' \
-	"$slug" "$owns" "$rel" >&2
+  "$slug" "$owns" "$rel" >&2
 printf 'Need it changed? Say so in your report; it becomes its own task.\n' >&2
 exit 2

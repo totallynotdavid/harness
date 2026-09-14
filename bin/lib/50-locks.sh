@@ -27,7 +27,7 @@ task_try_lock() {
   # survives into a child process either, so a child re-checking its
   # inherited CAP_LOCKS below has no depth of its own to track.
   if [ -n "${CAP_LOCK_FDS[$slug]:-}" ]; then
-    CAP_LOCK_DEPTH[$slug]=$(( ${CAP_LOCK_DEPTH[$slug]:-1} + 1 ))
+    CAP_LOCK_DEPTH[$slug]=$((${CAP_LOCK_DEPTH[$slug]:-1} + 1))
     return 0
   fi
   # Re-entrant: cap land can release via cap drop without deadlocking. The
@@ -36,7 +36,10 @@ task_try_lock() {
   mkdir -p "$dir"
   local fd
   exec {fd}>>"$dir/.lock"
-  flock -n "$fd" || { exec {fd}>&-; return 1; }
+  flock -n "$fd" || {
+    exec {fd}>&-
+    return 1
+  }
   printf 'pid %s (%s) since %s\n' "$$" "$(basename "$0")" "$(date -u +%H:%M:%SZ)" >"$dir/.lock"
   CAP_LOCKS="${CAP_LOCKS:-} $slug"
   export CAP_LOCKS
@@ -95,7 +98,7 @@ task_unlock() {
   # sharing that fd (task_try_lock's same-process re-entrant branch) - only
   # the frame that brings depth back to 0 actually closes it.
   if [ "${CAP_LOCK_DEPTH[$slug]:-1}" -gt 1 ]; then
-    CAP_LOCK_DEPTH[$slug]=$(( CAP_LOCK_DEPTH[$slug] - 1 ))
+    CAP_LOCK_DEPTH[$slug]=$((CAP_LOCK_DEPTH[$slug] - 1))
     return 0
   fi
   unset 'CAP_LOCK_DEPTH[$slug]'
