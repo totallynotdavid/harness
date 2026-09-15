@@ -75,7 +75,7 @@ parse_args() {
 
 resolve_parent() {
 	parent_tip=""
-	[ -n "$parent" ] || return
+	[ -n "$parent" ] || return 0
 
 	[ -z "$base" ] || die "use --base or --stack, not both"
 	[ -f "$TASKS/$parent/task.env" ] || die "no such task '$parent'"
@@ -100,7 +100,7 @@ check_ownership() {
 		;;
 	esac
 
-	[ "$kind" = ship ] || return
+	[ "$kind" = ship ] || return 0
 
 	peers=""
 	for other in $(task_slugs); do
@@ -110,7 +110,7 @@ check_ownership() {
 		peers="$peers $other"
 	done
 
-	[ -n "$peers" ] || return
+	[ -n "$peers" ] || return 0
 
 	[ -n "$owns" ] ||
 		die "$project already has$peers in flight; a second task needs --owns (or use cap batch)"
@@ -167,7 +167,7 @@ resolve_profile() {
 check_memory() {
 	avail=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 99999)
 	need=$(project_peak_mb "$project")
-	[ "$avail" -lt "$need" ] || return
+	[ "$avail" -lt "$need" ] || return 0
 
 	printf 'cap: %s MB available, %s peaked at %s MB\n' "$avail" "$project" "$need" >&2
 
@@ -266,7 +266,7 @@ EOF
 
 write_ownership_guard() {
 	guard=()
-	[ -n "$owns" ] || return
+	[ -n "$owns" ] || return 0
 
 	# Enforce ownership in the launch hook instead of relying on prompt text.
 	read -r -a owns_list <<<"$owns"
@@ -276,7 +276,7 @@ write_ownership_guard() {
 
 prepare_dependencies() {
 	preflight_note=""
-	[ "$kind" = ship ] || return
+	[ "$kind" = ship ] || return 0
 
 	# Unknown projects may continue. Known projects with failed installs may not.
 	preflight_tools "$project"

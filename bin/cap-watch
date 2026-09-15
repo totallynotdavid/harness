@@ -47,7 +47,7 @@ check_task() {
 	local reported=$TASKS/$slug/reported
 	local age changed
 
-	[ -f "$TASKS/$slug/task.env" ] || return
+	[ -f "$TASKS/$slug/task.env" ] || return 0
 
 	if ! pane_live "$slug"; then
 		if grep -qx exited "$reported" 2>/dev/null; then

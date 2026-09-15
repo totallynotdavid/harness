@@ -18,7 +18,7 @@ print_codex_models() {
     return
   fi
 
-  [ -n "$catalog" ] || return
+  [ -n "$catalog" ] || return 0
 
   printf 'CODEX MODELS\n'
   {
