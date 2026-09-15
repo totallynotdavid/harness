@@ -431,6 +431,7 @@ def claude_session_argv(
     session_id=None,
     resume=None,
     guard_slug=None,
+    role=None,
 ):
     argv = ["claude"]
 
@@ -443,6 +444,15 @@ def claude_session_argv(
     argv += ["--settings", claude_settings(guard_slug)]
     argv += shlex.split(conf("CAP_AGENT_FLAGS", "--permission-mode bypassPermissions"))
 
+    # Gate reviewers inspect the worktree and do not need project MCP servers.
+    # Give them only Captain's small documentation server instead.
+    if role in ("gate-a", "gate-b"):
+        argv += [
+            "--strict-mcp-config",
+            "--mcp-config",
+            os.path.join(HOME, "config", "context7-mcp.json"),
+        ]
+
     if resume:
         argv += ["--resume", resume]
     elif session_id:
@@ -454,7 +464,15 @@ def claude_session_argv(
     return argv
 
 
-def codex_session_argv(model, effort, prompt, *, resume=None, guard_slug=None):
+def codex_session_argv(
+    model,
+    effort,
+    prompt,
+    *,
+    resume=None,
+    guard_slug=None,
+    role=None,
+):
     argv = ["codex"]
 
     if resume:
@@ -490,6 +508,7 @@ def session_argv(
     session_id=None,
     resume=None,
     guard_slug=None,
+    role=None,
 ):
     if harness == "claude":
         return claude_session_argv(
@@ -499,6 +518,7 @@ def session_argv(
             session_id=session_id,
             resume=resume,
             guard_slug=guard_slug,
+            role=role,
         )
 
     if harness == "codex":
@@ -508,6 +528,7 @@ def session_argv(
             prompt,
             resume=resume,
             guard_slug=guard_slug,
+            role=role,
         )
 
     raise CapError(f"unknown harness '{harness}'")
@@ -1309,6 +1330,7 @@ def prepare_ask(profile, prompt, directory, label, guard_slug):
         session_id=session_id,
         resume=resume,
         guard_slug=guard_slug,
+        role=profile.role,
     )
 
     window_start = usage_now(profile.harness)
@@ -1334,6 +1356,7 @@ def run_ask_turns(
     repairs,
     record_path,
     label,
+    repair_prompt=None,
 ):
     transcript = ""
     attempt = 0
@@ -1368,7 +1391,8 @@ def run_ask_turns(
             )
 
         attempt += 1
-        submit(session, correction(problems))
+        prompt = repair_prompt(problems) if repair_prompt else correction(problems)
+        submit(session, prompt)
 
 
 def finish_ask(session, profile, window_start, transcript):
@@ -1397,6 +1421,7 @@ def ask(
     validate=None,
     repairs=2,
     guard_slug=None,
+    repair_prompt=None,
 ):
     directory = os.path.realpath(directory)
     label = label or (f"ask-{os.path.basename(directory)}-{profile.name}")
@@ -1422,6 +1447,7 @@ def ask(
             repairs,
             context["record_path"],
             label,
+            repair_prompt,
         )
         return answer
     except SessionLimit as e:

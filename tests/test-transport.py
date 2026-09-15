@@ -193,11 +193,42 @@ def test_review_manifest():
             caplib.TASKS = old_tasks
 
 
+def test_gate_review_uses_context7():
+    gate = caplib.session_argv(
+        "claude",
+        "haiku",
+        "medium",
+        "review",
+        role="gate-a",
+    )
+    task = caplib.session_argv(
+        "claude",
+        "haiku",
+        "high",
+        "task",
+        role="task",
+    )
+    if "--strict-mcp-config" not in gate:
+        fail("gate review did not restrict MCP servers")
+    try:
+        config_arg = gate.index("--mcp-config")
+    except ValueError:
+        fail("gate review did not load Captain's MCP config")
+    config_path = Path(gate[config_arg + 1])
+    if config_path != ROOT / "config/context7-mcp.json":
+        fail(f"gate review loaded the wrong MCP config: {config_path}")
+    if json.loads(config_path.read_text()).get("mcpServers", {}).keys() != {"context7"}:
+        fail("Captain's MCP config must contain only Context7")
+    if "--strict-mcp-config" in task:
+        fail("task session unexpectedly disabled project MCP servers")
+
+
 test_prompt_transport()
 test_completion_state()
 test_exit_handlers()
 test_library_source_is_pure()
 test_review_manifest()
+test_gate_review_uses_context7()
 if "cap_completion_report" not in (ROOT / "bin/hooks/task-status.sh").read_text():
     fail("task-status hook does not read completion state")
 print("test-transport: prompts, review ownership and completions are durable")

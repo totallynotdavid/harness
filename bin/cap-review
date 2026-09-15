@@ -167,12 +167,104 @@ def render(slug, label, profile, args, report, answer):
     return "\n".join(lines) + "\n"
 
 
-def validate_answer(text, changed, tree):
-    report, error = caplib.findings_block(text)
-    if error:
-        return [error]
+MISSING_COVERAGE = "these changed files are in neither findings nor checked:"
 
-    return caplib.validate_findings(report, changed, tree)
+
+def merge_reports(base, addition):
+    merged = {
+        "findings": list(base.get("findings") or []),
+        "checked": list(base.get("checked") or []),
+    }
+
+    for key in ("findings", "checked"):
+        for item in addition.get(key) or []:
+            path = item.get("file")
+            for other in ("findings", "checked"):
+                merged[other] = [
+                    existing
+                    for existing in merged[other]
+                    if existing.get("file") != path
+                ]
+            merged[key].append(item)
+
+    return merged
+
+
+class ReviewReport:
+    """Keep a valid report while a reviewer fills missing file coverage."""
+
+    def __init__(self, changed, tree):
+        self.changed = changed
+        self.tree = tree
+        self.report = None
+        self.additive = False
+
+    @staticmethod
+    def only_missing_coverage(problems):
+        return bool(problems) and all(
+            problem.startswith(MISSING_COVERAGE) for problem in problems
+        )
+
+    def validate(self, text):
+        report, error = caplib.findings_block(text)
+        if error:
+            self.additive = False
+            return [error]
+
+        if self.report is None or not self.additive:
+            problems = caplib.validate_findings(report, self.changed, self.tree)
+            self.report = (
+                report
+                if not problems or self.only_missing_coverage(problems)
+                else None
+            )
+            self.additive = self.only_missing_coverage(problems)
+            return problems
+
+        addition_problems = caplib.validate_findings(
+            report,
+            self.changed,
+            self.tree,
+        )
+        if any(
+            not problem.startswith(MISSING_COVERAGE)
+            for problem in addition_problems
+        ):
+            self.additive = False
+            return addition_problems
+
+        self.report = merge_reports(self.report, report)
+        problems = caplib.validate_findings(self.report, self.changed, self.tree)
+        self.additive = bool(problems)
+        return problems
+
+    def repair_prompt(self, problems):
+        if not self.additive or self.report is None:
+            return caplib.correction(problems)
+
+        covered = {
+            item.get("file")
+            for key in ("findings", "checked")
+            for item in self.report.get(key) or []
+        }
+        missing = [path for path in self.changed if path not in covered]
+        return (
+            "Keep the valid report entries from your previous answer. Return "
+            "exactly one fenced json block with findings and checked entries "
+            "only for these omitted files:\n"
+            + "\n".join(f"- {path}" for path in missing)
+            + "\nDo not repeat files already covered."
+        )
+
+    def answer_text(self, text):
+        if self.report is None:
+            return text
+
+        prose = strip_block(text)
+        block = json.dumps(self.report, ensure_ascii=False)
+        if prose:
+            return f"{prose}\n\n```json\n{block}\n```"
+        return f"```json\n{block}\n```"
 
 
 def save_review(slug, label, profile, args, answer, report, hashes):
@@ -213,8 +305,9 @@ def review(slug, label, profile, args, prompt, changed, hashes, results, lock):
     tree = os.path.realpath(args.tree)
 
     def validate(text):
-        return validate_answer(text, changed, tree)
+        return review_report.validate(text)
 
+    review_report = ReviewReport(changed, tree)
     result = {
         "label": label,
         "profile": profile.name,
@@ -228,7 +321,20 @@ def review(slug, label, profile, args, prompt, changed, hashes, results, lock):
             tree,
             label=f"gate-{label}-{slug}",
             validate=validate,
+            repair_prompt=review_report.repair_prompt,
             guard_slug=args.guard,
+            # A correction round costs the model nothing it doesn't already have:
+            # the conversation keeps its findings, and a round only has to resend
+            # the list with the named gaps filled. On a diff wide enough to need
+            # a few hundred "checked" entries, the default budget of 2 rounds
+            # regularly runs out while still finding one or a handful of files
+            # unaccounted for, forcing a whole fresh review rather than one more
+            # cheap correction.
+            repairs=5,
+        )
+        answer = caplib.Answer(
+            review_report.answer_text(answer.text),
+            answer.session_id,
         )
         report, _ = caplib.findings_block(answer.text)
 

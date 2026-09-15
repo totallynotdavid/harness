@@ -254,6 +254,41 @@ case(
 )
 case("not an object", "```json\n[]\n```\n", accepted=False, problem="must be an object")
 
+# A large review may need another turn to cover omitted files. The correction
+# must add those entries to the valid first report instead of replacing it.
+review_loader = importlib.machinery.SourceFileLoader(
+    "cap_review_findings",
+    os.path.join(BIN, "cap-review"),
+)
+review_spec = importlib.util.spec_from_loader(
+    review_loader.name,
+    review_loader,
+)
+review_module = importlib.util.module_from_spec(review_spec)
+old_run_main = caplib.run_main
+caplib.run_main = lambda _main: None
+try:
+    review_spec.loader.exec_module(review_module)
+finally:
+    caplib.run_main = old_run_main
+
+review = review_module.ReviewReport(changed, tree)
+partial = {"findings": [], "checked": checked_all[:1]}
+problems = review.validate(block(partial))
+if not problems or not review.additive:
+    failures.append("additive review: partial coverage did not enter repair mode")
+repair_prompt = review.repair_prompt(problems)
+if "bin/tool.sh" not in repair_prompt:
+    failures.append("additive review: repair prompt omitted the missing file")
+delta = {"findings": [], "checked": checked_all[1:]}
+problems = review.validate(block(delta))
+if problems:
+    failures.append(f"additive review: merged correction was refused: {problems}")
+else:
+    merged, error = caplib.findings_block(review.answer_text(block(delta)))
+    if error or caplib.validate_findings(merged, changed, tree):
+        failures.append("additive review: merged answer did not cover the diff")
+
 # A gate miss is a failing finding on bytes an earlier round passed while
 # covering that file. Changed bytes, a minor finding, or a file the passing
 # round never covered is not a miss.

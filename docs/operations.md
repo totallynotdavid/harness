@@ -27,6 +27,8 @@ use the default form after an agent fixes a finding.
 Each gate record stores the profile verdict and the fingerprint of the reviewed
 tree. A task is ready only when both gates passed the current fingerprint. A
 stale pass, a missing verdict, or a failed verdict leaves the task unready.
+Gate reviewers use only Captain's Context7 MCP config. They do not load project
+MCP servers or their sidecar processes.
 
 Before a gate, Captain synchronizes a task with the current base when Git can
 do so cleanly. It reviews the branch from its merge base so a sibling's newly
