@@ -323,9 +323,9 @@ for name, records, want in checks:
         failures.append(f"ledger {name}: {got} miss(es), want {want}")
 
 # A failed ledger commit leaves its written entry for the next run.
-hub = tempfile.mkdtemp()
-os.makedirs(os.path.join(hub, "cases", "p"))
-book = os.path.join(hub, "cases", "p", "conventions.md")
+scratch = tempfile.mkdtemp()
+os.makedirs(os.path.join(scratch, "cases", "p"))
+book = os.path.join(scratch, "cases", "p", "conventions.md")
 with open(book, "w") as fh:
     fh.write("# p\n\n## Gate-miss ledger\n")
 git_env = dict(
@@ -335,20 +335,20 @@ git_env = dict(
     GIT_COMMITTER_NAME="lint",
     GIT_COMMITTER_EMAIL="lint@lint",
 )
-subprocess.run(["git", "init", "-q", hub], check=True)
-subprocess.run(["git", "-C", hub, "add", "-A"], check=True)
-subprocess.run(["git", "-C", hub, "commit", "-qm", "init"], check=True, env=git_env)
+subprocess.run(["git", "init", "-q", scratch], check=True)
+subprocess.run(["git", "-C", scratch, "add", "-A"], check=True)
+subprocess.run(["git", "-C", scratch, "commit", "-qm", "init"], check=True, env=git_env)
 os.environ.update(git_env)
-caplib.HOME = hub
+caplib.HOME = scratch
 lines = [ledger.entry("t", passed, round_("A", "FAIL", {}, [], [major]), major)]
 ledger.append_entries(book, lines)
-open(os.path.join(hub, ".git", "index.lock"), "w").close()
+open(os.path.join(scratch, ".git", "index.lock"), "w").close()
 try:
     ledger.commit_entries(book, "t", lines)
     failures.append("ledger commit: a failed commit returned")
 except caplib.CapError:
     pass
-os.remove(os.path.join(hub, ".git", "index.lock"))
+os.remove(os.path.join(scratch, ".git", "index.lock"))
 retry = (
     ledger.append_entries(book, lines),
     ledger.commit_entries(book, "t", lines),
@@ -358,7 +358,7 @@ if retry != ([], 1, 0):
     failures.append(
         f"ledger retry: (appended, committed, committed again) = {retry}, want ([], 1, 0)"
     )
-shutil.rmtree(hub, ignore_errors=True)
+shutil.rmtree(scratch, ignore_errors=True)
 
 shutil.rmtree(tree, ignore_errors=True)
 if failures:

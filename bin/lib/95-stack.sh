@@ -33,7 +33,7 @@ stack_push() {
 # Run the rebase in the task worktree because Git rejects a branch checked out elsewhere.
 # STACK_MOVED and STACK_CONFLICT report partial progress to the caller.
 # Takes no lock and releases none: the caller holds the child's lock across
-# every field it and stack_cascade_landed rewrite, and releases it once that
+# every field it and stack_cascade_delivered rewrite, and releases it once that
 # whole pass is done. Checks task_owner_free rather than claiming ownership,
 # since the cascading session is not this descendant's owner. Returns 2 for
 # an owned-elsewhere descendant, distinct from a rebase conflict (1), so the
@@ -110,10 +110,10 @@ stack_cascade() {
   done
 }
 
-# After a parent lands, descendants inherit its base and PR target. Same
+# After a parent is delivered, descendants inherit its base and PR target. Same
 # lock discipline as stack_cascade: one task_try_lock per child, released
 # exactly once by whichever exit the child's pass takes.
-stack_cascade_landed() {
+stack_cascade_delivered() {
   local slug=$1 new_tip=$2 snap=$3
   local child tree up_base up_parent pr rc sync_rc
 

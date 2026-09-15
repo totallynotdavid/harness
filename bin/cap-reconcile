@@ -3,40 +3,52 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 remote=0
-[ "${1:-}" = --remote ] && remote=1
+
+case "${1:-}" in
+--remote)
+	remote=1
+	;;
+"")
+	;;
+*)
+	die "usage: cap reconcile [--remote]"
+	;;
+esac
 
 [ -f "$PROJECTS" ] || die "no registry; run: cap map --sync"
 
 printf '## Local\n\n'
 
 rows=""
-while IFS=$'\t' read -r n p _mode _model; do
-	[ -d "$p/.git" ] || continue
+while IFS=$'\t' read -r name path _mode _model; do
+	[ -d "$path/.git" ] || continue
 
-	br=$(git_branch "$p")
-	dirty=$(git_dirty "$p")
-	ahead=$(git -C "$p" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-	behind=$(git -C "$p" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
-	wt=$(git -C "$p" worktree list 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
-	stash=$(git -C "$p" stash list 2>/dev/null | wc -l | tr -d ' ')
+	branch=$(git_branch "$path")
+	dirty=$(git_dirty "$path")
+	ahead=$(git -C "$path" rev-list --count '@{u}..HEAD' 2>/dev/null || printf '0\n')
+	behind=$(git -C "$path" rev-list --count 'HEAD..@{u}' 2>/dev/null || printf '0\n')
+	worktrees=$(git -C "$path" worktree list 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+	stashes=$(git -C "$path" stash list 2>/dev/null | wc -l | tr -d ' ')
 
-	open=""
-	[ "$dirty" != 0 ] && open="$open ${dirty}dirty"
-	[ "$ahead" != 0 ] && open="$open ${ahead}unpushed"
-	[ "$behind" != 0 ] && open="$open ${behind}behind"
-	[ "$stash" != 0 ] && open="$open ${stash}stash"
-	[ "$wt" != 0 ] && open="$open ${wt}worktree"
+	open=()
+	[ "$dirty" != 0 ] && open+=("${dirty}dirty")
+	[ "$ahead" != 0 ] && open+=("${ahead}unpushed")
+	[ "$behind" != 0 ] && open+=("${behind}behind")
+	[ "$stashes" != 0 ] && open+=("${stashes}stash")
+	[ "$worktrees" != 0 ] && open+=("${worktrees}worktree")
 
-	[ -n "$open" ] && rows="$rows$n\t$br\t${open# }\n"
+	[ "${#open[@]}" = 0 ] && continue
+
+	rows+="$name"$'\t'"$branch"$'\t'"${open[*]}"$'\n'
 done <"$PROJECTS"
 
 if [ -n "$rows" ]; then
 	{
 		printf 'PROJECT\tBRANCH\tOPEN\n'
 		printf '%s' "$rows"
-	} | column -t -s"$(printf '\t')"
+	} | column -t -s $'\t'
 else
-	echo "nothing open locally"
+	printf 'nothing open locally\n'
 fi
 
 if [ "$remote" = 1 ]; then
@@ -45,38 +57,43 @@ if [ "$remote" = 1 ]; then
 	printf '\n## GitHub\n\n'
 
 	printf '### your open PRs\n'
-	gh search prs --author=@me --state=open --limit 30 2>/dev/null || echo "(none)"
+	gh search prs --author=@me --state=open --limit 30 2>/dev/null || printf '(none)\n'
 
 	printf '\n### review requested of you\n'
-	gh search prs --review-requested=@me --state=open --limit 30 2>/dev/null || echo "(none)"
+	gh search prs --review-requested=@me --state=open --limit 30 2>/dev/null || printf '(none)\n'
 
 	printf '\n### issues assigned to you\n'
-	gh search issues --assignee=@me --state=open --limit 30 2>/dev/null || echo "(none)"
+	gh search issues --assignee=@me --state=open --limit 30 2>/dev/null || printf '(none)\n'
 fi
 
-printf '\n## Crew\n\n'
-"$CAP_BIN/cap-crew"
+printf '\n## Agents\n\n'
+"$CAP_BIN/cap-agents"
 
 if [ -f "$CAP_HOME/paper-cuts.md" ]; then
-	n=$(grep -c '^- \[ \]' "$CAP_HOME/paper-cuts.md" || true)
-	[ "${n:-0}" != 0 ] &&
-		printf '\n## Paper cuts: %s open (cap papercut to read)\n' "$n"
+	open_cuts=$(grep -c '^- \[ \]' "$CAP_HOME/paper-cuts.md" || true)
+
+	if [ "${open_cuts:-0}" != 0 ]; then
+		printf '\n## Paper cuts: %s open (cap papercut to read)\n' "$open_cuts"
+	fi
 fi
 
 if [ -d "$CAP_HOME/state/explore" ]; then
 	stale=0
 
-	for d in "$CAP_HOME/state/explore"/*/; do
-		[ -d "$d" ] || continue
+	for dir in "$CAP_HOME/state/explore"/*/; do
+		[ -d "$dir" ] || continue
 
-		touched=$(cat "$d/.cap-touched" 2>/dev/null || echo 0)
-		age=$((($(now) - touched) / 3600))
+		touched=$(cat "$dir/.cap-touched" 2>/dev/null || printf '0\n')
+		age_hours=$((($(now) - touched) / 3600))
 
-		[ "$age" -ge 24 ] && stale=$((stale + 1))
+		if [ "$age_hours" -ge 24 ]; then
+			stale=$((stale + 1))
+		fi
 	done
 
-	[ "$stale" != 0 ] &&
+	if [ "$stale" != 0 ]; then
 		printf '\n## Explore: %s clone(s) untouched >24h (cap explore --rm <slug>)\n' "$stale"
+	fi
 fi
 
 exit 0

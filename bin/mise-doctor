@@ -6,6 +6,7 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) || {
   printf 'mise-doctor: run this task inside a Git checkout\n' >&2
   exit 1
 }
+
 config=$root/mise.toml
 failed=0
 
@@ -14,33 +15,49 @@ problem() {
   failed=1
 }
 
-command -v mise >/dev/null 2>&1 || problem "mise is not on PATH"
-if [ "$failed" -eq 0 ]; then
-  mise -C "$root" doctor || problem "mise doctor reported a failure"
+check_setup() {
+  mise -C "$root" doctor ||
+    problem "mise doctor reported a failure"
 
-  [ -f "$config" ] || problem "missing $config"
-  if [ -f "$config" ]; then
-    if ! mise -C "$root" config ls --json | grep -Fq "\"path\": \"$config\""; then
-      problem "$config is not an active mise configuration"
-    fi
+  if [ ! -f "$config" ]; then
+    problem "missing $config"
+  elif ! mise -C "$root" config ls --json | grep -Fq "\"path\": \"$config\""; then
+    problem "$config is not an active mise configuration"
   fi
 
   trust=$(mise -C "$root" trust --show)
-  printf 'mise config trust: %s\n' "$(printf '%s\n' "$trust" | grep -m1 'trusted' || printf 'implicit or unknown')"
+  trust_status=$(printf '%s\n' "$trust" | grep -m1 'trusted' || true)
+  printf 'mise config trust: %s\n' "${trust_status:-implicit or unknown}"
 
   missing=$(mise -C "$root" ls --current --missing --no-header)
   if [ -n "$(printf '%s' "$missing" | tr -d '[:space:]')" ]; then
-    problem "project tools are missing:\n$missing"
+    problem "project tools are missing:
+$missing"
   fi
 
-  mise -C "$root" tasks validate || problem "mise task validation failed"
+  mise -C "$root" tasks validate ||
+    problem "mise task validation failed"
+
   tasks=$(mise -C "$root" tasks ls --local --name-only)
   for task in check lint doctor test; do
-    printf '%s\n' "$tasks" | grep -Fxq "$task" || problem "missing repository task: $task"
+    if ! printf '%s\n' "$tasks" | grep -Fxq "$task"; then
+      problem "missing repository task: $task"
+    fi
   done
-fi
+}
 
-if [ "$failed" -ne 0 ]; then
-  exit 1
-fi
-printf 'mise-doctor: repository setup is ready\n'
+main() {
+  if ! command -v mise >/dev/null 2>&1; then
+    problem "mise is not on PATH"
+  else
+    check_setup
+  fi
+
+  if [ "$failed" -ne 0 ]; then
+    return 1
+  fi
+
+  printf 'mise-doctor: repository setup is ready\n'
+}
+
+main

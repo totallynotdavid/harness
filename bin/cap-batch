@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# cap-batch - check or spawn a batch of tasks with disjoint ownership.
+#
+# A batch checks ownership across tasks before any agent starts.
+#
+# state/batches/<name>.tsv:
+#   # project: aula
+#   slug <TAB> globs <TAB> brief path <TAB> base (optional)
+
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+BATCHES=$CAP_HOME/state/batches
+
+cmd=${1:-list}
+[ "$cmd" = list ] || shift
+
+case $cmd in
+list)
+	if [ ! -d "$BATCHES" ]; then
+		echo "no batches"
+		exit 0
+	fi
+
+	found=0
+
+	for file in "$BATCHES"/*.tsv; do
+		[ -e "$file" ] || continue
+
+		found=1
+		name=$(basename "$file" .tsv)
+		rows=$(grep -cvE '^\s*(#|$)' "$file" || true)
+		project=$(batch_project "$file")
+
+		printf '%-24s %s rows  (project %s)\n' "$name" "$rows" "$project"
+	done
+
+	[ "$found" = 1 ] || echo "no batches"
+	exit 0
+	;;
+check | spawn)
+	;;
+*)
+	die "usage: cap batch [list|check <name>|spawn <name>]"
+	;;
+esac
+
+name=${1:?usage: cap batch $cmd <name>}
+file=$BATCHES/$name.tsv
+
+[ -f "$file" ] || die "no batch '$name' at $file"
+
+project=$(batch_project "$file")
+[ -n "$project" ] || die "$name has no '# project: <name>' line"
+
+repo=$(proj_path "$project")
+[ -d "$repo/.git" ] || die "$repo is not a git repo"
+
+slugs=()
+globs=()
+briefs=()
+bases=()
+
+while IFS=$'\t' read -r slug owns brief base || [ -n "${slug:-}" ]; do
+	case ${slug:-} in
+	"" | \#*)
+		continue
+		;;
+	esac
+
+	slugs+=("$slug")
+	globs+=("$owns")
+	briefs+=("$brief")
+	bases+=("${base:-}")
+done <"$file"
+
+count=${#slugs[@]}
+[ "$count" -gt 0 ] || die "$name has no rows"
+
+failed=0
+
+note() {
+	printf '  %s\n' "$*"
+}
+
+printf '## rows\n'
+
+for ((i = 0; i < count; i++)); do
+	printf '  %-22s %s\n' "${slugs[$i]}" "${globs[$i]}"
+done
+
+printf '\n## names\n'
+
+for ((i = 0; i < count; i++)); do
+	slug=${slugs[$i]}
+
+	case $slug in
+	*[!a-zA-Z0-9._-]*)
+		note "$slug is not a usable slug"
+		failed=1
+		;;
+	esac
+
+	# Existing tasks are skipped so a partially started batch can be resumed.
+	if [ -d "$TASKS/$slug" ]; then
+		note "$slug already running, will be skipped"
+	fi
+
+	for ((j = i + 1; j < count; j++)); do
+		if [ "$slug" = "${slugs[$j]}" ]; then
+			note "$slug appears twice"
+			failed=1
+		fi
+	done
+
+	if [ -z "${briefs[$i]}" ] || [ ! -f "${briefs[$i]}" ]; then
+		note "$slug has no brief at '${briefs[$i]}'"
+		failed=1
+	fi
+
+	if [ -z "${globs[$i]}" ]; then
+		note "$slug claims no paths"
+		failed=1
+	fi
+done
+
+[ "$failed" = 0 ] && note ok
+
+printf '\n## partition\n'
+
+overlap_found=0
+
+for ((i = 0; i < count; i++)); do
+	for ((j = i + 1; j < count; j++)); do
+		if overlap=$(owns_overlap "$repo" "${globs[$i]}" "${globs[$j]}"); then
+			note "${slugs[$i]} and ${slugs[$j]} claim the same scope:"
+			printf '%s\n' "$overlap" | sed 's/^/      /'
+			overlap_found=1
+			failed=1
+		fi
+	done
+done
+
+[ "$overlap_found" = 0 ] && note "disjoint"
+
+printf '\n## coverage\n'
+
+claimed=$(mktemp)
+
+for ((i = 0; i < count; i++)); do
+	read -r -a owns <<<"${globs[$i]}"
+	owns_files "$repo" "${owns[@]}"
+done | sort -u >"$claimed"
+
+# Unclaimed paths cannot be changed by tasks in this batch.
+git -C "$repo" ls-files |
+	sed 's|/.*||' |
+	sort -u |
+	while read -r top; do
+		total=$(git -C "$repo" ls-files -- "$top" | wc -l)
+		pattern=$(printf '%s' "$top" | sed 's/[].[^$\\*]/\\&/g')
+		held=$(grep -cE "^$pattern(/|$)" "$claimed" || true)
+
+		if [ "$held" = 0 ]; then
+			printf '  %-28s unclaimed (%s files)\n' "$top" "$total"
+		elif [ "$held" != "$total" ]; then
+			printf '  %-28s %s of %s files claimed\n' "$top" "$held" "$total"
+		fi
+	done
+
+rm -f "$claimed"
+
+printf '\n## capacity\n'
+
+slots=$(project_slots "$project")
+peak=$(project_peak_mb "$project")
+
+printf '  %s rows, %s peaked at %s MB, room for %s now\n' \
+	"$count" "$project" "$peak" "$slots"
+
+if [ "$failed" != 0 ]; then
+	printf '\n'
+	die "$name is not a partition; fix the rows above"
+fi
+
+[ "$cmd" = spawn ] || exit 0
+
+printf '\n## spawn\n'
+
+started=0
+delivered=0
+
+for ((i = 0; i < count; i++)); do
+	slug=${slugs[$i]}
+
+	[ ! -d "$TASKS/$slug" ] || continue
+
+	# A delivered task has no task directory, but its merged branch remains.
+	if git -C "$repo" rev-parse --verify -q "cap/$slug" >/dev/null &&
+		git -C "$repo" merge-base --is-ancestor "cap/$slug" HEAD 2>/dev/null; then
+		printf '  %-22s delivered\n' "$slug"
+		delivered=$((delivered + 1))
+		continue
+	fi
+
+	if [ "$started" -ge "$slots" ]; then
+		printf '  %-22s queued, not enough memory\n' "$slug"
+		continue
+	fi
+
+	args=()
+	read -r -a owns <<<"${globs[$i]}"
+
+	for glob in "${owns[@]}"; do
+		args+=(--owns "$glob")
+	done
+
+	if [ -n "${bases[$i]}" ]; then
+		args+=(--base "${bases[$i]}")
+	fi
+
+	if "$CAP_BIN/cap-spawn" \
+		"$slug" \
+		"$project" \
+		"${args[@]}" \
+		-f "${briefs[$i]}"; then
+		started=$((started + 1))
+	else
+		printf '  %-22s spawn failed\n' "$slug"
+	fi
+done
+
+left=$((count - delivered))
+
+if [ "$left" = 0 ]; then
+	printf '\n%s is fully delivered\n' "$name"
+else
+	printf '\n%s of %s started; run cap batch spawn %s again when memory frees\n' \
+		"$started" "$left" "$name"
+fi

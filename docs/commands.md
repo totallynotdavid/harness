@@ -9,9 +9,9 @@ Run `cap help` when the installed script is the source of truth.
 | Command | What it does |
 | --- | --- |
 | `cap spawn <slug> <project>` | Start an agent for a project. |
-| `cap wave check <name>` | Verify a wave is a real partition of the tree. |
-| `cap wave spawn <name>` | Start a wave's tasks, as many as memory allows. |
-| `cap crew` | Show all agents and their status. |
+| `cap batch check <name>` | Verify a batch is a real partition of the tree. |
+| `cap batch spawn <name>` | Start a batch's tasks, as many as memory allows. |
+| `cap agents` | Show all agents and their status. |
 | `cap sessions` | Show every agent session on this machine. |
 | `cap peek <slug> [lines]` | Show recent agent output. |
 | `cap send <slug\|session> "<text>"` | Send a message to a task agent or live ask session. Labels include `gate-A-<slug>`, `commit-<slug>`, and `cleanup-<slug>`. |
@@ -25,13 +25,13 @@ Run `cap help` when the installed script is the source of truth.
 | `cap check --repo <project> [--base REF]` | Check project changes without an agent. |
 | `cap cleanup <slug> [profile]` | Clean up comments and readability. |
 | `cap gate <slug> [--full]` | Review the changes: gate B, or a full A+B review with `--full`. An exact current PASS is reused. Suspected findings stay visible without failing the gate. |
-| `cap step <slug> [STEP]` | Advance a task: check, verify, cleanup, gate, commit. Stops at a gate FAIL and before landing. A named step is refused until the steps before it are done. |
+| `cap step <slug> [STEP]` | Advance a task: check, verify, cleanup, gate, commit. Stops at a gate FAIL and before delivery. A named step is refused until the steps before it are done. |
 | `cap commit <slug> [profile]` | Stage and commit changes. |
-| `cap land <slug> [--merge] [--squash\|--rebase\|--merge-commit]` | Push, open a PR, or merge the work. |
+| `cap deliver <slug> [--merge] [--squash\|--rebase\|--merge-commit]` | Push, open a PR, or merge the work. |
 | `cap restack <slug> [--undo]` | Move stacked tasks onto `<slug>`'s tip. |
 | `cap drop <slug> [--force]` | Remove a task and its worktree. |
 
-`cap land` requires committed changes. Use `--merge` to merge a pull request.
+`cap deliver` requires committed changes. Use `--merge` to merge a pull request.
 Pull requests use GitHub's rebase strategy by default. Use `--squash` or
 `--merge-commit` when a different history shape is intended.
 

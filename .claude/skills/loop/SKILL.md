@@ -1,6 +1,6 @@
 ---
 name: loop
-description: Take a shaped piece of work to landable - build, check, simplify, prove, summarise - with evidence a human can verify in seconds. Use to run a task end to end once the approach is settled.
+description: Take a shaped piece of work to deliverable - build, check, simplify, prove, summarise - with evidence a human can verify in seconds. Use to run a task end to end once the approach is settled.
 ---
 
 # Loop
@@ -19,10 +19,10 @@ Choosing wrong is expensive in both directions. Say which one you picked.
 
 ## 1. Build
 
-An agent builds it in its own worktree (`crew` skill). This session supervises with
+An agent builds it in its own worktree (`agents` skill). This session supervises with
 `cap watch` and does not write project code.
 
-**Complete when:** the branch carries commits and `cap crew` shows the task idle.
+**Complete when:** the branch carries commits and `cap agents` shows the task idle.
 
 ## 2. Check, then review
 
@@ -61,9 +61,9 @@ plainly rather than asserting it works.
 
 **Complete when:** the claim has evidence at its own layer, or the gap is named.
 
-## 5. Land and summarise
+## 5. Deliver and summarise
 
-`cap land <slug>`, then write `notes/<project>/<slug>.md`: behaviour change, architecture
+`cap deliver <slug>`, then write `notes/<project>/<slug>.md`: behaviour change, architecture
 change, the evidence from step 4, and the follow-ups you deliberately left. Every solution
 defers a tradeoff: name it.
 
@@ -72,5 +72,5 @@ link rather than leaving it in scrollback.
 
 Then `record-case` if anything surprised you.
 
-**Complete when:** the work is landed or the refusal is reported, and the summary names
+**Complete when:** the work is delivered or the refusal is reported, and the summary names
 its deferred tradeoff.

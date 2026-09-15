@@ -44,7 +44,7 @@ project_peak_mb() {
   esac
 }
 
-# Keep a decaying maximum. A high reading still protects the next wave, while
+# Keep a decaying maximum. A high reading still protects the next batch, while
 # repeated lower readings bring the estimate back toward what the project now
 # costs instead of preserving one unlucky build forever.
 project_peak_record() {
@@ -71,7 +71,7 @@ project_slots() {
   printf '%s' "$((avail / peak))"
 }
 
-# The project a wave file names in its header.
-wave_project() {
+# The project a batch file names in its header.
+batch_project() {
   sed -n 's/^#[[:space:]]*project:[[:space:]]*//p' "$1" 2>/dev/null | head -1
 }

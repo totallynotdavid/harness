@@ -4,7 +4,7 @@ git_dirty() { git -C "$1" status --porcelain 2>/dev/null | wc -l | tr -d ' '; }
 
 # Like git_dirty, but ignores untracked files - for a checkout several
 # sessions share with no locking, where a stray untracked file must not
-# block another session's land.
+# block another session's delivery.
 git_dirty_tracked() { git -C "$1" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' '; }
 
 # Merge the current base into a worktree before review. A merge conflict falls
@@ -43,7 +43,7 @@ sync_base() {
 }
 
 # The commit to diff a worktree against: where its branch actually left base,
-# not base's current tip. A sibling task landing into base after this branch
+# not base's current tip. A sibling task delivering changes into base after this branch
 # was cut would otherwise show up as this branch's own change, in a diff, a
 # fingerprint, or a reviewer's own `git diff` command. Used by cap-check,
 # cap-cleanup, cap-gate, and gate_fingerprint below.
@@ -345,7 +345,7 @@ commit_body_report() {
 }
 
 # Every commit message rule that cap-commit can check before it returns. Keep
-# this beside the landing check so a branch cannot pass one command and fail
+# this beside the delivery check so a branch cannot pass one command and fail
 # the other for the same message.
 commit_rule_report() {
   local tree=$1 base=$2 hashes c short subject message second body ai

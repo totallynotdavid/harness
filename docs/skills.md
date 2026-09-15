@@ -1,6 +1,7 @@
 # Skills
 
-Captain stores external skills in `.claude/skills/`. They are regular tracked files.
+Captain stores external skills in `.claude/skills/`. They are regular tracked
+files.
 
 Skill sources are defined in `config/skill-sources.tsv`. `cap skills sync` updates the source repos used by the skill commands.
 

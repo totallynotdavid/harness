@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""cap-papercut - log and list open friction in Captain itself.
+"""cap-papercut - log and list open friction in the captain harness
 
-paper-cuts.jsonl is the ledger of open bugs. paper-cuts.md is generated from it,
-and mise run test fails when the two disagree, so the markdown is never the
-place an entry is written. Closing an entry removes it from both files.
+paper-cuts.jsonl stores open entries. paper-cuts.md is generated from it.
+Closing an entry removes it from both files.
 """
 
 import contextlib
@@ -15,6 +14,7 @@ import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
 import caplib  # noqa: E402
 
 LEDGER = os.path.join(caplib.HOME, "paper-cuts.jsonl")
@@ -44,28 +44,37 @@ A defect belongs here only while it is open.
 
 
 def subjects():
-    """Every part of Captain an entry can be about, read from Captain's own tree."""
     bin_dir = os.path.join(caplib.HOME, "bin")
     names = {"lib", "lint", "config", "docs", "rules", "claude", "codex", "herdr"}
+
     for name in os.listdir(bin_dir):
         if name.startswith("cap-"):
             names.add(name[4:])
         elif name.startswith("lint-"):
             names.add("lint")
-    for name in os.listdir(os.path.join(bin_dir, "hooks")):
+
+    hooks_dir = os.path.join(bin_dir, "hooks")
+    for name in os.listdir(hooks_dir):
         names.add("hook/" + name.rsplit(".", 1)[0])
-    skills = os.path.join(caplib.HOME, ".claude", "skills")
-    if os.path.isdir(skills):
-        names.update("skill/" + name for name in os.listdir(skills))
+
+    skills_dir = os.path.join(caplib.HOME, ".claude", "skills")
+    if os.path.isdir(skills_dir):
+        for name in os.listdir(skills_dir):
+            names.add("skill/" + name)
+
     return sorted(names)
 
 
 def projects():
+    path = os.path.join(caplib.HOME, "config", "projects.tsv")
+
     try:
-        with open(os.path.join(caplib.HOME, "config", "projects.tsv")) as fh:
-            return {line.split("\t", 1)[0] for line in fh if line.strip()} - {"captain"}
+        with open(path) as fh:
+            names = {line.split("\t", 1)[0] for line in fh if line.strip()}
     except OSError:
         return set()
+
+    return names - {"captain"}
 
 
 def load():
@@ -74,77 +83,111 @@ def load():
 
 @contextlib.contextmanager
 def locked():
-    """Hold the ledger for one read-modify-write, so concurrent writers queue."""
     path = os.path.join(caplib.HOME, "state", "paper-cuts.lock")
     os.makedirs(os.path.dirname(path), exist_ok=True)
+
     with open(path, "w") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         yield
 
 
 def save(entries):
-    for path, text in ((LEDGER, "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries)), (MARKDOWN, render(entries))):
+    ledger = "".join(
+        json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries
+    )
+    markdown = render(entries)
+
+    for path, text in ((LEDGER, ledger), (MARKDOWN, markdown)):
         tmp = path + ".tmp"
+
         with open(tmp, "w") as fh:
             fh.write(text)
+
         os.replace(tmp, path)
 
 
 def render(entries):
-    out = [HEADER]
-    for e in entries:
-        first, *rest = e["text"].split("\n")
-        out.append(f"- [ ] #{e['id']} {e['opened']} `{e['subject']}` - {first}")
-        out.extend(("  " + line) if line else "" for line in rest)
-    return "\n".join(out) + "\n"
+    lines = [HEADER]
+
+    for entry in entries:
+        first, *rest = entry["text"].split("\n")
+        lines.append(
+            f"- [ ] #{entry['id']} {entry['opened']} "
+            f"`{entry['subject']}` - {first}"
+        )
+
+        for line in rest:
+            lines.append("  " + line if line else "")
+
+    return "\n".join(lines) + "\n"
 
 
 def add(subject, text):
     if subject in projects():
-        raise caplib.CapError(f"{subject} is a project, not part of Captain; record it in notes/{subject}/defects.md")
+        raise caplib.CapError(
+            f"{subject} is a project, not part of Captain; "
+            f"record it in notes/{subject}/defects.md"
+        )
+
     if subject not in subjects():
-        raise caplib.CapError(f"unknown subject '{subject}'; run cap papercut subjects")
+        raise caplib.CapError(
+            f"unknown subject '{subject}'; run cap papercut subjects"
+        )
+
     if not text.strip():
         raise caplib.CapError("nothing to log")
+
     with locked():
         entries = load()
         entry = {
-            "id": max((e["id"] for e in entries), default=0) + 1,
+            "id": max((entry["id"] for entry in entries), default=0) + 1,
             "opened": time.strftime("%Y-%m-%d"),
             "subject": subject,
             "status": "open",
             "text": " ".join(text.split()),
         }
         save(entries + [entry])
+
     print(f"logged #{entry['id']}")
 
 
 def close(ident):
+    ident = ident.lstrip("#")
+
     with locked():
         entries = load()
-        for index, e in enumerate(entries):
-            if str(e["id"]) == ident.lstrip("#"):
-                entries.pop(index)
-                save(entries)
-                print(f"removed #{e['id']}")
-                return
+
+        for index, entry in enumerate(entries):
+            if str(entry["id"]) != ident:
+                continue
+
+            entries.pop(index)
+            save(entries)
+            print(f"removed #{entry['id']}")
+            return
+
     raise caplib.CapError(f"no paper cut #{ident}")
 
 
 def main():
     args = sys.argv[1:]
+
     if not args:
         sys.stdout.write(render(load()))
         return 0
+
     if args == ["subjects"]:
         print("\n".join(subjects()))
         return 0
+
     if len(args) == 3 and args[0] == "add":
         add(args[1], args[2])
         return 0
+
     if len(args) == 2 and args[0] == "close":
         close(args[1])
         return 0
+
     raise caplib.CapError(USAGE)
 
 

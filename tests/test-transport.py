@@ -198,6 +198,6 @@ test_completion_state()
 test_exit_handlers()
 test_library_source_is_pure()
 test_review_manifest()
-if "cap_completion_report" not in (ROOT / "bin/hooks/crew-status.sh").read_text():
-    fail("crew-status hook does not read completion state")
+if "cap_completion_report" not in (ROOT / "bin/hooks/task-status.sh").read_text():
+    fail("task-status hook does not read completion state")
 print("test-transport: prompts, review ownership and completions are durable")

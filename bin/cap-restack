@@ -3,23 +3,25 @@
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 usage="usage: cap restack <slug> [--undo [SNAPSHOT]] [--take]"
+
 undo=0
 take=0
 snapshot=""
 slug=""
+
 while [ $# -gt 0 ]; do
 	case $1 in
 	--undo)
 		undo=1
 		shift
-		# A real path, not just a bare word, is what tells a snapshot
-		# argument apart from the slug when --undo comes before it (cap
-		# restack --undo <slug>, no explicit snapshot) - the same -f test
-		# the undo path below already applies once it has a value.
+
 		case ${1:-} in
 		'' | -*) ;;
 		*)
-			[ -f "$1" ] && { snapshot=$1; shift; }
+			if [ -f "$1" ]; then
+				snapshot=$1
+				shift
+			fi
 			;;
 		esac
 		;;
@@ -27,7 +29,9 @@ while [ $# -gt 0 ]; do
 		take=1
 		shift
 		;;
-	-*) die "$usage" ;;
+	-*)
+		die "$usage"
+		;;
 	*)
 		[ -z "$slug" ] || die "$usage"
 		slug=$1
@@ -35,52 +39,133 @@ while [ $# -gt 0 ]; do
 		;;
 	esac
 done
+
 [ -n "$slug" ] || die "$usage"
 
 task_load "$slug"
 task_lock "$slug"
-if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 
-# Find the worktree that checks out a branch.
+if [ "$take" = 1 ]; then
+	task_owner_take "$slug"
+else
+	task_owner_claim "$slug"
+fi
+
 tree_of() {
 	git -C "$CAP_REPO" worktree list --porcelain |
-		awk -v r="$1" '/^worktree /{p=$2} $0==("branch " r){print p; exit}'
+		awk -v ref="$1" '
+			/^worktree / { path = $2 }
+			$0 == ("branch " ref) { print path; exit }
+		'
+}
+
+slug_of_branch() {
+	local branch=$1
+	local task
+
+	for task in $(task_slugs); do
+		if [ "$(task_field "$task" CAP_BRANCH 2>/dev/null)" = "$branch" ]; then
+			printf '%s' "$task"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+latest_snapshot() {
+	ls -1t "$CAP_HOME/state/restacks/$slug-"*.snapshot 2>/dev/null |
+		head -1 || true
 }
 
 if [ "$undo" = 1 ]; then
 	if [ -z "$snapshot" ]; then
-		snapshot=$(ls -1t "$CAP_HOME/state/restacks/$slug-"*.snapshot 2>/dev/null | head -1 || true)
+		snapshot=$(latest_snapshot)
 	fi
+
 	[ -n "$snapshot" ] && [ -f "$snapshot" ] ||
 		die "no snapshot for $slug in $CAP_HOME/state/restacks"
 
-	# The forward path never touches a descendant without locking it and
-	# checking task_owner_free first (stack_sync_task); every line below
-	# rewrites a descendant's record, branch ref, or worktree the same way,
-	# so it gets the same lock and check rather than running past a
-	# session that has a live claim on that task right now.
-	slug_of_branch() {
-		local branch=$1 s
-		for s in $(task_slugs); do
-			[ "$(task_field "$s" CAP_BRANCH 2>/dev/null)" = "$branch" ] && { printf '%s' "$s"; return 0; }
-		done
-		return 1
-	}
-
-	# A child's own snapshot lines - its ref preimage and every FIELD line
-	# recorded for it - are always written together, before the file moves
-	# on to another task, so one lock covers all of them: if contention
-	# clears between two of a child's own lines, the field and the branch
-	# would otherwise restore under different locks and could end up
-	# disagreeing about the same task.
 	n=0
 	partial=0
 	cur_child=""
 	cur_ok=0
+
 	release_current() {
-		[ -n "$cur_child" ] && [ "$cur_ok" = 1 ] && task_release "$cur_child"
+		if [ -n "$cur_child" ] && [ "$cur_ok" = 1 ]; then
+			task_release "$cur_child"
+		fi
+
 		cur_child=""
 		cur_ok=0
+	}
+
+	lock_child() {
+		local child=$1
+
+		if ! task_try_lock "$child"; then
+			warn "$child is locked by another cap command; its snapshot entries were left as they were"
+			partial=1
+			return
+		fi
+
+		if ! task_owner_free "$child"; then
+			owner=$(task_field "$child" CAP_OWNER 2>/dev/null | cut -d@ -f1)
+			warn "$child is owned by pid $owner; its snapshot entries were left as they were"
+			task_unlock "$child"
+			partial=1
+			return
+		fi
+
+		cur_ok=1
+	}
+
+	restore_ref() {
+		local sha=$1
+		local ref=$2
+		local have tree dirty
+
+		have=$(git -C "$CAP_REPO" rev-parse -q --verify "$ref" 2>/dev/null || true)
+
+		# New commits on top of the old tip may have been added after an earlier undo.
+		# Moving the ref back to the snapshot would discard them.
+		if [ -n "$have" ] &&
+			[ "$have" != "$sha" ] &&
+			git -C "$CAP_REPO" merge-base --is-ancestor "$sha" "$have" 2>/dev/null; then
+			warn "$ref has commits on top of $sha already; left as it was - resolve by hand"
+			partial=1
+			return
+		fi
+
+		tree=$(tree_of "$ref")
+		dirty=0
+
+		if [ -n "$tree" ]; then
+			dirty=$(git_dirty "$tree")
+		fi
+
+		if [ -n "$have" ]; then
+			if ! git -C "$CAP_REPO" update-ref "$ref" "$sha" "$have"; then
+				warn "$ref changed while restoring it; left as it was - rerun to retry"
+				partial=1
+				return
+			fi
+		else
+			git -C "$CAP_REPO" update-ref "$ref" "$sha"
+		fi
+
+		printf 'restored %s to %s\n' "$ref" "$sha"
+		n=$((n + 1))
+
+		if [ -z "$tree" ]; then
+			return
+		fi
+
+		if [ "$dirty" = 0 ]; then
+			git -C "$tree" reset --hard "$sha" >/dev/null
+		else
+			warn "$tree has $dirty uncommitted change(s); its files still match the rebase"
+		fi
 	}
 
 	while read -r a b c d; do
@@ -94,22 +179,19 @@ if [ "$undo" = 1 ]; then
 			child=$(slug_of_branch "${ref#refs/heads/}") || child=""
 		fi
 
+		# Snapshot entries for one task stay together, so one lock protects
+		# both its branch and task fields while they are restored.
 		if [ "$child" != "$cur_child" ]; then
 			release_current
 			cur_child=$child
+
 			if [ -z "$child" ]; then
 				cur_ok=1
-			elif ! task_try_lock "$child"; then
-				warn "$child is locked by another cap command; its snapshot entries were left as they were"
-				partial=1
-			elif ! task_owner_free "$child"; then
-				warn "$child is owned by pid $(task_field "$child" CAP_OWNER 2>/dev/null | cut -d@ -f1); its snapshot entries were left as they were"
-				task_unlock "$child"
-				partial=1
 			else
-				cur_ok=1
+				lock_child "$child"
 			fi
 		fi
+
 		[ -z "$child" ] || [ "$cur_ok" = 1 ] || continue
 
 		if [ "$a" = FIELD ]; then
@@ -118,61 +200,28 @@ if [ "$undo" = 1 ]; then
 			continue
 		fi
 
-		# A rerun of the same snapshot must not force a ref back to its
-		# pre-rebase sha if an earlier pass already restored it and real
-		# work has since landed on top - that would discard it. Only a ref
-		# still exactly where the snapshot found it, or one that never
-		# reached sha at all, is safe to write.
-		have=$(git -C "$CAP_REPO" rev-parse -q --verify "$ref" 2>/dev/null || true)
-		if [ -n "$have" ] && [ "$have" != "$sha" ] &&
-			git -C "$CAP_REPO" merge-base --is-ancestor "$sha" "$have" 2>/dev/null; then
-			warn "$ref has commits on top of $sha already; left as it was - resolve by hand"
-			partial=1
-			continue
-		fi
-
-		tree=$(tree_of "$ref")
-		dirty=0
-		[ -n "$tree" ] && dirty=$(git_dirty "$tree")
-
-		if [ -n "$have" ]; then
-			git -C "$CAP_REPO" update-ref "$ref" "$sha" "$have" || {
-				warn "$ref changed while restoring it; left as it was - rerun to retry"
-				partial=1
-				continue
-			}
-		else
-			git -C "$CAP_REPO" update-ref "$ref" "$sha"
-		fi
-		printf 'restored %s to %s\n' "$ref" "$sha"
-		n=$((n + 1))
-
-		# Restore clean worktrees. Preserve uncommitted edits made after the rebase.
-		if [ -n "$tree" ]; then
-			if [ "$dirty" = 0 ]; then
-				git -C "$tree" reset --hard "$sha" >/dev/null
-			else
-				warn "$tree has $dirty uncommitted change(s); its files still match the rebase"
-			fi
-		fi
+		restore_ref "$sha" "$ref"
 	done <"$snapshot"
+
 	release_current
 
 	printf 'undid %s ref(s) from %s\n' "$n" "$snapshot"
+
 	if [ "$partial" = 1 ]; then
 		warn "one or more entries were left as they were; see the warnings above, then rerun cap restack $slug --undo to retry what is still safe to retry"
 		exit 1
 	fi
+
 	exit 0
 fi
 
 git -C "$CAP_REPO" rev-parse --verify -q "$CAP_BRANCH" >/dev/null ||
 	die "no branch $CAP_BRANCH in $CAP_REPO"
 
-[ -n "$(task_children "$slug")" ] || {
+if [ -z "$(task_children "$slug")" ]; then
 	printf 'no tasks are stacked on %s\n' "$slug"
 	exit 0
-}
+fi
 
 new_tip=$(git -C "$CAP_REPO" rev-parse "$CAP_BRANCH")
 snapshot=$(stack_snapshot_new "$slug")
@@ -180,16 +229,24 @@ snapshot=$(stack_snapshot_new "$slug")
 rc=0
 stack_cascade "$slug" "$new_tip" "$snapshot" || rc=$?
 
-# Do not keep empty snapshots; there is nothing to undo.
-[ "$STACK_MOVED" != 0 ] || rm -f "$snapshot"
+if [ "$STACK_MOVED" = 0 ]; then
+	rm -f "$snapshot"
+fi
 
 if [ "$rc" = 0 ]; then
 	printf 'restacked %s task(s) onto %s\n' "$STACK_MOVED" "$new_tip"
-	[ "$STACK_MOVED" = 0 ] || printf 'undo: cap restack %s --undo\n' "$slug"
+
+	if [ "$STACK_MOVED" != 0 ]; then
+		printf 'undo: cap restack %s --undo\n' "$slug"
+	fi
+
 	exit 0
 fi
 
 warn "stopped at $STACK_CONFLICT; the tasks stacked under it were left alone"
-[ "$STACK_MOVED" = 0 ] ||
+
+if [ "$STACK_MOVED" != 0 ]; then
 	warn "$STACK_MOVED branch(es) already moved: cap restack $slug --undo rolls them back"
+fi
+
 exit 1

@@ -53,7 +53,7 @@ a focused test while iterating, then run mise run check before delivery.
 - bin/ contains command entry points, hooks, and shared modules.
 - tests/ contains behavior tests and static checks.
 - config/ contains tracked defaults and tool provisioning instructions.
-- cases/ and notes/ contain project-specific records and reports.
+- cases/ and notes/ contain project-specific checks, briefs, and reports.
 
 Keep a fact in one authoritative place. A command's flags belong in its help
 output and docs/commands.md; a system invariant belongs in docs/architecture.md

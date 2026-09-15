@@ -6,17 +6,12 @@ This repository stores briefs, plans, reports, cases, and task records. Project
 worktrees store source changes. CAP_WORK_ROOT keeps those worktrees outside this
 repository so project agents do not inherit these instructions.
 
-The operator's session is:
-
-1. Orient from the project map and current task state.
-2. Write a brief with an outcome and evidence.
-3. Dispatch the task into an isolated project worktree.
-4. Supervise the session and inspect its output.
-5. Check, verify, and review the result.
-6. Commit and land only after the result is accepted.
+README.md is the operator's session guide. It owns the workflow from orientation
+through delivery. This file adds the rules that an agent must load while Captain
+runs that workflow.
 
 Agents leave source changes uncommitted. Captain owns checks, commit creation,
-delivery, and the decision to land or discard work.
+delivery, and the decision to deliver or discard work.
 
 Read docs/operations.md when a gate, check, session, quota reading, or queued
 message behaves unexpectedly. Read docs/architecture.md for state ownership and
@@ -32,7 +27,7 @@ defect that only shows up in an edge case is worth a direct fix or a `paper-cuts
 not a multi-round gated task, unless it is actively blocking delivery right now. Default to
 project work; treat Captain's own pipeline as background maintenance.
 
-A fix a captain can specify exactly - a rename, a line-count trim, a one-line regex anchor
+A fix this session can specify exactly - a rename, a line-count trim, a one-line regex anchor
 - does not need a dispatched agent turn to apply. Verify it directly (the check suite, a
 live repro) and commit it. Reserve `cap send` for defects and design decisions that need
 judgment.
@@ -42,5 +37,5 @@ deterministic static check (`tests/static/lint-*`, wired into `mise.toml`), not 
 reminder to look for it. A gate result is re-verified live (a real repro, not the diff read
 again) before it is trusted, every round, since a passing round can still be wrong.
 
-Land, commit, and push a task before starting the next one. Don't let a worktree sit
+Deliver, commit, and push a task before starting the next one. Don't let a worktree sit
 finished-but-undelivered while attention moves elsewhere.

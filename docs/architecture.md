@@ -13,13 +13,13 @@ read or update one state store under an explicit lock when the state is shared.
 | Tasks | state/tasks/<slug>/ | bin/cap-spawn, bin/lib/ |
 | Worktrees | Git and CAP_WORK_ROOT | bin/cap-spawn, bin/cap-drop |
 | Restack snapshots | state/restacks/ | bin/cap-restack, bin/lib/ |
-| Waves | state/waves/<name>.tsv | bin/cap-wave |
+| Batches | state/batches/<name>.tsv | bin/cap-batch |
 | Tool provisioning | config/tools/<project> and lockfiles | bin/lib/, bin/cap-spawn |
 | Verified project commits | state/verified/<project>/ | bin/cap-verify |
 | Path ownership | CAP_OWNS in task.env | bin/cap-spawn, bin/hooks/guard-task-paths.sh |
 | Memory measurements | state/peaks/<project> | bin/cap-verify, bin/lib/ |
 | Project conventions | cases/<project>/conventions.md | bin/cap-conventions, bin/cap-check |
-| Commit plans | state/tasks/<slug>/commit-plan.json | bin/cap-commit, bin/cap-land |
+| Commit plans | state/tasks/<slug>/commit-plan.json | bin/cap-commit, bin/cap-deliver |
 | Behavior tests | tests/ | tests/run, mise run test |
 | Static checks | tests/static/lint-* | mise run lint, mise run check |
 | Reports and notes | notes/<project>/ | task and scout commands |

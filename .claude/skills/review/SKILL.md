@@ -1,6 +1,6 @@
 ---
 name: review
-description: Gate a diff before it lands - deterministic checks first, then focused passes chosen by what the diff changes, then drive the feature as a user. Use before opening a PR, when asked to pre-review a change, and after an external reviewer finds something a check should have caught.
+description: Review a diff before delivery - deterministic checks first, then focused passes chosen by what the diff changes, then drive the feature as a user. Use before opening a PR, when asked to pre-review a change, and after an external reviewer finds something a check should have caught.
 ---
 
 # Review
@@ -31,7 +31,7 @@ Read the diff last. Reasoning from the diff finds what the diff shows; the defec
 in what it assumes. Build the model from the code and `cases/<project>/conventions.md`:
 
 - **Topology**: which processes exist, which stdio each owns, where output actually
-  lands. A diagnostic on the wrong channel reaches a log nobody opens.
+  delivers. A diagnostic on the wrong channel reaches a log nobody opens.
 - **Consumers**: every path that applies the rule this fix touches, not just the primary
   one. Error builders and suggestion text re-derive values too.
 - **Guard domain**: when the diff adds a guard, its real input domain is what the
@@ -86,7 +86,7 @@ When a human finds something the checks should have caught, that is a gate bug. 
 - reasoned from the whole system -> a **subsystem invariant** in that file, so step 2
   reconstructs the seam next time
 
-`cap land` already writes a miss one gate made and another caught into that file's
+`cap deliver` already writes a miss one gate made and another caught into that file's
 gate-miss ledger. Add a miss a human caught there by hand: date, finding, which gate
 missed, why, what closed it. Then apply the two rules for new checks in `rules/evidence.md`: born red
 and green, and stated in both directions.

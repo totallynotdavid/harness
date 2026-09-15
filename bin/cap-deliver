@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# cap-land - deliver a finished task.
+# cap-deliver - deliver a finished task.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-usage="usage: cap land <slug> [--merge] [--squash|--rebase|--merge-commit] [--take]"
+usage="usage: cap deliver <slug> [--merge] [--squash|--rebase|--merge-commit] [--take]"
 
 slug=""
 do_merge=0
-landed=0
+delivered=0
 take=0
 merge_method=""
 
@@ -71,7 +71,7 @@ if [ "$CAP_KIND" = scout ]; then
 fi
 
 commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD")
-[ "$commits" -gt 0 ] || die "$slug has no commits to land"
+[ "$commits" -gt 0 ] || die "$slug has no commits to deliver"
 
 bad_messages=$(commit_rule_report "$CAP_TREE" "$CAP_BASE")
 plan_path=$TASKS/$slug/commit-plan.json
@@ -88,7 +88,7 @@ if [ -n "$bad_messages" ] || [ -n "$bad_plan" ]; then
 		printf '%s\n' "$bad_plan" | sed 's/^/  /' >&2
 	fi
 
-	die "repair them, then land again"
+	die "repair them, then deliver again"
 fi
 
 # A branch without a common ancestor would replace the base history.
@@ -114,7 +114,7 @@ update_local_base() {
 	warn "could not update local $CAP_BASE; commit counts against it may look stale"
 }
 
-land_local() {
+deliver_local() {
 	git -C "$CAP_REPO" rev-parse --verify "$CAP_BASE" >/dev/null 2>&1 ||
 		die "no base branch $CAP_BASE"
 
@@ -145,15 +145,15 @@ land_local() {
 		die "could not merge $CAP_BRANCH into $CAP_BASE in $CAP_REPO: $merge_err"
 
 	printf 'merged %s into %s (%s commits)\n' "$CAP_BRANCH" "$CAP_BASE" "$commits"
-	landed=1
+	delivered=1
 }
 
-land_pr() {
+deliver_pr() {
 	have gh || die "gh not installed; install it or use local mode"
 
 	if [ -n "${CAP_PARENT:-}" ]; then
 		git -C "$CAP_REPO" ls-remote --exit-code origin "cap/$CAP_PARENT" >/dev/null 2>&1 ||
-			die "$slug is stacked on $CAP_PARENT, which is not on the remote yet; run: cap land $CAP_PARENT"
+			die "$slug is stacked on $CAP_PARENT, which is not on the remote yet; run: cap deliver $CAP_PARENT"
 	fi
 
 	git -C "$CAP_TREE" push -u origin "$CAP_BRANCH"
@@ -204,7 +204,7 @@ land_pr() {
 	printf 'PR: %s\n' "$url"
 
 	if [ "$do_merge" != 1 ]; then
-		printf 'not merged. Run: cap land %s --merge\n' "$slug"
+		printf 'not merged. Run: cap deliver %s --merge\n' "$slug"
 		return
 	fi
 
@@ -225,7 +225,7 @@ land_pr() {
 	fi
 
 	printf 'merged %s\n' "$url"
-	landed=1
+	delivered=1
 
 	# Squash and rebase merges move the remote base without moving the local ref.
 	update_local_base
@@ -240,7 +240,7 @@ land_pr() {
 	snapshot=$(stack_snapshot_new "$slug")
 
 	rc=0
-	stack_cascade_landed "$slug" "$tip" "$snapshot" || rc=$?
+	stack_cascade_delivered "$slug" "$tip" "$snapshot" || rc=$?
 
 	[ "$STACK_MOVED" != 0 ] || rm -f "$snapshot"
 
@@ -258,10 +258,10 @@ land_pr() {
 
 case $CAP_MODE in
 local)
-	land_local
+	deliver_local
 	;;
 pr)
-	land_pr
+	deliver_pr
 	;;
 *)
 	die "unknown mode '$CAP_MODE'"
@@ -271,13 +271,13 @@ esac
 ledgered=1
 
 # Dropping the task would also delete its unrecorded gate findings.
-if [ "$landed" = 1 ] && ! "$CAP_BIN/cap-ledger" "$slug"; then
+if [ "$delivered" = 1 ] && ! "$CAP_BIN/cap-ledger" "$slug"; then
 	ledgered=0
 	warn "could not record $slug's gate misses, so $slug is kept with its findings in $TASKS/$slug/findings.jsonl"
 	warn "fix the cause, run $CAP_BIN/cap-ledger $slug, then cap drop $slug"
 fi
 
-if [ "$landed" = 1 ] && [ "$ledgered" = 1 ] && pane_live "$slug"; then
+if [ "$delivered" = 1 ] && [ "$ledgered" = 1 ] && pane_live "$slug"; then
 	printf 'releasing %s\n' "$slug"
 
 	"$CAP_BIN/cap-drop" "$slug" --force ||

@@ -47,7 +47,7 @@ System rules that cannot be detected from a diff alone.
 
 ## Gate-miss ledger
 
-cap land writes an entry for every blocker or major finding raised after an
+cap deliver writes an entry for every blocker or major finding raised after an
 earlier gate round passed the same bytes. Add human-caught misses by hand.
 EOF
 

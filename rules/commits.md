@@ -44,7 +44,7 @@ to read, but do not pad the message to satisfy a character count.
 
 `cap commit` records groups and complete messages before writing history. Each changed path
 must belong to one group. Captain stages each group and writes its planned message. `cap
-land` checks the resulting commits against the plan.
+deliver` checks the resulting commits against the plan.
 
 ## Style
 

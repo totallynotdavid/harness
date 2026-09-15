@@ -43,7 +43,7 @@ files on disk and are greppable. One of three is true:
 
 ## 3. Keep the surface small
 
-If the same fix keeps landing in the same place, it wants to be a skill. Most learnings do
+If the same fix keeps appearing in the same place, it wants to be a skill. Most learnings do
 not: they are a line in a note or an invariant in `conventions.md`. Prefer sharpening an
 existing skill over adding one, and check the two rules for new checks in
 `rules/evidence.md` before shipping any gate you just wrote.

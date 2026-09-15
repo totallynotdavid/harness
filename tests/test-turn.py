@@ -18,7 +18,7 @@ sys.dont_write_bytecode = True
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 BIN = os.path.join(ROOT, "bin")
 
-# A scratch Captain, so profile blocks and resume records never land in the
+# A scratch Captain, so profile blocks and resume records never deliver in the
 # real state/ a captain reads.
 scratch = tempfile.mkdtemp()
 os.makedirs(os.path.join(scratch, "config"))

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cap-crew - show status for all tasks.
+# cap-agents - show status for all tasks.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 json=0

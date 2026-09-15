@@ -134,7 +134,7 @@ if [ -n "$project" ]; then
 		git -C "$otree" rev-parse --verify -q "$obase" >/dev/null 2>&1 ||
 			continue
 
-		# Using the base tip would treat changes landed after the task started
+		# Using the base tip would treat changes delivered after the task started
 		# as changes made by that task.
 		omb=$(git -C "$otree" merge-base "$obase" HEAD 2>/dev/null) ||
 			continue

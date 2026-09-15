@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cap-gate - independent review of a task's changes, before it lands.
+# cap-gate - independent review of a task's changes, before delivery.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
 usage="usage: cap gate <slug> [--full] [--take]"
@@ -312,16 +312,16 @@ else
 fi
 
 # Exit status is the verdict for callers:
-#   0  ready to land
+#   0  ready to deliver
 #   1  not ready
 #   2  gate did not complete
 if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
-  printf 'READY TO LAND: %s (gate A and B both passed this exact code) - cap commit %s && cap land %s\n' \
+	printf 'READY TO DELIVER: %s (gate A and B both passed this exact code) - cap commit %s && cap deliver %s\n' \
     "$slug" "$slug" "$slug"
   exit 0
 fi
 
-printf 'NOT ready to land: %s (see reports above)\n' "$slug"
+printf 'NOT ready to deliver: %s (see reports above)\n' "$slug"
 
 if [ "$incomplete" != 0 ]; then
   retry="cap gate $slug"

@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""cap-review - dispatch a task's gate reviewers at once and read their findings (used by cap gate).
-
-Each reviewer returns findings in a fenced json block at the end of its
-answer. Captain validates the block against the diff and computes the verdict
-from it. The reviewer never states one.
-
-Writes one result per reviewer to --results as JSON lines, in the order the
-reviewers were given, for cap gate to record.
-"""
+"""cap-review - run gate reviewers and record their findings."""
 
 import argparse
 import hashlib
@@ -20,6 +12,7 @@ import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
 import caplib  # noqa: E402
 
 PROMPT = """Read {rules}, then review every change in this worktree since {since}
@@ -49,34 +42,52 @@ state a verdict yourself.
 """
 
 
-def changed_files(tree, since):
-    def lines(*args):
-        out = subprocess.run(["git", "-C", tree, *args], stdout=subprocess.PIPE, text=True, check=True).stdout
-        return [line for line in out.splitlines() if line]
+def parse_args():
+    parser = argparse.ArgumentParser(prog="cap-review")
+    parser.add_argument("--slug", required=True)
+    parser.add_argument("--tree", required=True)
+    parser.add_argument("--since", required=True)
+    parser.add_argument("--commit", required=True)
+    parser.add_argument("--fingerprint", required=True)
+    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--results", required=True)
+    parser.add_argument("--full", action="store_true")
+    parser.add_argument("--reviewer", action="append", required=True)
+    return parser.parse_args()
 
-    return sorted(set(lines("diff", "--name-only", since)) | set(lines("ls-files", "--others", "--exclude-standard")))
+
+def changed_files(tree, since):
+    def git_lines(*args):
+        result = subprocess.run(
+            ["git", "-C", tree, *args],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        return [line for line in result.stdout.splitlines() if line]
+
+    tracked = git_lines("diff", "--name-only", since)
+    untracked = git_lines("ls-files", "--others", "--exclude-standard")
+    return sorted(set(tracked) | set(untracked))
 
 
 def file_hashes(tree, paths):
-    """The bytes each changed file had when review began.
-
-    A later round can then tell whether a file one gate passed is the same
-    file another gate failed, even when both rounds reviewed an uncommitted
-    tree at the same HEAD.
-    """
     hashes = {}
+
     for path in paths:
         full = os.path.join(tree, path)
+
         if not os.path.isfile(full):
             hashes[path] = "deleted"
             continue
+
         with open(full, "rb") as fh:
             hashes[path] = hashlib.sha256(fh.read()).hexdigest()
+
     return hashes
 
 
 def write_manifest(args, state, reviewers):
-    """Leave enough state to reap or adopt a review if its wrapper dies."""
     path = os.path.join(caplib.TASKS, args.slug, "review.json")
     record = {
         "state": state,
@@ -86,52 +97,115 @@ def write_manifest(args, state, reviewers):
         "reviewers": [label for label, _ in reviewers],
         "started": caplib.iso_now(),
     }
+
     tmp = f"{path}.tmp-{os.getpid()}"
     with open(tmp, "w") as fh:
         json.dump(record, fh)
+
     os.replace(tmp, path)
 
 
 def parse_reviewer(spec):
-    """LABEL=PROFILE[@ROLE], e.g. A=haiku@gate-a."""
-    label, _, rest = spec.partition("=")
-    name, _, role = rest.partition("@")
+    label, _, profile_spec = spec.partition("=")
+    name, _, role = profile_spec.partition("@")
+
     if not label or not name:
         raise caplib.CapError(f"bad --reviewer {spec!r}; want LABEL=PROFILE@ROLE")
+
     harness, model, effort = caplib.lib("ask_profile", name).split()
-    return label, caplib.Profile(name, harness, model, effort, role)
+    profile = caplib.Profile(name, harness, model, effort, role)
+    return label, profile
 
 
 def strip_block(text):
     matches = list(caplib.FENCE.finditer(text))
     if not matches:
         return text.strip()
+
     last = matches[-1]
     return (text[: last.start()] + text[last.end() :]).strip()
 
 
 def render(slug, label, profile, args, report, answer):
-    out = [
+    lines = [
         f"# Gate {label}: {slug}",
         "",
-        f"{profile.name} reviewed the changes since {args.since[:12]}, with HEAD at {args.commit[:12]} (fingerprint {args.fingerprint[:12]}). Verdict: {caplib.verdict(report)}.",
+        f"{profile.name} reviewed the changes since {args.since[:12]}, "
+        f"with HEAD at {args.commit[:12]} "
+        f"(fingerprint {args.fingerprint[:12]}). "
+        f"Verdict: {caplib.verdict(report)}.",
         "",
         "## Findings",
         "",
     ]
+
     findings = report.get("findings") or []
     if not findings:
-        out.append("None.")
-    for f in findings:
-        where = f"{f['file']}:{f['line']}" if f.get("line") else f["file"]
-        out.append(f"- [{f['severity']}, {f['confidence']}] `{where}` {f['claim']} (finding {caplib.finding_id(f)})")
-    out += ["", "## Checked", ""]
-    for c in report.get("checked") or []:
-        out.append(f"- `{c['file']}`: {c['note']}")
+        lines.append("None.")
+
+    for finding in findings:
+        if finding.get("line"):
+            where = f"{finding['file']}:{finding['line']}"
+        else:
+            where = finding["file"]
+
+        lines.append(
+            f"- [{finding['severity']}, {finding['confidence']}] "
+            f"`{where}` {finding['claim']} "
+            f"(finding {caplib.finding_id(finding)})"
+        )
+
+    lines += ["", "## Checked", ""]
+
+    for checked in report.get("checked") or []:
+        lines.append(f"- `{checked['file']}`: {checked['note']}")
+
     prose = strip_block(answer)
     if prose:
-        out += ["", "## Reviewer's report", "", prose]
-    return "\n".join(out) + "\n"
+        lines += ["", "## Reviewer's report", "", prose]
+
+    return "\n".join(lines) + "\n"
+
+
+def validate_answer(text, changed, tree):
+    report, error = caplib.findings_block(text)
+    if error:
+        return [error]
+
+    return caplib.validate_findings(report, changed, tree)
+
+
+def save_review(slug, label, profile, args, answer, report, hashes):
+    verdict = caplib.verdict(report)
+    findings = [
+        dict(finding, id=caplib.finding_id(finding))
+        for finding in report["findings"]
+    ]
+
+    record = {
+        "at": caplib.iso_now(),
+        "label": label,
+        "profile": profile.name,
+        "session": answer.session_id,
+        "since": args.since,
+        "commit": args.commit,
+        "fingerprint": args.fingerprint,
+        "full": args.full,
+        "verdict": verdict,
+        "findings": findings,
+        "checked": report["checked"],
+        "files": hashes,
+    }
+
+    findings_path = os.path.join(caplib.TASKS, slug, "findings.jsonl")
+    with open(findings_path, "a") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+    report_path = os.path.join(args.out_dir, f"{slug}.gate-{label}.md")
+    with open(report_path, "w") as fh:
+        fh.write(render(slug, label, profile, args, report, answer.text))
+
+    return verdict, report_path
 
 
 def review(slug, label, profile, args, prompt, changed, hashes, results, lock):
@@ -139,92 +213,123 @@ def review(slug, label, profile, args, prompt, changed, hashes, results, lock):
     tree = os.path.realpath(args.tree)
 
     def validate(text):
-        report, error = caplib.findings_block(text)
-        if error:
-            return [error]
-        return caplib.validate_findings(report, changed, tree)
+        return validate_answer(text, changed, tree)
 
-    result = {"label": label, "profile": profile.name, "verdict": None}
+    result = {
+        "label": label,
+        "profile": profile.name,
+        "verdict": None,
+    }
+
     try:
-        answer = caplib.ask(profile, prompt, tree, label=f"gate-{label}-{slug}", validate=validate, guard_slug=args.guard)
+        answer = caplib.ask(
+            profile,
+            prompt,
+            tree,
+            label=f"gate-{label}-{slug}",
+            validate=validate,
+            guard_slug=args.guard,
+        )
         report, _ = caplib.findings_block(answer.text)
-        result["verdict"] = caplib.verdict(report)
-        record = {
-            "at": caplib.iso_now(),
-            "label": label,
-            "profile": profile.name,
-            "session": answer.session_id,
-            "since": args.since,
-            "commit": args.commit,
-            "fingerprint": args.fingerprint,
-            "full": args.full,
-            "verdict": result["verdict"],
-            "findings": [dict(f, id=caplib.finding_id(f)) for f in report["findings"]],
-            "checked": report["checked"],
-            "files": hashes,
-        }
-        report_path = os.path.join(args.out_dir, f"{slug}.gate-{label}.md")
+
         with lock:
-            with open(os.path.join(caplib.TASKS, slug, "findings.jsonl"), "a") as fh:
-                fh.write(json.dumps(record) + "\n")
-            with open(report_path, "w") as fh:
-                fh.write(render(slug, label, profile, args, report, answer.text))
-        summary = f"gate {label} ({profile.name}): {result['verdict']} in {int(time.time() - started)}s, report {report_path}"
-        lines = [summary] + [
-            f"  [{f['severity']}] {f['file']}:{f.get('line') or '-'} {f['claim']} ({caplib.finding_id(f)})" for f in report["findings"]
+            verdict, report_path = save_review(
+                slug,
+                label,
+                profile,
+                args,
+                answer,
+                report,
+                hashes,
+            )
+
+        result["verdict"] = verdict
+        elapsed = int(time.time() - started)
+
+        lines = [
+            f"gate {label} ({profile.name}): {verdict} in {elapsed}s, "
+            f"report {report_path}"
         ]
-    except caplib.CapError as e:
-        result["error"] = str(e)
-        lines = [f"gate {label} ({profile.name}): no result after {int(time.time() - started)}s: {e}"]
+
+        for finding in report["findings"]:
+            lines.append(
+                f"  [{finding['severity']}] "
+                f"{finding['file']}:{finding.get('line') or '-'} "
+                f"{finding['claim']} ({caplib.finding_id(finding)})"
+            )
+
+    except caplib.CapError as error:
+        result["error"] = str(error)
+        elapsed = int(time.time() - started)
+        lines = [
+            f"gate {label} ({profile.name}): "
+            f"no result after {elapsed}s: {error}"
+        ]
+
     with lock:
         results[label] = result
         print("\n".join(lines), flush=True)
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="cap-review")
-    ap.add_argument("--slug", required=True)
-    ap.add_argument("--tree", required=True)
-    ap.add_argument("--since", required=True)
-    ap.add_argument("--commit", required=True)
-    ap.add_argument("--fingerprint", required=True)
-    ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--results", required=True)
-    ap.add_argument("--full", action="store_true")
-    ap.add_argument("--reviewer", action="append", required=True)
-    args = ap.parse_args()
+    args = parse_args()
 
     caplib.task_lock(args.slug)
-    # A reviewer in a task's worktree is held to that task's ground, the same
-    # as cap ask there.
-    args.guard = args.slug if os.path.isfile(os.path.join(caplib.TASKS, args.slug, "owns")) else None
-    reviewers = [parse_reviewer(r) for r in args.reviewer]
+
+    owns = os.path.join(caplib.TASKS, args.slug, "owns")
+    args.guard = args.slug if os.path.isfile(owns) else None
+
+    reviewers = [parse_reviewer(spec) for spec in args.reviewer]
     for _, profile in reviewers:
         caplib.check_profile(profile)
+
     changed = changed_files(args.tree, args.since)
     hashes = file_hashes(args.tree, changed)
+
     prompt = PROMPT.format(
         rules=os.path.join(caplib.HOME, "rules", "code.md"),
         since=args.since,
-        files="\n".join(f"  {p}" for p in changed),
+        files="\n".join(f"  {path}" for path in changed),
     )
-    # Trust is a read-modify-write of a file both sessions share, so it is
-    # settled once here rather than raced from two threads.
-    for harness in sorted({p.harness for _, p in reviewers}):
-        caplib.trust(harness, os.path.realpath(args.tree))
+
+    tree = os.path.realpath(args.tree)
+
+    # Trust updates shared state, so finish them before reviewer threads start.
+    harnesses = sorted({profile.harness for _, profile in reviewers})
+    for harness in harnesses:
+        caplib.trust(harness, tree)
 
     write_manifest(args, "running", reviewers)
-    results, lock, threads = {}, threading.Lock(), []
+
+    results = {}
+    lock = threading.Lock()
+    threads = []
+
     for label, profile in reviewers:
-        t = threading.Thread(target=review, args=(args.slug, label, profile, args, prompt, changed, hashes, results, lock))
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join()
+        thread = threading.Thread(
+            target=review,
+            args=(
+                args.slug,
+                label,
+                profile,
+                args,
+                prompt,
+                changed,
+                hashes,
+                results,
+                lock,
+            ),
+        )
+        thread.start()
+        threads.append(thread)
+
+    for thread in threads:
+        thread.join()
 
     with open(args.results, "w") as fh:
         for label, _ in reviewers:
             fh.write(json.dumps(results[label]) + "\n")
+
     write_manifest(args, "complete", reviewers)
     return 0
 

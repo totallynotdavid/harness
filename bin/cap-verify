@@ -2,67 +2,74 @@
 # cap-verify - run project-defined checks without a model session.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-# Two subjects, one procedure. A task is verified in its worktree; a project is
-# verified in its own checkout, which is how a base earns the right to be
-# forked more than once.
-#
-# Every flag is scanned across all of "$@" rather than read positionally,
-# so its place relative to the slug or --repo never changes what it does.
 usage="usage: cap verify <slug> [--again] [--take] | cap verify --repo <project> [--again]"
+
 again=0
 take=0
 repo=0
 project=""
 slug=""
+
 while [ $# -gt 0 ]; do
   case $1 in
-  --again) again=1; shift ;;
-  --take) take=1; shift ;;
-  --repo) repo=1; [ -n "${2:-}" ] || die "$usage"; project=$2; shift 2 ;;
-  -*) die "$usage" ;;
+  --again)
+    again=1
+    shift
+    ;;
+  --take)
+    take=1
+    shift
+    ;;
+  --repo)
+    [ -n "${2:-}" ] || die "$usage"
+    repo=1
+    project=$2
+    shift 2
+    ;;
+  -*)
+    die "$usage"
+    ;;
   *)
     [ -z "$slug" ] || die "$usage"
-    slug=$1; shift ;;
+    slug=$1
+    shift
+    ;;
   esac
 done
 
-# --take names a task to own, which --repo mode has none of, so it is only
-# ever applied below, in the branch that has one.
 if [ "$repo" = 1 ]; then
-  # A bare word or --take alongside --repo names a task this command was
-  # never asked to touch or own - refused here rather than silently dropped.
   [ -z "$slug" ] || die "$usage"
   [ "$take" = 0 ] || die "$usage"
+
   CAP_PROJECT=$project
   CAP_TREE=$(proj_path "$CAP_PROJECT")
   slug=$CAP_PROJECT
+
   [ -d "$CAP_TREE/.git" ] || die "$CAP_TREE is not a git repo"
   project_lock "$CAP_PROJECT"
 else
   [ -n "$slug" ] || die "$usage"
+
   task_load "$slug"
   task_lock "$slug"
-  if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
+
+  if [ "$take" = 1 ]; then
+    task_owner_take "$slug"
+  else
+    task_owner_claim "$slug"
+  fi
 fi
 
 cd "$CAP_TREE" || die "$slug: no worktree at $CAP_TREE"
 
 sha=$(git -C "$CAP_TREE" rev-parse HEAD 2>/dev/null || true)
-# Both uses below - the resumption cache and verified_record - trust a
-# pass as describing $sha, so both require the tree that actually ran to
-# be fully clean, untracked files included.
 dirty_count=$(git_dirty "$CAP_TREE")
 
-# Which scripts already passed at this commit, so a run that dies partway
-# through resumes instead of starting over. The build is both the most
-# expensive script and the first thing a constrained box kills, which is the
-# combination that keeps a run from ever reaching the end. Only a fully
-# clean tree earns an entry: a pass cached from a dirty tree would later be
-# trusted (skipped, not re-run) even after the tree went clean.
 progress=""
 if [ -n "$sha" ] && [ "$dirty_count" = 0 ]; then
   mkdir -p "$VERIFIED/$CAP_PROJECT"
   progress=$VERIFIED/$CAP_PROJECT/$sha.scripts
+
   [ "$again" = 0 ] || rm -f "$progress"
 fi
 
@@ -77,31 +84,21 @@ mark_passed() {
 
 status=0
 failed=()
-# A die before any check leaves status at 0, so the trap needs to know whether
-# anything actually ran before it records a commit as verified.
 ran=0
-
-# Every check runs with stdin closed. A child that reads this script's stdin
-# could consume the input used by the check loop and prevent later checks from
-# running.
-# Record the high-water mark while the project's own tooling runs. This is the
-# only place the harness watches a real build, so it is the only place a
-# capacity number can come from that is not a guess.
 peak_kb=0
-# A script that finishes its work and refuses to exit needs a ceiling so the
-# gate can classify it as failed.
 CAP_VERIFY_MAX=${CAP_VERIFY_MAX:-900}
+
 capped() {
-  local pid rc
-  # Job control gives the background job its own process group, so the kill
-  # below reaches pnpm's node grandchild too. Without it the signal lands on
-  # the direct child alone and the grandchild keeps the memory.
+  local pid watcher rc
+
+  # The check needs its own process group so a timeout also kills children
+  # such as pnpm's node process.
   set -m
   "$@" </dev/null &
   pid=$!
-  # The watcher gets its own group for the same reason. Killing the subshell
-  # alone leaves the sleep it is blocked in running, reparented to init, for
-  # the rest of its CAP_VERIFY_MAX seconds. Every completed run leaked one.
+
+  # Kill the watcher as a group so its sleep process does not survive a
+  # completed check.
   (
     sleep "$CAP_VERIFY_MAX"
     kill -0 "$pid" 2>/dev/null || exit 0
@@ -109,60 +106,80 @@ capped() {
     sleep 5
     kill -KILL -- "-$pid" 2>/dev/null
   ) &
-  local watcher=$!
+  watcher=$!
   set +m
+
   rc=0
   wait "$pid" || rc=$?
+
   kill -- "-$watcher" 2>/dev/null || true
   wait "$watcher" 2>/dev/null || true
+
   if [ "$rc" -gt 128 ]; then
-    # The child dying on the watcher's TERM ends the wait above, which stops
-    # the watcher before it can escalate. Sweep the group here so a grandchild
-    # that ignored TERM cannot outlive the run.
+    # TERM may end the direct child before the watcher can kill children that
+    # ignored it.
     kill -KILL -- "-$pid" 2>/dev/null || true
     printf 'no exit within %ss, killed the process tree\n' "$CAP_VERIFY_MAX" >&2
   fi
+
   return "$rc"
 }
 
 run() {
   local key=$*
+  local log m rss
+  local rc=0
+
   if already_passed "$key"; then
     printf '=== %s === (passed earlier at this commit)\n' "$key"
     return 0
   fi
+
   printf '=== %s ===\n' "$key"
-  local m rss log rc=0
-  # A detached compose child inherits its parent's stdout and keeps a caller's
-  # pipe open after the check exits. Give the whole check a regular-file
-  # boundary, then copy its completed output to our stdout. Descendants may
-  # keep the log open, but they can never keep the caller's pipe open.
+
+  # A detached child can keep stdout open after the check exits. Capture to a
+  # file so descendants cannot keep the caller's pipe open.
   log=$(mktemp)
+
   if [ -x /usr/bin/time ]; then
     m=$(mktemp)
+
     capped /usr/bin/time -f '%M' -o "$m" "$@" >"$log" 2>&1 || rc=$?
-    if [ "$rc" = 0 ]; then mark_passed "$key"; else status=1; failed+=("$key"); fi
+
     rss=$(tail -1 "$m" 2>/dev/null || echo 0)
     rm -f "$m"
-    case $rss in '' | *[!0-9]*) rss=0 ;; esac
+
+    case $rss in
+    '' | *[!0-9]*) rss=0 ;;
+    esac
+
     [ "$rss" -le "$peak_kb" ] || peak_kb=$rss
   else
     capped "$@" >"$log" 2>&1 || rc=$?
-    if [ "$rc" = 0 ]; then mark_passed "$key"; else status=1; failed+=("$key"); fi
   fi
+
+  if [ "$rc" = 0 ]; then
+    mark_passed "$key"
+  else
+    status=1
+    failed+=("$key")
+  fi
+
   cat "$log"
   rm -f "$log"
 }
 
-# A count of what ran is not a verdict. The failing script has to be named in
-# the last line, because that is the line the reader acts on.
 report_result() {
+  local total=$1
+  local unit=$2
+
   if [ "$status" = 0 ]; then
-    printf '\n%s %s(s) run, all green\n' "$1" "$2"
-  else
-    printf '\nFAILED: %s\n' "$(printf '%s, ' "${failed[@]}" | sed 's/, $//')"
-    printf '%s of %s %s(s) failed\n' "${#failed[@]}" "$1" "$2"
+    printf '\n%s %s(s) run, all green\n' "$total" "$unit"
+    return
   fi
+
+  printf '\nFAILED: %s\n' "$(printf '%s, ' "${failed[@]}" | sed 's/, $//')"
+  printf '%s of %s %s(s) failed\n' "${#failed[@]}" "$total" "$unit"
 }
 
 on_exit() {
@@ -170,12 +187,12 @@ on_exit() {
     project_peak_record "$CAP_PROJECT" "$((peak_kb / 1024))"
     printf 'peak %s MB for %s\n' "$((peak_kb / 1024))" "$CAP_PROJECT"
   fi
-  # Only a fully clean tree earns the record. A pass with uncommitted or
-  # untracked changes says nothing about the commit anyone else would fork
-  # from.
+
   if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$repo" = 0 ]; then
     step_record "$slug" verify pass
   fi
+
+  # A dirty tree does not prove that the commit itself passes.
   if [ "$ran" = 1 ] && [ "$status" = 0 ] && [ "$dirty_count" = 0 ]; then
     verified_record "$CAP_PROJECT" "$sha"
     [ -z "$progress" ] || rm -f "$progress"
@@ -188,27 +205,51 @@ mise_tasks() {
   {
     grep -oE '^\[tasks\."?[A-Za-z0-9_:.-]+"?\]' mise.toml |
       sed -E 's/^\[tasks\."?([^"]+)"?\]/\1/'
-    awk '/^\[tasks\]$/{f=1;next} /^\[/{f=0} f && /^[A-Za-z0-9_-]+[[:space:]]*=/{sub(/[[:space:]]*=.*/,""); print}' mise.toml
+
+    awk '
+      /^\[tasks\]$/ {
+        in_tasks = 1
+        next
+      }
+      /^\[/ {
+        in_tasks = 0
+      }
+      in_tasks && /^[A-Za-z0-9_-]+[[:space:]]*=/ {
+        sub(/[[:space:]]*=.*/, "")
+        print
+      }
+    ' mise.toml
   } | sort -u
 }
 
 run_mise_checks() {
   [ -f mise.toml ] && have mise || return 1
+
   local tasks matched
+  local list
+
   tasks=$(mise_tasks)
-  # The aggregate owns its dependencies. Running it once avoids repeating them.
+
+  # The aggregate check task already runs its dependencies.
   if printf '%s\n' "$tasks" | grep -qx 'check'; then
     matched=check
   else
-    matched=$(printf '%s\n' "$tasks" | grep -E '^(test|lint|typecheck|check|format-check)([:.-].*)?$' || true)
+    matched=$(
+      printf '%s\n' "$tasks" |
+        grep -E '^(test|lint|typecheck|check|format-check)([:.-].*)?$' ||
+        true
+    )
   fi
+
   [ -n "$matched" ] || return 1
 
   mapfile -t list <<<"$matched"
-  for t in "${list[@]}"; do
-    [ -n "$t" ] || continue
-    run mise run "$t"
+
+  for task in "${list[@]}"; do
+    [ -n "$task" ] || continue
+    run mise run "$task"
   done
+
   ran=1
   report_result "${#list[@]}" task
   return 0
@@ -216,21 +257,37 @@ run_mise_checks() {
 
 run_package_checks() {
   [ -f package.json ] || return 1
-  local pm=npm scripts matched
+
+  local pm=npm
+  local scripts matched
+  local list
+
   [ -f pnpm-lock.yaml ] && pm=pnpm
   [ -f yarn.lock ] && pm=yarn
+
   have jq || die "$slug: jq is required to read package.json scripts"
+
   scripts=$(jq -r '.scripts // {} | keys[]' package.json 2>/dev/null || true)
+
   # Build runs last because it is usually the most expensive check.
-  matched=$(printf '%s\n' "$scripts" | grep -E '^(test|lint|typecheck|check|build)$' |
-    sort -k1,1 | awk '$0 == "build" { b = $0; next } { print } END { if (b) print b }' || true)
-  [ -n "$matched" ] || die "$slug: no test/lint/typecheck scripts found in $CAP_TREE/package.json"
+  matched=$(
+    printf '%s\n' "$scripts" |
+      grep -E '^(test|lint|typecheck|check|build)$' |
+      sort -k1,1 |
+      awk '$0 == "build" { build = $0; next } { print } END { if (build) print build }' ||
+      true
+  )
+
+  [ -n "$matched" ] ||
+    die "$slug: no test/lint/typecheck scripts found in $CAP_TREE/package.json"
 
   mapfile -t list <<<"$matched"
-  for s in "${list[@]}"; do
-    [ -n "$s" ] || continue
-    run "$pm" run "$s"
+
+  for script in "${list[@]}"; do
+    [ -n "$script" ] || continue
+    run "$pm" run "$script"
   done
+
   ran=1
   report_result "${#list[@]}" script
   return 0
@@ -240,11 +297,10 @@ if run_mise_checks || run_package_checks; then
   exit "$status"
 fi
 
-# A task in a project with no checks Captain can find has nothing to run, and
-# cap step records that rather than stopping on it forever.
 if [ "$repo" = 0 ]; then
   step_record "$slug" verify none
   printf '%s: no checks known for %s (no mise.toml or package.json); nothing verified\n' "$slug" "$CAP_TREE"
   exit 0
 fi
+
 die "$slug: don't know how to verify $CAP_TREE (no mise.toml or package.json); run its checks by hand"

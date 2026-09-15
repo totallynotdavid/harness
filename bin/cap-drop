@@ -49,7 +49,7 @@ check_no_children() {
 
 	[ -z "$kids" ] ||
 		die \
-			"refusing: ${kids% } stacked on $slug; the branch survives the drop but the record does not, so cap land $slug --merge could never restack them (--force to drop anyway)"
+			"refusing: ${kids% } stacked on $slug; the branch survives the drop but the record does not, so cap deliver $slug --merge could never restack them (--force to drop anyway)"
 }
 
 
@@ -59,7 +59,7 @@ check_scout_report() {
 }
 
 
-branch_landed() {
+branch_delivered() {
 	pr=$(task_field "$slug" CAP_PR)
 	local merged_branches
 
@@ -83,7 +83,7 @@ check_branch_work() {
 	commits=$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD" 2>/dev/null || echo 0)
 
 	[ "$commits" = 0 ] && return
-	branch_landed && return
+	branch_delivered && return
 	branch_pushed && return
 
 	die "refusing: $commits commit(s) on $CAP_BRANCH are neither merged nor pushed (--force to discard)"

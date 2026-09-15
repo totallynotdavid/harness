@@ -1,57 +1,49 @@
 # Terms
 
-One word per concept, everywhere in this repo: every script, doc, comment, and skill
-Captain owns. When a comment or doc needs a synonym for one of these, that is a sign the
-concept split in two - fix the word, not the sentence.
+Use concrete names. Define a term here only when it is part of a command, a
+stored record, or a boundary that needs a precise distinction. Do not use a
+metaphor when a direct noun names the same thing. Do not force one word to name
+different things.
 
-Does not apply to `notes/` (point-in-time research, kept as the source described it) or to
-imported skills (`config/skill-snapshots.list`; see `docs/skills.md`).
+## People and processes
 
-## Roles
-
-- **captain**: whoever is driving the CLI right now. Usually an AI session; could be the
-  operator's own hands. Decides whether work lands or is discarded.
-- **operator**: the human. Sets direction and makes the calls that need human judgment.
-  Not the captain - the captain is a seat, the operator is a person.
-- **agent**: one spawned actor, running a task in its own worktree.
-- **crew**: agents as a group - the brief you write them, how you supervise them, and the
-  live status view (the command `cap crew` and its table). One word for both; context
-  carries the difference the way "my team" and "check the team" don't need separate nouns.
+- **Captain**: the repository and CLI.
+- **operator**: the person who decides what to do and what to deliver.
+- **agent**: a spawned actor working in its own project worktree.
+- **session**: one running conversation with an agent tool.
 
 ## A task
 
-- **task**: a unit of work with a slug, a worktree, and a `task.env` record.
-- **kind**: `ship` or `scout` (`CAP_KIND`). Does this task's agent produce a branch, or a
-  report? Set once, at `cap spawn`.
-- **mode**: `pr`, `local`, or `scout` (`CAP_MODE`, `config/projects.tsv`). How a project's
-  finished work gets delivered. A project's default; a scout-kind task forces its own mode
-  to `scout` regardless of the project's default.
-- **brief**: the file the operator writes describing a task's outcome (`brief.md`).
-- **contract**: what `cap spawn` hands the agent - the fixed task rules plus the brief
+- **task**: a unit of work with a slug, a project worktree, and a `task.env` record.
+- **scope**: the repository paths a task may change (`CAP_OWNS`).
+- **kind**: `ship` or `scout` (`CAP_KIND`). It says whether the task produces
+  source changes or a report.
+- **mode**: `pr`, `local`, or `scout` (`CAP_MODE`). It says how completed work
+  is delivered. A scout task always uses scout mode.
+- **brief**: the file describing the task's outcome (`brief.md`).
+- **contract**: the task instructions and status protocol handed to an agent
   (`contract.md`).
+- **status**: a task's current condition: `done`, `blocked`, `needs-input`,
+  `failed`, `working`, `idle`, or `exited`. It comes from live session data,
+  gate records, and the task log. It is not the same as stored state.
 
-## Watching a task
+## Batches and delivery
 
-- **pane**: the terminal surface an agent runs in. Herdr's own word (`herdr pane ...`,
-  `CAP_PANE`). Not "window".
-- **status**: a task's current condition - `done`, `blocked`, `needs-input`, `failed`,
-  `working`, `idle`, or `exited` (`status.log`, `task_status_*`, `cap crew`'s STATUS
-  column). Not "state".
-- **watch**: block until a task needs input or exits (`cap watch`).
+- **batch**: a named set of tasks with disjoint scopes (`cap batch`).
+- **check**: the deterministic pass over a diff, with no model involved
+  (`cap check`).
+- **gate**: an independent model review of a diff, ending in `PASS` or `FAIL`
+  (`cap gate`).
+- **review**: the general act of evaluating a change. It includes checks and
+  gates.
+- **deliver**: push, open a pull request, merge, or write a scout report
+  (`cap deliver`).
+- **merge**: the Git operation used by local delivery or pull-request delivery.
 
-## Landing
+## One-shot agents
 
-- **check**: the deterministic pass over a diff, no model involved (`cap check`).
-- **gate**: two independent model reviews of a diff before it lands, each ending
-  `PASS` or `FAIL` (`cap gate`).
-- **review**: the general word for evaluating a diff - covers `check`, `gate`, and the
-  `review` skill together. Not a command name by itself.
-- **land**: push, open a PR, merge, or file a scout report - the terminal step
-  (`cap land`).
-- **merge**: the git mechanism `land` uses, local or through a PR. One step inside
-  landing, not a synonym for it.
-
-## Running an agent once
-
-- **profile**: a name, harness, and model triplet for a one-shot agent
-  (`CAP_ASK_PROFILES`, `cap ask <profile>`). Not "role".
+- **profile**: a named harness, model, and effort configuration
+  (`CAP_ASK_PROFILES`, `cap ask <profile>`).
+- **role**: the kind of work being dispatched, such as `task`, `scout`, or
+  `gate-a`.
+- **tier**: a group of profiles that can perform a role.

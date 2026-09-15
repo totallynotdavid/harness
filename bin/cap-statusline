@@ -15,11 +15,21 @@ CAP_HOME = os.environ.get("CAP_HOME") or os.path.dirname(
 
 def field(payload, *path):
     value = payload
+
     for key in path:
         if not isinstance(value, dict):
             return None
         value = value.get(key)
+
     return value
+
+
+def round_percent(value):
+    if not isinstance(value, (int, float)):
+        return None
+
+    # Claude reports fractional percentages; Captain displays whole percentages.
+    return math.floor(value + 0.5)
 
 
 def rate_window(payload, name):
@@ -27,12 +37,10 @@ def rate_window(payload, name):
     if not isinstance(window, dict):
         return None
 
-    percent = window.get("used_percentage")
-    if isinstance(percent, (int, float)):
-        # Claude reports fractional percentages. Captain displays whole values
-        # with half values rounded up.
-        percent = math.floor(percent + 0.5)
-    return {"pct": percent, "resets_at": window.get("resets_at")}
+    return {
+        "pct": round_percent(window.get("used_percentage")),
+        "resets_at": window.get("resets_at"),
+    }
 
 
 def render_status(payload):
@@ -52,75 +60,102 @@ def render_status(payload):
     if input_tokens is not None and output_tokens is not None:
         parts.append(f"in:{input_tokens} out:{output_tokens}")
 
-    rate = []
+    rates = []
     for label, name in (("5h", "five_hour"), ("7d", "seven_day")):
         window = rate_window(payload, name)
         if window and window["pct"] is not None:
-            rate.append(f"{label}:{window['pct']:.0f}%")
-    if rate:
-        parts.append(" ".join(rate))
+            rates.append(f"{label}:{window['pct']:.0f}%")
+
+    if rates:
+        parts.append(" ".join(rates))
 
     return "  |  ".join(parts)
 
 
+def usage_snapshot(payload):
+    session = field(payload, "session_id") or "unknown"
+
+    return {
+        "at": int(time.time()),
+        "session_id": session,
+        # Usage readers use this to separate account readings by harness.
+        "harness": "claude",
+        "model_id": field(payload, "model", "id") or "",
+        "model": field(payload, "model", "display_name") or "",
+        "cwd": field(payload, "workspace", "current_dir")
+        or field(payload, "cwd")
+        or "",
+        "project_dir": field(payload, "workspace", "project_dir") or "",
+        "five_hour": rate_window(payload, "five_hour"),
+        "seven_day": rate_window(payload, "seven_day"),
+        "spend_limit": rate_window(payload, "spend_limit"),
+        # cap ask uses this to decide whether a stopped session can resume.
+        "ctx_pct": round_percent(
+            field(payload, "context_window", "used_percentage")
+        ),
+    }
+
+
+def read_snapshot(path):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def snapshot_changed(previous, snapshot):
+    if previous is None:
+        return True
+
+    fields = ("five_hour", "seven_day", "spend_limit", "model_id", "ctx_pct")
+    return any(previous.get(key) != snapshot[key] for key in fields)
+
+
+def write_snapshot(path, snapshot):
+    temporary = path + ".tmp"
+
+    with open(temporary, "w") as fh:
+        json.dump(snapshot, fh)
+
+    os.replace(temporary, path)
+
+
+def remove_old_snapshots(usage_dir, now):
+    cutoff = now - 86400
+
+    for name in os.listdir(usage_dir):
+        if not name.endswith(".json"):
+            continue
+
+        path = os.path.join(usage_dir, name)
+
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError:
+            pass
+
+
 def save_usage(payload):
     try:
-        session = field(payload, "session_id") or "unknown"
-        used = field(payload, "context_window", "used_percentage")
-        snapshot = {
-            "at": int(time.time()),
-            "session_id": session,
-            # Usage readers filter account readings by harness.
-            "harness": "claude",
-            "model_id": field(payload, "model", "id") or "",
-            "model": field(payload, "model", "display_name") or "",
-            "cwd": field(payload, "workspace", "current_dir")
-            or field(payload, "cwd")
-            or "",
-            "project_dir": field(payload, "workspace", "project_dir") or "",
-            "five_hour": rate_window(payload, "five_hour"),
-            "seven_day": rate_window(payload, "seven_day"),
-            "spend_limit": rate_window(payload, "spend_limit"),
-            # cap ask uses this to decide whether a stopped session can resume.
-            "ctx_pct": math.floor(used + 0.5)
-            if isinstance(used, (int, float))
-            else None,
-        }
+        snapshot = usage_snapshot(payload)
 
         usage_dir = os.path.join(CAP_HOME, "state", "usage")
         os.makedirs(usage_dir, exist_ok=True)
-        path = os.path.join(usage_dir, session + ".json")
 
-        try:
-            with open(path) as fh:
-                previous = json.load(fh)
-        except Exception:
-            previous = None
+        path = os.path.join(usage_dir, snapshot["session_id"] + ".json")
+        previous = read_snapshot(path)
 
-        fields = ("five_hour", "seven_day", "spend_limit", "model_id", "ctx_pct")
-        unchanged = previous is not None and all(
-            previous.get(key) == snapshot[key] for key in fields
-        )
-        if unchanged and snapshot["at"] - int(previous.get("at", 0)) < 20:
-            return
+        if not snapshot_changed(previous, snapshot):
+            age = snapshot["at"] - int(previous.get("at", 0))
+            if age < 20:
+                return
 
-        temporary = path + ".tmp"
-        with open(temporary, "w") as fh:
-            json.dump(snapshot, fh)
-        os.replace(temporary, path)
-
-        cutoff = snapshot["at"] - 86400
-        for name in os.listdir(usage_dir):
-            if not name.endswith(".json"):
-                continue
-            candidate = os.path.join(usage_dir, name)
-            try:
-                if os.path.getmtime(candidate) < cutoff:
-                    os.remove(candidate)
-            except OSError:
-                pass
+        write_snapshot(path, snapshot)
+        remove_old_snapshots(usage_dir, snapshot["at"])
     except Exception:
-        # A broken status recording must never break Claude's status line.
+        # Status recording must never break Claude's status line.
         pass
 
 

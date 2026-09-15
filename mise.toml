@@ -53,7 +53,7 @@ description = "find a flag parsed into a variable nothing after the parsing loop
 run = "tests/static/lint-dead-flag"
 
 [tasks."check:task-state"]
-description = "fail if cap-crew or crew-status.sh read status.log as the sole evidence a task is running"
+description = "fail if cap-agents or task-status.sh read status.log as the sole evidence a task is running"
 run = "tests/static/lint-task-state"
 
 [tasks."check:comments"]

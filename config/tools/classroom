@@ -11,6 +11,6 @@
 # rebuild); a future worktree testing the same script, or any other ops
 # script needing these binaries, hits the same gap. The real fix is adding
 # this package to .devstack/php/Dockerfile's existing apt-get install list,
-# which is outside this task's ground (.cicat/snapshot/** only) -- flagged in
+# which is outside this task's scope (.cicat/snapshot/** only) -- flagged in
 # .cicat/snapshot/README.md for whoever owns .devstack/.
 sh   apt-get install -y default-mysql-client

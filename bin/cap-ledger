@@ -199,7 +199,7 @@ def main():
 
     lines = [entry(slug, earlier, later, finding) for earlier, later, finding in found]
 
-    # Projects share conventions.md and all ledger commits share the hub index.
+    # Projects share conventions.md and all ledger commits share this repository's index.
     lock = os.path.join(caplib.HOME, "state", "ledger.lock")
     os.makedirs(os.path.dirname(lock), exist_ok=True)
 

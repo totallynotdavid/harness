@@ -34,23 +34,12 @@ deterministic; gate reviews provide separate judgment about the diff.
 ### Accept and deliver
 
 Decide whether the result meets the brief. Clean up readability when needed,
-then commit the accepted changes and land them through the project's delivery
-mode. A task that is ready to land has passed its required checks and reviews.
+then commit the accepted changes and deliver them through the project's delivery
+mode. A task that is ready to deliver has passed its required checks and reviews.
 
 The loop looks like this:
 
     orient -> brief -> dispatch -> supervise -> verify -> review -> accept -> deliver
-
-## Working agreements
-
-- Project repositories contain project source. Captain contains briefs, task
-  records, reports, and delivery state.
-- Each task gets its own project worktree. Agents own source changes there.
-- Agents do not commit or publish. Captain writes history and delivers accepted
-  work.
-- Scripts decide repeatable facts. Agents and operators decide questions that
-  need judgment.
-- Every step ends with evidence that the next step can inspect.
 
 ## First setup
 

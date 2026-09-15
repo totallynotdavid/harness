@@ -17,9 +17,9 @@ AGENTS
                              [--scout] [--heavy|--light] [--base REF]
                              [--stack SLUG]
                              [-f BRIEF|-]                          start an agent
-  cap crew [--json]                           show agent status
+  cap agents [--json]                         show agent status
   cap sessions                                show every agent session on this box
-  cap wave [list|check|spawn] <name>          dispatch a partitioned set of tasks
+  cap batch [list|check|spawn] <name>         dispatch a partitioned set of tasks
   cap peek <slug> [lines]                     show recent agent output
   cap send <slug|session> [--take] "<text>"   send a message to an agent
   cap watch [--timeout S] [--interval S]      wait until an agent needs input
@@ -32,10 +32,10 @@ REVIEW AND DELIVERY
   cap gate <slug> [--full] [--take]           review changes (B only, or A+B with --full)
   cap step <slug> [STEP] [--take]             advance a task: check, verify, cleanup, gate, commit
   cap commit <slug> [profile] [--take]        stage and commit changes
-  cap land <slug> [--merge] [--squash|--rebase|--merge-commit] [--take]
+  cap deliver <slug> [--merge] [--squash|--rebase|--merge-commit] [--take]
                                                    push, open a PR, merge, or file a scout report
   cap restack <slug> [--undo [SNAP]] [--take] move stacked tasks onto this task's tip
-  cap drop <slug> [--force] [--take]          stop an agent; keep unlanded work by default
+  cap drop <slug> [--force] [--take]          stop an agent; keep undelivered work by default
 
 CONSULT
   cap ask <profile|@role> "<prompt>" [--dir D] [--label L] run a one-shot agent
@@ -67,7 +67,7 @@ cmd=${1:-help}
 shift || true
 
 case $cmd in
-  spawn|crew|peek|send|watch|land|restack|drop|ask|budget|doctor|models|cleanup|commit|gate|step|map|reconcile|papercut|project|grant|skills|check|verify|conventions|explore|history|sessions|wave)
+  spawn|agents|peek|send|watch|deliver|restack|drop|ask|budget|doctor|models|cleanup|commit|gate|step|map|reconcile|papercut|project|grant|skills|check|verify|conventions|explore|history|sessions|batch)
     exec "$CAP_BIN/cap-$cmd" "$@"
     ;;
   help|-h|--help)

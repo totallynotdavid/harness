@@ -52,7 +52,7 @@ printf 'rate limited %s\n' "${blocked:-none}"
 printf '\n%-9s %-9s %-8s %-7s %-4s %s\n' \
   ROLE TIER DISPATCH EFFORT ADMIT PEERS
 
-for role in crew scout gate-a gate-b chore; do
+for role in task scout gate-a gate-b chore; do
   tier=$(role_tier "$role")
   profile=$(role_profile "$role" || printf -- '-')
   effort=$(role_effort "$role" | grep . || printf -- '-')

@@ -39,12 +39,12 @@ for slug in $(task_slugs); do
   case $state in
   ready)
     # gate_fingerprint hashes the working tree, so a task fresh off a
-    # passing gate is normally still dirty and cap land refuses that.
+    # passing gate is normally still dirty and cap deliver refuses that.
     tree=$(task_field "$slug" CAP_TREE 2>/dev/null || true)
     if [ -n "$tree" ] && [ "$(git_dirty "$tree")" != 0 ]; then
-      add "  $slug ($project) is ready to land: cap commit $slug && cap land $slug"
+      add "  $slug ($project) is ready to deliver: cap commit $slug && cap deliver $slug"
     else
-      add "  $slug ($project) is ready to land: cap land $slug"
+      add "  $slug ($project) is ready to deliver: cap deliver $slug"
     fi
     ;;
   blocked | needs-input | failed)
@@ -67,7 +67,7 @@ for slug in $(task_slugs); do
     add "  $slug ($project) has stopped and is waiting on you: cap peek $slug"
     ;;
   exited)
-    add "  $slug ($project) exited: cap land $slug or cap drop $slug"
+    add "  $slug ($project) exited: cap deliver $slug or cap drop $slug"
     ;;
   esac
 

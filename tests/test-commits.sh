@@ -112,4 +112,4 @@ git -C "$written" diff-tree --no-commit-id --name-status -r -M HEAD^ HEAD | grep
 clean=$(CAP_HOME="$scratch/home" bash -c '. "$0"; commit_rule_report "$1" main' "$bin/lib.sh" "$written")
 [ -z "$clean" ]
 
-printf 'test-commits: cap commit and cap land share message checks\n'
+printf 'test-commits: cap commit and cap deliver share message checks\n'

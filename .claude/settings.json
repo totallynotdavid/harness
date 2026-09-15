@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/hooks/guard-hub-writes.sh"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/hooks/guard-project-writes.sh"
           }
         ]
       },
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/hooks/crew-status.sh"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/hooks/task-status.sh"
           }
         ]
       }

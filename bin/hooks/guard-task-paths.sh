@@ -5,7 +5,7 @@
 # repository root cannot collide with another task's shared setup files, so
 # dependencies must be settled before a fan-out.
 #
-# Silent for every write inside the task's own ground, and for anything outside
+# Silent for every write inside the task's own scope, and for anything outside
 # the worktree entirely, such as the session scratchpad.
 set -uo pipefail
 

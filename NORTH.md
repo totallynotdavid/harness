@@ -2,7 +2,7 @@
 
 ## Promise
 
-One operator runs a crew of agents across multiple projects from one place. The operator
+One operator runs agents across multiple projects from one place. The operator
 spends attention on decisions that need human judgment.
 
 ## Boundaries
@@ -17,7 +17,7 @@ spends attention on decisions that need human judgment.
 
 ## Principles
 
-- Choose the crew model explicitly. Never inherit it accidentally.
+- Choose the task model explicitly. Never inherit it accidentally.
 - Keep the always-loaded instructions small. Follow pointers when a workflow needs them.
 - End every workflow step with a checkable criterion.
 - Treat a review miss as a gate problem as well as a code problem.

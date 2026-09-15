@@ -15,68 +15,90 @@ while [ $# -gt 0 ]; do
 		interval=${2:?}
 		shift 2
 		;;
-	*) die "unknown flag $1" ;;
+	*)
+		die "unknown flag $1"
+		;;
 	esac
 done
 
-deadline=$(($(now) + timeout))
-events=""
-
 report() {
-	events="$events$1 $2 $3"$'\n'
 	printf '%s %s %s\n' "$1" "$2" "$3"
+	found_event=1
 }
 
+check_status() {
+	local slug=$1
+	local line verb
+
+	while IFS= read -r line; do
+		verb=$(task_status_verb "$line")
+
+		case $verb in
+		done) report DONE "$slug" "$line" ;;
+		blocked) report BLOCKED "$slug" "$line" ;;
+		needs-input) report NEEDS_INPUT "$slug" "$line" ;;
+		failed) report FAILED "$slug" "$line" ;;
+		esac
+	done <<<"$(task_status_lines "$slug")"
+}
+
+check_task() {
+	local slug=$1
+	local reported=$TASKS/$slug/reported
+	local age changed
+
+	[ -f "$TASKS/$slug/task.env" ] || return
+
+	if ! pane_live "$slug"; then
+		if grep -qx exited "$reported" 2>/dev/null; then
+			return
+		fi
+
+		echo exited >"$reported"
+		report EXITED "$slug" "pane closed - cap deliver $slug or cap drop $slug"
+		return
+	fi
+
+	live=$((live + 1))
+	check_status "$slug"
+
+	[ "$found_event" = 1 ] && return
+
+	read -r age changed <<<"$(task_idle_age "$slug")"
+
+	if [ "$changed" = 1 ]; then
+		rm -f "$reported"
+	fi
+
+	if [ "$age" -ge "$CAP_IDLE_SECS" ]; then
+		if grep -qx idle "$reported" 2>/dev/null; then
+			return
+		fi
+
+		echo idle >"$reported"
+		report IDLE "$slug" "quiet ${age}s - cap peek $slug"
+	fi
+}
+
+deadline=$(($(now) + timeout))
+
 while [ "$(now)" -lt "$deadline" ]; do
-	live=0
+	slugs=$(task_slugs)
 
-	for s in $(task_slugs); do
-		[ -f "$TASKS/$s/task.env" ] || continue
-		reported=$TASKS/$s/reported
-
-		if ! pane_live "$s"; then
-			if [ -f "$reported" ] && grep -qx exited "$reported" 2>/dev/null; then
-				continue
-			fi
-
-			echo exited >"$reported"
-			report EXITED "$s" "pane closed - cap land $s or cap drop $s"
-			continue
-		fi
-
-		live=$((live + 1))
-		status_event=0
-		status_lines=$(task_status_lines "$s")
-		while IFS= read -r line; do
-			verb=$(task_status_verb "$line")
-			case $verb in
-				done)       report DONE "$s" "$line"; status_event=1 ;;
-				blocked)    report BLOCKED "$s" "$line"; status_event=1 ;;
-				needs-input) report NEEDS_INPUT "$s" "$line"; status_event=1 ;;
-				failed)     report FAILED "$s" "$line"; status_event=1 ;;
-			esac
-		done <<<"$status_lines"
-
-		[ "$status_event" = 1 ] && continue
-
-		read -r age changed <<<"$(task_idle_age "$s")"
-
-		[ "$changed" = 1 ] && rm -f "$reported"
-
-		if [ "$age" -ge "$CAP_IDLE_SECS" ]; then
-			grep -qx idle "$reported" 2>/dev/null && continue
-			echo idle >"$reported"
-			report IDLE "$s" "quiet ${age}s - cap peek $s"
-		fi
-	done
-
-	[ -n "$events" ] && exit 0
-	[ "$live" = 0 ] && [ -n "$(task_slugs)" ] && exit 0
-
-	if [ -z "$(task_slugs)" ]; then
+	if [ -z "$slugs" ]; then
 		echo "NONE no agents running"
 		exit 0
 	fi
+
+	found_event=0
+	live=0
+
+	for slug in $slugs; do
+		check_task "$slug"
+	done
+
+	[ "$found_event" = 1 ] && exit 0
+	[ "$live" = 0 ] && exit 0
 
 	sleep "$interval"
 done

@@ -21,7 +21,7 @@ local cap path. The built-in mise doctor remains a host diagnostic.
 ## Review a task
 
 cap gate <slug> runs the cheap gate by default. cap gate <slug> --full runs both
-independent gates. Use the full form for the first review and before landing;
+independent gates. Use the full form for the first review and before delivery;
 use the default form after an agent fixes a finding.
 
 Each gate record stores the profile verdict and the fingerprint of the reviewed
@@ -30,14 +30,14 @@ stale pass, a missing verdict, or a failed verdict leaves the task unready.
 
 Before a gate, Captain synchronizes a task with the current base when Git can
 do so cleanly. It reviews the branch from its merge base so a sibling's newly
-landed commit is not treated as work made by this task. A merge conflict leaves
+delivered commit is not treated as work made by this task. A merge conflict leaves
 the diff available for inspection. A stash reapply conflict refuses the gate
 and leaves the worktree for the task's agent to resolve.
 
-## Task state
+## Read task state
 
 The live pane answers whether an agent is running. gate.json answers whether the
-current tree is ready to land. status.log explains a blocked, failed, or
+current tree is ready to deliver. status.log explains a blocked, failed, or
 input-needed task. No log word can override the live pane or a stale gate
 fingerprint.
 
@@ -59,7 +59,7 @@ the rendered answer. Captain records a resumable ask session when the harness
 supports it. A matching call resumes a session only when its recorded context
 is below the configured threshold; otherwise it starts fresh.
 
-## Dispatch sizing
+## Choose dispatch size
 
 Captain chooses a profile from the requested role's tier. It uses recent rate
 limit readings and recorded session-limit rejections. An unreadable meter means

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Restrict tool writes to the Captain repository.
-# Set CAP_ALLOW_HUB_WRITE=1 to allow writes anywhere.
+# Keep this session from writing directly to project repositories.
+# Set CAP_ALLOW_PROJECT_WRITE=1 to allow writes anywhere.
 set -u
-[ -n "${CAP_ALLOW_HUB_WRITE:-}" ] && exit 0
+[ -n "${CAP_ALLOW_PROJECT_WRITE:-}" ] && exit 0
 
 input=$(cat)
 
@@ -17,10 +17,10 @@ NotebookEdit) path=$(printf '%s' "$input" | jq -r '.tool_input.notebook_path // 
 esac
 [ -n "$path" ] || exit 0
 
-hub=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
 # shellcheck source=config/captain.conf
-. "$hub/config/captain.conf"
+. "$repo/config/captain.conf"
 
 work_root=$(cd "$CAP_WORK_ROOT" 2>/dev/null && pwd) || work_root=$CAP_WORK_ROOT
 
@@ -40,16 +40,16 @@ case "$resolved" in
 esac
 
 case "$resolved" in
-"$hub"/paper-cuts.md | "$hub"/paper-cuts.jsonl)
+"$repo"/paper-cuts.md | "$repo"/paper-cuts.jsonl)
   printf 'BLOCKED: %s is the paper-cut ledger. Use cap papercut add <subject> "<text>" or cap papercut close <id>.\n' "$path" >&2
   exit 2
   ;;
-"$hub"/*) exit 0 ;;
+"$repo"/*) exit 0 ;;
 "$work_root"/*)
-  printf 'BLOCKED: %s cannot write to %s. This file belongs to an agent. Use cap send, cap land, or cap drop instead. Set CAP_ALLOW_HUB_WRITE=1 to override.\n' "$tool" "$path" >&2
+  printf 'BLOCKED: %s cannot write to %s. This file belongs to an agent. Use cap send, cap deliver, or cap drop instead. Set CAP_ALLOW_PROJECT_WRITE=1 to override.\n' "$tool" "$path" >&2
   exit 2
   ;;
 esac
 
-printf 'BLOCKED: %s cannot write to %s. Files outside Captain must be changed by an agent. Use cap spawn <slug> <project>. Set CAP_ALLOW_HUB_WRITE=1 to override.\n' "$tool" "$path" >&2
+printf 'BLOCKED: %s cannot write to %s. Files outside this repository must be changed by an agent. Use cap spawn <slug> <project>. Set CAP_ALLOW_PROJECT_WRITE=1 to override.\n' "$tool" "$path" >&2
 exit 2

@@ -1,4 +1,4 @@
-# Runtime model
+# How Captain works
 
 Captain separates the operator's repository from the project repositories it
 works on.
@@ -17,7 +17,7 @@ uses a detached worktree because it produces a report and no branch.
 
 The task record is the durable handoff between commands:
 
-    brief -> spawned -> working -> checked -> reviewed -> committed -> landed
+    brief -> spawned -> working -> checked -> reviewed -> committed -> delivered
 
 The agent owns working. Captain owns checks, reviews, commit creation, and
 delivery. A task can stop at blocked, needs-input, or failed; those are reasons
@@ -25,7 +25,7 @@ to inspect the record, not successful completion.
 
 The current status combines live pane state, gate records, and the task log.
 The log explains why a task stopped. It does not prove that the task is still
-running or ready to land.
+running or ready to deliver.
 
 Stacked tasks add one dependency: a child records its parent's branch tip.
 Restacking moves the child onto a new parent tip and updates descendants in the

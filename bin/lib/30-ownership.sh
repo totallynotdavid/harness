@@ -35,7 +35,7 @@ owns_files() {
 }
 
 # Print what two glob sets share and return 0, or return 1 when they are
-# disjoint. Concrete files first, then prefixes for ground neither has touched.
+# disjoint. Concrete files first, then prefixes for scope neither has touched.
 owns_overlap() {
   local tree=$1 shared pa pb
   local -a a b
@@ -108,7 +108,7 @@ owns_claims() {
   return 1
 }
 
-# Whether any live task in the same project already claims this ground. Prints
+# Whether any live task in the same project already claims this scope. Prints
 # the claimants and returns 0 when it finds one.
 owns_taken() {
   local project=$1 tree=$2 globs=$3 self=${4:-} other otree hit found=1

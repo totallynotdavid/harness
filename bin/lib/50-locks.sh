@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 
-# One cap command per task at a time. Gate, check, commit, and land all
+# One cap command per task at a time. Gate, check, commit, and deliver all
 # read-modify-write state/tasks/<slug>/. Lock is released on process exit.
 # Never blocks: refuses at once, naming whoever holds it. A caller whose
 # job is delivery, not review or shipping, uses task_try_lock instead and
@@ -28,7 +28,7 @@ task_try_lock() {
     CAP_LOCK_DEPTH[$slug]=$((${CAP_LOCK_DEPTH[$slug]:-1} + 1))
     return 0
   fi
-  # Re-entrant: cap land can release via cap drop without deadlocking. The
+	# Re-entrant: cap deliver can release via cap drop without deadlocking. The
   # marker is exported, so only the holder's children inherit it.
   case " ${CAP_LOCKS:-} " in *" $slug "*) return 0 ;; esac
   mkdir -p "$dir"
@@ -50,7 +50,7 @@ task_try_lock() {
 
 # Pinned here, not inside session_identity: x=$(session_identity) always
 # runs in a subshell, so an export inside it never reaches the caller, and
-# cap-land shelling out to cap-drop needs the same identity under the same
+# cap-deliver shelling out to cap-drop needs the same identity under the same
 # harness. caplib.py's launch_env_prefix/SCRUBBED strips CAP_SESSION the
 # same as CAP_LOCKS, so a dispatched agent never sees it. Not locking
 # itself, but every locker needs it done, once per process, the first time

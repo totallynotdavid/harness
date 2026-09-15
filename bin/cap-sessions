@@ -1,51 +1,74 @@
 #!/usr/bin/env bash
-# cap-sessions - every agent session live on this machine, cap-owned or not.
-#
-# cap crew only knows the tasks this hub spawned. This command also finds
-# harness processes started by another captain or directly in a project
-# worktree, including panes whose task record was dropped.
-#
-# The kernel already knows all of this, so nothing here is recorded or tracked.
+# cap-sessions - list all agent sessions running on this machine.
+
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
+session_kind() {
+	local pid=$1
+	local last
+
+	last=$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | tail -1 || true)
+
+	case $last in
+	-*) printf 'interactive\n' ;;
+	*)
+		if [ "${#last}" -ge 40 ]; then
+			printf 'dispatched\n'
+		else
+			printf 'interactive\n'
+		fi
+		;;
+	esac
+}
+
+session_location() {
+	local cwd=$1
+	local slug
+	local name path _meta _mode
+
+	if [ "$cwd" = "$CAP_HOME" ]; then
+		printf 'Captain repository\n'
+		return
+	fi
+
+	case $cwd in
+	"$CAP_WORK_ROOT"/*)
+		slug=${cwd#"$CAP_WORK_ROOT"/}
+		slug=${slug%%/*}
+
+		if [ -d "$TASKS/$slug" ]; then
+			printf 'task %s\n' "$slug"
+		else
+			printf 'task %s (no record)\n' "$slug"
+		fi
+		return
+		;;
+	esac
+
+	while IFS=$'\t' read -r name path _meta _mode; do
+		case $cwd in
+		"$path" | "$path"/*)
+			printf 'project %s\n' "$name"
+			return
+			;;
+		esac
+	done <"$PROJECTS"
+
+	printf '%s\n' "$cwd"
+}
+
 rows=""
+
 for harness in claude codex; do
 	for pid in $(pgrep -x "$harness" 2>/dev/null || true); do
 		cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
 		[ -n "$cwd" ] || continue
 
-		last=$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | tail -1 || true)
-		kind=interactive
-		case $last in
-		-*) ;;
-		*) if [ "${#last}" -ge 40 ]; then kind=dispatched; fi ;;
-		esac
-
-		# A worktree directory names its task. Say whether this hub still has a
-		# record for it, because a pane outliving its record is the shape that
-		# leaves a build running for hours after the work is finished.
-		where=$cwd
-		slug=""
-		case $cwd in
-		"$CAP_HOME") where="captain hub" ;;
-		"$CAP_WORK_ROOT"/*)
-			slug=${cwd#"$CAP_WORK_ROOT"/}
-			slug=${slug%%/*}
-			if [ -d "$TASKS/$slug" ]; then
-				where="task $slug"
-			else
-				where="task $slug (no record)"
-			fi
-			;;
-		*)
-			while IFS=$'\t' read -r n p _m _mo; do
-				case $cwd in "$p" | "$p"/*) where="project $n" ;; esac
-			done <"$PROJECTS"
-			;;
-		esac
-
+		kind=$(session_kind "$pid")
+		where=$(session_location "$cwd")
 		rss=$(awk '/^VmRSS:/{print int($2/1024)}' "/proc/$pid/status" 2>/dev/null || echo 0)
 		age=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ' || echo '?')
+
 		rows="$rows$pid\t$harness\t$kind\t${rss}M\t$age\t$where\n"
 	done
 done

@@ -2,68 +2,117 @@
 # cap-step - advance a task through its pipeline from the state on disk.
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
-usage="usage: cap step <slug> [agent|check|verify|cleanup|gate|commit|land] [--take]"
+usage="usage: cap step <slug> [agent|check|verify|cleanup|gate|commit|deliver] [--take]"
+
 slug=""
 only=""
 take=0
+
 while [ $# -gt 0 ]; do
   case $1 in
-  --take) take=1; shift ;;
-  -*) die "$usage" ;;
+  --take)
+    take=1
+    shift
+    ;;
+  -*)
+    die "$usage"
+    ;;
   *)
-    if [ -z "$slug" ]; then slug=$1; elif [ -z "$only" ]; then only=$1; else die "$usage"; fi
-    shift ;;
+    if [ -z "$slug" ]; then
+      slug=$1
+    elif [ -z "$only" ]; then
+      only=$1
+    else
+      die "$usage"
+    fi
+    shift
+    ;;
   esac
 done
+
 [ -n "$slug" ] || die "$usage"
+
 task_load "$slug"
 task_lock "$slug"
-if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
+
+if [ "$take" = 1 ]; then
+  task_owner_take "$slug"
+else
+  task_owner_claim "$slug"
+fi
 
 if [ "$CAP_KIND" = scout ]; then
-  steps=(agent land)
+	steps=(agent deliver)
 else
-  steps=(agent check verify cleanup gate commit land)
+	steps=(agent check verify cleanup gate commit deliver)
 fi
+
 case " ${steps[*]} " in
 *" ${only:-agent} "*) ;;
 *) die "$slug is a $CAP_KIND task; its steps are: ${steps[*]}" ;;
 esac
 
-# Whether a step is already done for the agent's latest round of work. Each
-# answer comes from a record some command wrote, never from a log line an
-# agent chose, except the agent's own done: which is the round itself.
 step_satisfied() {
   case $1 in
   agent)
-    case $(task_state "$slug") in working | blocked) return 1 ;; esac
+    case $(task_state "$slug") in
+    working | blocked) return 1 ;;
+    esac
     [ "$(task_status_latest "$slug")" = "done" ]
     ;;
-  check | verify | cleanup) step_ran "$slug" "$1" ;;
-  gate) gate_ready "$slug" "$CAP_TREE" "$CAP_BASE" ;;
+  check | verify | cleanup)
+    step_ran "$slug" "$1"
+    ;;
+  gate)
+    if gate_ready "$slug" "$CAP_TREE" "$CAP_BASE"; then
+      return 0
+    fi
+    return 1
+    ;;
   commit)
     [ "$(git_dirty "$CAP_TREE")" = 0 ] &&
       [ "$(git -C "$CAP_TREE" rev-list --count "$CAP_BASE..HEAD")" -gt 0 ]
     ;;
-  land) return 1 ;;
+	deliver)
+    return 1
+    ;;
   esac
+}
+
+latest_status_message() {
+  local verb=$1
+
+  grep "^$verb:" "$TASKS/$slug/status.log" |
+    tail -1 |
+    cut -d: -f2- |
+    sed 's/^ //'
 }
 
 agent_wait() {
   local state verb
+
   state=$(task_state "$slug")
   verb=$(task_status_latest "$slug")
+
   case $state in
-  working) printf '%s: the agent is still working\n' "$slug" ;;
-  blocked) printf '%s: the agent is waiting on a prompt: cap peek %s\n' "$slug" "$slug" ;;
-  exited) printf '%s: the agent exited without reporting done: cap send %s "..." revives it\n' "$slug" "$slug" ;;
+  working)
+    printf '%s: the agent is still working\n' "$slug"
+    ;;
+  blocked)
+    printf '%s: the agent is waiting on a prompt: cap peek %s\n' "$slug" "$slug"
+    ;;
+  exited)
+    printf '%s: the agent exited without reporting done: cap send %s "..." revives it\n' "$slug" "$slug"
+    ;;
   *)
     case $verb in
     needs-input | blocked | failed)
-      printf '%s: the agent reported %s: %s\n' "$slug" "$verb" \
-        "$(grep "^$verb:" "$TASKS/$slug/status.log" | tail -1 | cut -d: -f2- | sed 's/^ //')"
+      printf '%s: the agent reported %s: %s\n' \
+        "$slug" "$verb" "$(latest_status_message "$verb")"
       ;;
-    *) printf '%s: the agent has stopped without reporting done: cap peek %s\n' "$slug" "$slug" ;;
+    *)
+      printf '%s: the agent has stopped without reporting done: cap peek %s\n' "$slug" "$slug"
+      ;;
     esac
     ;;
   esac
@@ -71,57 +120,83 @@ agent_wait() {
 
 step_run() {
   local rc=0
+
   printf '== %s: %s\n' "$slug" "$1"
+
   case $1 in
-  agent) agent_wait; return 1 ;;
+  agent)
+    agent_wait
+    return 1
+    ;;
   check)
-    # Deterministic findings are advice for the reviewers and the cleanup
-    # pass, not a stop. The gate decides.
+    # Findings feed later review; only the gate can stop the pipeline.
     "$CAP_BIN/cap-check" "$slug" || true
-    step_ran "$slug" check || die "$slug: cap check did not record a result"
+    step_ran "$slug" check ||
+      die "$slug: cap check did not record a result"
     ;;
   verify)
     "$CAP_BIN/cap-verify" "$slug" || rc=$?
-    [ "$rc" = 0 ] || { printf '%s: the project checks fail; send the output above to the agent\n' "$slug"; return 1; }
+    if [ "$rc" != 0 ]; then
+      printf '%s: the project checks fail; send the output above to the agent\n' "$slug"
+      return 1
+    fi
     ;;
-  cleanup) "$CAP_BIN/cap-cleanup" "$slug" || return 1 ;;
+  cleanup)
+    "$CAP_BIN/cap-cleanup" "$slug" || return 1
+    ;;
   gate)
     if gate_failed_here "$slug" "$CAP_TREE" "$CAP_BASE"; then
       printf '%s: the gate already failed this exact code; its findings are in %s/notes/%s/%s.gate-*.md\n' \
         "$slug" "$CAP_HOME" "$CAP_PROJECT" "$slug"
       return 1
     fi
+
     "$CAP_BIN/cap-gate" "$slug" --full || rc=$?
+
     case $rc in
     0) ;;
-    1) printf '%s: the gate failed with the findings above; send them to the agent: cap send %s "..."\n' "$slug" "$slug"; return 1 ;;
-    *) printf '%s: a gate did not complete; run cap step %s gate again\n' "$slug" "$slug"; return 1 ;;
+    1)
+      printf '%s: the gate failed with the findings above; send them to the agent: cap send %s "..."\n' \
+        "$slug" "$slug"
+      return 1
+      ;;
+    *)
+      printf '%s: a gate did not complete; run cap step %s gate again\n' "$slug" "$slug"
+      return 1
+      ;;
     esac
     ;;
-  commit) "$CAP_BIN/cap-commit" "$slug" || return 1 ;;
-  land) "$CAP_BIN/cap-land" "$slug" ;;
+  commit)
+    "$CAP_BIN/cap-commit" "$slug" || return 1
+    ;;
+	deliver)
+		"$CAP_BIN/cap-deliver" "$slug"
+    ;;
   esac
 }
 
-# A named step runs only when every step before it is done for this round.
-# Running it anyway would record a result for work nothing had checked yet.
 if [ -n "$only" ]; then
   for step in "${steps[@]}"; do
     [ "$step" != "$only" ] || break
+
     step_satisfied "$step" ||
       die "refusing $only: $step has not happened for $slug's current round (cap step $slug $step)"
   done
+
   step_run "$only" || exit 1
   exit 0
 fi
 
 for step in "${steps[@]}"; do
   step_satisfied "$step" && continue
-  if [ "$step" = land ]; then
-    # Landing is the captain's decision, never a step taken on the way past.
-    printf '%s is ready to land: cap step %s land\n' "$slug" "$slug"
+
+	if [ "$step" = deliver ]; then
+		# Delivery always requires an explicit command.
+		printf '%s is ready to deliver: cap step %s deliver\n' "$slug" "$slug"
     exit 0
   fi
+
   step_run "$step" || exit 1
-  step_satisfied "$step" || die "$slug: $step ran but did not leave a record that it is done"
+  step_satisfied "$step" ||
+    die "$slug: $step ran but did not leave a record that it is done"
 done
