@@ -1,0 +1,188 @@
+# Gate B: vendeya-tenant-foundation
+
+luna reviewed the changes since 1d122129ce59, with HEAD at 1d122129ce59 (fingerprint a0e4b3bce538). Verdict: PASS.
+
+## Findings
+
+- [minor, confirmed] `.env.example:54` The documented command passes the unsupported preset `whatsapp-webhook`; scripts/generate-token.ts only accepts `webhook`, so following this example exits with an error and leaves WHATSAPP_WEBHOOK_VERIFY_TOKEN unset. (finding d4c7d7b9)
+- [minor, confirmed] `.env.production.example:56` The documented command passes the unsupported preset `whatsapp-webhook`; scripts/generate-token.ts only accepts `webhook`, so following this example exits with an error and leaves WHATSAPP_WEBHOOK_VERIFY_TOKEN unset. (finding 2de9c891)
+- [minor, confirmed] `apps/frontend/src/routes/dashboard/conversations/+page.svelte:15` The derived list falls back to SSR data whenever localConversations is empty, including after a successful poll returns []; deleted or filtered conversations therefore remain visible until full navigation or reload. (finding fe8dde87)
+
+## Checked
+
+- `.gitignore`: Reviewed storage, environment, and generated-file ignores; no defect found.
+- `apps/backend/bunfig.toml`: Backend preload and test configuration work with the passing test suite.
+- `apps/backend/src/adapters/storage/images.ts`: Verified image storage and optimization integration through upload and catalog-image tests.
+- `apps/backend/src/adapters/storage/private-files.ts`: Verified tenant-scoped private-file storage through private-assets tests.
+- `apps/backend/src/adapters/whatsapp/cloud-api.ts`: Verified account-scoped outbound WhatsApp behavior through backend tests and typecheck.
+- `apps/backend/src/adapters/whatsapp/dev-adapter.ts`: Verified development adapter behavior through simulator and backend tests.
+- `apps/backend/src/adapters/whatsapp/index.ts`: Verified WhatsApp adapter exports and wiring through typecheck and tests.
+- `apps/backend/src/adapters/whatsapp/message-store.ts`: Verified message persistence and channel/account identity handling through conversation tests.
+- `apps/backend/src/adapters/whatsapp/parsers/cloud-api-parser.ts`: Verified webhook payload parsing through webhook and simulator tests.
+- `apps/backend/src/adapters/whatsapp/parsers/index.ts`: Verified parser exports and integration through typecheck and tests.
+- `apps/backend/src/adapters/whatsapp/types.ts`: Verified WhatsApp type changes compile and are consumed consistently.
+- `apps/backend/src/bootstrap/event-bus-setup.ts`: Verified event-bus startup wiring through boot-safety and backend tests.
+- `apps/backend/src/conversation/aggregator-worker.ts`: Verified aggregation and worker transitions through conversation and interrupted-transition tests.
+- `apps/backend/src/conversation/enrichment/handler-interface.ts`: Verified enrichment handler contract through typecheck and handler tests.
+- `apps/backend/src/conversation/enrichment/handlers/check-eligibility-handler.ts`: Verified eligibility enrichment behavior through eligibility and enrichment tests.
+- `apps/backend/src/conversation/enrichment/index.ts`: Verified enrichment registration through handler tests and typecheck.
+- `apps/backend/src/conversation/handler/command-executor.ts`: Verified command execution integration through conversation and simulator tests.
+- `apps/backend/src/conversation/handler/enrichment-loop.ts`: Verified enrichment-loop sequencing through enrichment handler tests.
+- `apps/backend/src/conversation/handler/orchestrator.ts`: Verified orchestration and tenant/channel processing through conversation tests.
+- `apps/backend/src/conversation/held-messages.ts`: Verified held-message state and deduplication through held-message tests.
+- `apps/backend/src/conversation/images.ts`: Verified conversation image handling through catalog and upload tests.
+- `apps/backend/src/conversation/locks.ts`: Verified lock ownership and transitions through conversation-lock and interrupted-transition tests.
+- `apps/backend/src/conversation/message-inbox.ts`: Verified inbox persistence and deduplication through conversation tests.
+- `apps/backend/src/conversation/process-held.ts`: Verified held-message processing through held-message and recovery tests.
+- `apps/backend/src/conversation/processed-retention.ts`: Verified retention cleanup wiring through maintenance and backend tests.
+- `apps/backend/src/conversation/store.ts`: Verified conversation reads and writes remain tenant-scoped through isolation tests.
+- `apps/backend/src/db/connection.ts`: Verified database initialization and connection behavior through test-database and boot tests.
+- `apps/backend/src/db/init.ts`: Verified schema initialization and foreign-key setup through migration and foreign-key tests.
+- `apps/backend/src/db/migrations.ts`: Verified migration behavior through migration tests.
+- `apps/backend/src/db/query.ts`: Verified tenant predicates, active-channel predicates, and platform audit scoping through tenant-isolation and backend tests.
+- `apps/backend/src/db/schema.sql`: Verified tenant keys, composite relationships, and foreign keys through schema tests.
+- `apps/backend/src/db/seed.ts`: Verified startup seeding behavior through seeding and boot-safety tests.
+- `apps/backend/src/db/seeds/bundles.ts`: Verified bundle seed data through seeding and catalog tests.
+- `apps/backend/src/db/seeds/images.ts`: Verified image seed data and file references through seed-images tests.
+- `apps/backend/src/db/seeds/periods.ts`: Verified period seed data through seeding tests.
+- `apps/backend/src/db/seeds/products.ts`: Verified product seed data through catalog and seeding tests.
+- `apps/backend/src/db/seeds/tenants.ts`: Verified tenant seed data and isolation through tenancy tests.
+- `apps/backend/src/db/seeds/test-data.ts`: Verified test fixture setup through the backend suite.
+- `apps/backend/src/db/seeds/users.ts`: Verified seeded users and memberships through tenant and authentication tests.
+- `apps/backend/src/domains/analytics/index.ts`: Verified analytics queries and tenant scoping through backend typecheck and tests.
+- `apps/backend/src/domains/assets/content-types.ts`: Verified content-type validation through upload tests.
+- `apps/backend/src/domains/assets/index.ts`: Verified public and private asset behavior through private-assets and upload tests.
+- `apps/backend/src/domains/catalog/bundles.ts`: Verified tenant-scoped bundle operations through catalog tests.
+- `apps/backend/src/domains/catalog/ids.ts`: Verified catalog identifier handling through catalog and seeding tests.
+- `apps/backend/src/domains/catalog/periods.ts`: Verified period operations and composite tenant relationships through tests.
+- `apps/backend/src/domains/catalog/products.ts`: Verified product operations and image relationships through catalog tests.
+- `apps/backend/src/domains/channels/accounts.ts`: Verified channel-account lookup and tenant scoping through webhook and tenant tests.
+- `apps/backend/src/domains/conversations/assignment.ts`: Verified assignment behavior through conversation tests.
+- `apps/backend/src/domains/conversations/media.ts`: Verified conversation media access through asset and conversation tests.
+- `apps/backend/src/domains/conversations/read.ts`: Verified tenant-scoped conversation reads through isolation tests.
+- `apps/backend/src/domains/conversations/write.ts`: Verified conversation writes and identity constraints through backend tests.
+- `apps/backend/src/domains/eligibility/fnb.ts`: Verified FNB eligibility provider behavior through eligibility tests.
+- `apps/backend/src/domains/eligibility/gaso.ts`: Verified Gaso eligibility behavior through eligibility tests.
+- `apps/backend/src/domains/eligibility/handlers/check-eligibility-handler.ts`: Verified eligibility handler dispatch through eligibility and enrichment tests.
+- `apps/backend/src/domains/eligibility/mapper.ts`: Verified provider result mapping through eligibility-mapper tests.
+- `apps/backend/src/domains/eligibility/providers/fnb-provider.ts`: Verified FNB provider integration and mock behavior through provider tests.
+- `apps/backend/src/domains/eligibility/providers/powerbi-provider.ts`: Verified Power BI provider wiring through typecheck and provider tests.
+- `apps/backend/src/domains/eligibility/providers/provider.ts`: Verified provider interface compatibility through typecheck and mock-provider tests.
+- `apps/backend/src/domains/eligibility/shared.ts`: Verified shared eligibility helpers through eligibility tests.
+- `apps/backend/src/domains/notifications/__snapshots__/evaluator.test.ts.snap`: Verified notification evaluator snapshot remains current; notification tests pass.
+- `apps/backend/src/domains/notifications/config.ts`: Verified notification configuration and tenant/channel routing through notification tests.
+- `apps/backend/src/domains/notifications/dispatcher.ts`: Verified notification dispatch behavior through notification-routing tests.
+- `apps/backend/src/domains/notifications/resolver.ts`: Verified recipient resolution through notification-routing tests.
+- `apps/backend/src/domains/notifications/service.ts`: Verified notification service persistence and dispatch through tests.
+- `apps/backend/src/domains/notifications/templates.ts`: Verified notification template rendering through evaluator and routing tests.
+- `apps/backend/src/domains/orders/read.ts`: Verified tenant-scoped order reads through order and isolation tests.
+- `apps/backend/src/domains/orders/types.ts`: Verified order type changes compile and match route usage.
+- `apps/backend/src/domains/orders/write.ts`: Verified order writes and conversation references through order tests.
+- `apps/backend/src/domains/personas/index.ts`: Verified persona operations through typecheck and route tests.
+- `apps/backend/src/domains/recovery/handlers/index.ts`: Verified recovery handler registration through recovery tests.
+- `apps/backend/src/domains/recovery/handlers/retry-eligibility-handler.ts`: Verified eligibility retry behavior through recovery tests.
+- `apps/backend/src/domains/recovery/processor/conversation-processor.ts`: Verified recovery conversation processing through recovery tests.
+- `apps/backend/src/domains/recovery/store/recovery-store.ts`: Verified recovery state persistence through recovery tests.
+- `apps/backend/src/domains/reports/index.ts`: Verified report route integration and compilation.
+- `apps/backend/src/domains/settings/system.ts`: Verified tenant/system settings access through tenant tests and typecheck.
+- `apps/backend/src/domains/system/logs.ts`: Verified system log persistence and retrieval through operations-audit tests.
+- `apps/backend/src/domains/tenants/index.ts`: Verified tenant creation, membership, and suspension behavior through tenant tests.
+- `apps/backend/src/index.ts`: Verified awaited startup, static media mounting, and retention setup through boot-safety and backend tests.
+- `apps/backend/src/intelligence/service.ts`: Verified intelligence service integration through LLM and backend tests.
+- `apps/backend/src/intelligence/tracker.ts`: Verified intelligence usage tracking through LLM and backend tests.
+- `apps/backend/src/lib/http.ts`: Verified HTTP helper behavior through route tests and typecheck.
+- `apps/backend/src/lib/storage-paths.ts`: Verified path resolution and traversal guards through storage-path tests.
+- `apps/backend/src/middleware/auth.ts`: Verified authentication middleware through tenant HTTP and authentication tests.
+- `apps/backend/src/middleware/error.ts`: Verified error middleware integration through route tests and typecheck.
+- `apps/backend/src/platform/audit/logger.ts`: Verified audit logging through operations-audit tests.
+- `apps/backend/src/platform/auth/scope.ts`: Verified tenant and platform scope enforcement through tenant-scope-guard tests.
+- `apps/backend/src/platform/auth/session.ts`: Verified session and active-tenant handling through tenant HTTP tests.
+- `apps/backend/src/platform/crypto/secrets.ts`: Verified secret encryption helpers through boot and authentication tests.
+- `apps/backend/src/routes/admin.ts`: Verified admin route registration and authorization through tenant HTTP tests.
+- `apps/backend/src/routes/admin/channels.ts`: Verified channel administration and tenant scoping through channel and tenant tests.
+- `apps/backend/src/routes/admin/operations.ts`: Verified operations endpoints and audit records through operations-audit tests.
+- `apps/backend/src/routes/admin/system.ts`: Verified system administration endpoints through tenant HTTP and backend tests.
+- `apps/backend/src/routes/admin/users.ts`: Verified user membership, duplicate handling, password, and status flows through tenant HTTP tests.
+- `apps/backend/src/routes/analytics.ts`: Verified analytics route authorization and tenant scoping through backend tests.
+- `apps/backend/src/routes/assets.ts`: Verified upload, public image, and private asset routes through asset tests.
+- `apps/backend/src/routes/auth.ts`: Verified authentication routes through tenant HTTP and session tests.
+- `apps/backend/src/routes/catalog.ts`: Verified catalog route behavior and tenant isolation through catalog tests.
+- `apps/backend/src/routes/conversations.ts`: Verified conversation route authorization and tenant scoping through tenant tests.
+- `apps/backend/src/routes/orders.ts`: Verified order route disambiguation and tenant scoping through order tests.
+- `apps/backend/src/routes/periods.ts`: Verified period route behavior through catalog and tenant tests.
+- `apps/backend/src/routes/simulator.ts`: Verified simulator routing and replay behavior through simulator-replay tests.
+- `apps/backend/src/routes/system-logs.ts`: Verified system-log access and authorization through operations-audit tests.
+- `apps/backend/src/routes/tenants.ts`: Verified tenant administration routes through tenant HTTP tests.
+- `apps/backend/src/routes/webhook.ts`: Verified WhatsApp verification, account lookup, inactive-channel rejection, and event handling through backend tests.
+- `apps/backend/src/shared/events/async-emitter.ts`: Verified asynchronous event delivery wiring through event and backend tests.
+- `apps/backend/src/shared/events/types.ts`: Verified event type changes compile across producers and consumers.
+- `apps/backend/tests/boot-safety.test.ts`: Passed; verifies startup safety and initialization behavior.
+- `apps/backend/tests/catalog-images.test.ts`: Passed; verifies catalog image upload and retrieval behavior.
+- `apps/backend/tests/conversation-lock.test.ts`: Passed; verifies lock ownership and release transitions.
+- `apps/backend/tests/disabled-channel-processing.test.ts`: Passed; verifies disabled channels do not process messages.
+- `apps/backend/tests/eligibility-mapper.test.ts`: Passed; verifies eligibility provider mapping.
+- `apps/backend/tests/enrichment/handlers/answer-question-handler.test.ts`: Passed; verifies answer-question enrichment behavior.
+- `apps/backend/tests/enrichment/handlers/detect-question-handler.test.ts`: Passed; verifies question detection enrichment behavior.
+- `apps/backend/tests/enrichment/handlers/extract-bundle-intent-handler.test.ts`: Passed; verifies bundle-intent extraction.
+- `apps/backend/tests/enrichment/handlers/generate-backlog-apology-handler.test.ts`: Passed; verifies backlog apology generation.
+- `apps/backend/tests/enrichment/handlers/is-product-request-handler.test.ts`: Passed; verifies product-request detection.
+- `apps/backend/tests/enrichment/handlers/recover-unclear-response-handler.test.ts`: Passed; verifies unclear-response recovery.
+- `apps/backend/tests/enrichment/handlers/should-escalate-handler.test.ts`: Passed; verifies escalation decisions.
+- `apps/backend/tests/foreign-keys.test.ts`: Passed; verifies foreign-key enforcement.
+- `apps/backend/tests/held-message-dedup.test.ts`: Passed; verifies held-message deduplication.
+- `apps/backend/tests/helpers/tenancy.ts`: Used successfully by tenant-aware backend tests.
+- `apps/backend/tests/interrupted-transition.test.ts`: Passed; verifies interrupted conversation transitions recover safely.
+- `apps/backend/tests/llm-service.test.ts`: Passed; verifies LLM service and usage tracking behavior.
+- `apps/backend/tests/maintenance-freeze.test.ts`: Passed; verifies maintenance freeze behavior.
+- `apps/backend/tests/migration.test.ts`: Passed; verifies migrations and upgrade behavior.
+- `apps/backend/tests/mock-provider.test.ts`: Passed; verifies mock eligibility provider behavior.
+- `apps/backend/tests/notification-routing.test.ts`: Passed; verifies notification routing and recipient selection.
+- `apps/backend/tests/operations-audit.test.ts`: Passed; verifies operations audit logging.
+- `apps/backend/tests/private-assets.test.ts`: Passed; verifies private asset authorization and storage.
+- `apps/backend/tests/recovery.test.ts`: Passed; verifies recovery handlers and state transitions.
+- `apps/backend/tests/seed-images.test.ts`: Passed; verifies seeded image files and metadata.
+- `apps/backend/tests/seeding.test.ts`: Passed; verifies database seeding and idempotence.
+- `apps/backend/tests/setup.ts`: Test setup executed successfully for the full backend suite.
+- `apps/backend/tests/simulator-replay.test.ts`: Passed; verifies simulator replay behavior.
+- `apps/backend/tests/storage-path-guard.test.ts`: Passed; verifies storage traversal and path guards.
+- `apps/backend/tests/storage-paths.test.ts`: Passed; verifies storage path construction.
+- `apps/backend/tests/suspended-tenant-processing.test.ts`: Passed; verifies suspended tenants do not process messages.
+- `apps/backend/tests/tenant-http.test.ts`: Passed; verifies tenant-aware HTTP routes and user administration.
+- `apps/backend/tests/tenant-isolation.test.ts`: Passed; verifies cross-tenant data isolation.
+- `apps/backend/tests/tenant-scope-guard.test.ts`: Passed; verifies tenant scope enforcement.
+- `apps/backend/tests/test-database.test.ts`: Passed; verifies test database initialization.
+- `apps/backend/tests/uploads.test.ts`: Passed; verifies upload validation and persistence.
+- `apps/frontend/src/app.d.ts`: Verified frontend ambient types compile with Svelte check.
+- `apps/frontend/src/lib/components/conversations/conversation-item.svelte`: Verified conversation item rendering and tenant-aware links through Svelte check.
+- `apps/frontend/src/lib/components/conversations/conversation-list.svelte`: Verified conversation list component compiles and integrates with page state.
+- `apps/frontend/src/lib/components/shared/dashboard-nav.svelte`: Verified tenant navigation rendering through Svelte check.
+- `apps/frontend/src/lib/state/auth.svelte.ts`: Verified authentication state and active-tenant state compile.
+- `apps/frontend/src/lib/state/tenant-switching.test.ts`: Passed; 6 tests and 11 expectations.
+- `apps/frontend/src/lib/state/tenant-switching.ts`: Verified tenant switching state transitions through its passing tests.
+- `apps/frontend/src/routes/dashboard/admin/settings/+page.svelte`: Verified settings page compiles and uses tenant-aware state.
+- `apps/frontend/src/routes/dashboard/conversations/[phone]/+page.server.ts`: Verified conversation detail server loading and authorization compile.
+- `apps/frontend/src/routes/dashboard/conversations/[phone]/+page.svelte`: Verified conversation detail rendering and media links compile.
+- `apps/frontend/src/routes/dashboard/orders/[orderId]/+page.svelte`: Verified order detail page compiles.
+- `apps/frontend/src/routes/dashboard/personas/+page.server.ts`: Verified persona list server loading compiles.
+- `apps/frontend/src/routes/dashboard/personas/create/+page.server.ts`: Verified persona creation server action compiles.
+- `apps/frontend/src/routes/dashboard/reports/+page.server.ts`: Verified report page server loading compiles.
+- `apps/frontend/src/routes/dashboard/simulator/+page.server.ts`: Verified simulator server loading compiles.
+- `apps/frontend/src/routes/dashboard/simulator/+page.svelte`: Verified simulator UI compiles and integrates with backend routes.
+- `bunfig.toml`: Verified root test configuration supports the passing workspace checks.
+- `packages/core/src/conversation/types.ts`: Verified shared conversation types compile across backend and frontend.
+- `packages/types/src/catalog.ts`: Verified shared catalog types compile and match backend usage.
+- `packages/types/src/events.ts`: Verified shared event types compile across event producers and consumers.
+- `packages/types/src/index.ts`: Verified shared type exports compile.
+- `readme.md`: Reviewed setup and tenant documentation; no additional defect found.
+- `scripts/generate-token.ts`: Verified supported presets and confirmed the documented `whatsapp-webhook` argument is not one of them.
+
+## Reviewer's report
+
+Correction noted. The complete file-by-file review is below; `apps/backend/src/db/query.ts` is now included.
+
+Findings:
+
+- `.env.example:54` and `.env.production.example:56`: documented token-generation command uses unsupported preset `whatsapp-webhook`; following it fails to generate the webhook token.
+- `apps/frontend/src/routes/dashboard/conversations/+page.svelte:15`: an empty successful poll falls back to stale SSR data, leaving deleted or filtered conversations visible until reload.
+
+Verified: backend tests (431 passing), backend typecheck, frontend Svelte check, tenant-switching tests, and whitespace validation pass. No files were edited.
