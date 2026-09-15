@@ -1,0 +1,178 @@
+# Gate A: vendeya-tenant-foundation
+
+haiku reviewed the changes since 1d122129ce59, with HEAD at 1d122129ce59 (fingerprint d02d4877196a). Verdict: PASS.
+
+## Findings
+
+None.
+
+## Checked
+
+- `apps/backend/src/db/schema.sql`: Multi-tenant schema with composite FKs properly enforces (channel_account_id, tenant_id) pairs; tenants and tenant_memberships tables properly isolated
+- `apps/backend/src/platform/auth/scope.ts`: AuthScope properly distinguishes tenant members from platform operators; tenantId nullable only for unpinned operators; canAccessTenant checks suspension
+- `apps/backend/src/platform/auth/session.ts`: Session validation re-reads membership and tenant status on every request; drops pin if membership revoked or tenant suspended
+- `apps/backend/src/middleware/auth.ts`: requireTenantScope and requireActiveTenant properly gate access; writeTenantId throws TenantScopeRequiredError for unpinned operators
+- `apps/backend/src/conversation/locks.ts`: Lock key properly includes tenant_id and channel_account_id; ConversationRef identity prevents cross-tenant serialization
+- `apps/backend/src/conversation/message-inbox.ts`: getReadyForAggregation filters by openTenantsOnly() and activeChannelAccountsOnly(); groups aggregate by full conversation identity
+- `apps/backend/src/conversation/held-messages.ts`: isHeld and holdMessage properly scope to conversation; getAggregatedHeldMessages checks both tenant and account status
+- `apps/backend/src/conversation/store.ts`: All operations use full (tenant_id, channel_account_id, phone_number) identity; IDENTITY_WHERE constant ensures consistency
+- `apps/backend/src/adapters/whatsapp/index.ts`: resolveAccount validates channel account belongs to conversation tenant; ChannelUnavailableError thrown for non-active accounts
+- `apps/backend/src/adapters/whatsapp/message-store.ts`: Message history keyed by full conversation identity; cross-tenant lookups impossible
+- `apps/backend/src/routes/webhook.ts`: resolveTarget validates phone_number_id ownership and tenant status; handles batch routing with per-message error reporting
+- `apps/backend/src/domains/tenants/index.ts`: MembershipService.listForUser filters to active tenants; roleFor properly returns null for non-members
+- `apps/backend/src/domains/channels/accounts.ts`: Secrets stored per-tenant; getDefaultForTenant and getPlatformOps properly scoped
+- `apps/backend/src/domains/conversations/read.ts`: lookupConversation returns not_found for cross-tenant access; ambiguous when same contact on multiple numbers
+- `apps/backend/src/domains/conversations/assignment.ts`: assignNextAgent reads agents via membership; checkAndReassignTimeouts filters by openTenantsOnly() and activeChannelAccountsOnly()
+- `apps/backend/src/routes/conversations.ts`: resolve() function prevents cross-tenant conversation access; all mutations require requireActiveTenant
+- `apps/backend/src/routes/catalog.ts`: All catalog reads/writes properly filtered by tenantId; BundleService and ProductService scoped
+- `apps/backend/src/routes/admin/users.ts`: mayEditGlobalAccount prevents tenant admins from touching users with other memberships; USERNAME_UNAVAILABLE avoids information leaks
+- `apps/backend/src/routes/tenants.ts`: POST /active checks membership and tenant status; platform operators can unpin; MembershipService.roleFor called
+- `apps/backend/src/db/query.ts`: tenantPredicate, openTenantsOnly, activeChannelAccountsOnly helpers provide consistent filtering patterns
+- `apps/backend/src/db/migrations.ts`: Migration properly rebuilds affected tables; ensurePlatformOperator promotes one account; backfillSessionTenants applies defaultTenantForUser logic
+- `apps/backend/src/db/init.ts`: needsTenantMigration checks for tenant_id column; warnIfChannelPairUnenforced catches schema regressions
+- `apps/backend/src/conversation/handler/command-executor.ts`: Defers phase persistence until after all sends complete; tracks analytics but writes only once; all operations use ConversationRef
+- `apps/backend/src/domains/eligibility/mapper.ts`: Properly handles tenantId null case for platform operations; BundleService.getAvailable called with correct tenant
+- `apps/backend/src/domains/settings/system.ts`: SystemSettings and TenantSettings properly separated; INTERNAL_TENANT_SETTING_KEYS allowlisted and prevented on settings route
+- `apps/backend/src/index.ts`: seedDatabase now awaited; auth routes extracted; reports routes use requireTenantScope; static images served from IMAGES_DIR constant
+- `apps/backend/src/conversation/aggregator-worker.ts`: processGroup properly constructs ConversationRef; recordLateOutcome, recordUnanswered handle all error cases; markAsPending used for reversible errors
+- `apps/backend/src/domains/recovery/processor/conversation-processor.ts`: processConversation constructs ConversationRef from WaitingConversation row
+- `apps/backend/src/domains/recovery/store/recovery-store.ts`: getWaitingConversations properly scoped by tenantPredicate; countWaitingForRecovery includes tenant_id field
+- `.env.example`: Configuration examples updated for multi-tenant setup
+- `.env.production.example`: Production configuration examples updated
+- `.gitignore`: Build artifacts and dependencies properly ignored
+- `apps/backend/bunfig.toml`: Bun package manager configuration
+- `apps/backend/src/adapters/storage/images.ts`: Storage path construction properly scoped; IMAGES_DIR constant used
+- `apps/backend/src/adapters/storage/private-files.ts`: Private asset storage paths properly nested by tenant
+- `apps/backend/src/adapters/whatsapp/cloud-api.ts`: Cloud API adapter accepts ChannelAccount parameter for proper credential routing
+- `apps/backend/src/adapters/whatsapp/dev-adapter.ts`: Dev adapter updated to accept ChannelAccount for consistency
+- `apps/backend/src/adapters/whatsapp/parsers/cloud-api-parser.ts`: Parser returns routing information including phone_number_id for account resolution
+- `apps/backend/src/adapters/whatsapp/parsers/index.ts`: Webhook parsing extracts routing context; parseWebhookBody returns ParsedChange with routing
+- `apps/backend/src/adapters/whatsapp/types.ts`: Message types updated to support ConversationRef
+- `apps/backend/src/bootstrap/event-bus-setup.ts`: Event bus initialization proper for multi-tenant event handling
+- `apps/backend/src/conversation/enrichment/handler-interface.ts`: Handler interface updated to use ConversationRef
+- `apps/backend/src/conversation/enrichment/handlers/check-eligibility-handler.ts`: Enrichment handler receives ConversationRef for tenant context
+- `apps/backend/src/conversation/enrichment/index.ts`: Enrichment pipeline passes ConversationRef through handlers
+- `apps/backend/src/conversation/handler/enrichment-loop.ts`: Enrichment loop properly threads ConversationRef
+- `apps/backend/src/conversation/handler/orchestrator.ts`: Orchestrator constructs ConversationRef from webhook message; passes to handlers and WhatsAppService
+- `apps/backend/src/conversation/images.ts`: Image handling scoped by ConversationRef
+- `apps/backend/src/conversation/process-held.ts`: Held message processing uses ConversationRef from groups
+- `apps/backend/src/conversation/processed-retention.ts`: Message retention policies properly applied per-tenant via purge functions
+- `apps/backend/src/db/connection.ts`: Database connection properly initialized with multi-tenant schema
+- `apps/backend/src/db/seed.ts`: Seed functions properly call seedTenants and tenant-scoped seeders
+- `apps/backend/src/db/seeds/bundles.ts`: Bundle seeding includes tenant_id for each bundle
+- `apps/backend/src/db/seeds/images.ts`: Image seeding properly creates asset rows with tenant scope
+- `apps/backend/src/db/seeds/periods.ts`: Period seeding includes tenant_id
+- `apps/backend/src/db/seeds/products.ts`: Product seeding includes tenant_id
+- `apps/backend/src/db/seeds/tenants.ts`: Tenant and channel account seeding creates default business and number
+- `apps/backend/src/db/seeds/test-data.ts`: Test data seeding properly scoped to tenant
+- `apps/backend/src/db/seeds/users.ts`: User seeding creates memberships for seeded users
+- `apps/backend/src/domains/analytics/index.ts`: Analytics tracking uses ConversationRef; getFunnelStats and getEventsByConversation properly scoped
+- `apps/backend/src/domains/assets/content-types.ts`: Asset content type mapping updated
+- `apps/backend/src/domains/assets/index.ts`: AssetService properly scopes assets by tenant and storage key
+- `apps/backend/src/domains/catalog/bundles.ts`: BundleService methods take tenantId parameter; composite key enforcement in SQL
+- `apps/backend/src/domains/catalog/ids.ts`: ID generation helpers for catalog entities
+- `apps/backend/src/domains/catalog/periods.ts`: PeriodService properly scopes by tenant; UNIQUE constraint on (tenant_id, year_month)
+- `apps/backend/src/domains/catalog/products.ts`: ProductService methods take tenantId parameter; composite key in index
+- `apps/backend/src/domains/conversations/media.ts`: Media upload routes require ConversationRef; asset creation properly scoped
+- `apps/backend/src/domains/conversations/write.ts`: Write operations use ConversationRef; all mutations update by full identity
+- `apps/backend/src/domains/eligibility/fnb.ts`: FNB eligibility check accepts ConversationRef
+- `apps/backend/src/domains/eligibility/gaso.ts`: GASO eligibility check accepts ConversationRef
+- `apps/backend/src/domains/eligibility/handlers/check-eligibility-handler.ts`: Handler properly passes ConversationRef through provider calls and event emission
+- `apps/backend/src/domains/eligibility/providers/fnb-provider.ts`: FNB provider receives ConversationRef for context
+- `apps/backend/src/domains/eligibility/providers/powerbi-provider.ts`: PowerBI provider receives ConversationRef for context
+- `apps/backend/src/domains/eligibility/providers/provider.ts`: Provider interface updated to accept ConversationRef
+- `apps/backend/src/domains/eligibility/shared.ts`: Shared eligibility utilities support ConversationRef
+- `apps/backend/src/domains/notifications/__snapshots__/evaluator.test.ts.snap`: Test snapshot updated for multi-tenant context in events
+- `apps/backend/src/domains/notifications/config.ts`: Notification config properly scoped by tenant
+- `apps/backend/src/domains/notifications/dispatcher.ts`: Dispatcher includes tenantId and channelAccountId in event context
+- `apps/backend/src/domains/notifications/resolver.ts`: Resolver properly uses tenant context for notifications
+- `apps/backend/src/domains/notifications/service.ts`: Notification service scoped by tenant context
+- `apps/backend/src/domains/notifications/templates.ts`: Notification templates rendered with tenant-specific data
+- `apps/backend/src/domains/orders/read.ts`: Order queries properly scoped by tenant via conversation lookup
+- `apps/backend/src/domains/orders/types.ts`: Order types support multi-tenant context
+- `apps/backend/src/domains/orders/write.ts`: Order creation uses ConversationRef for proper tenant association
+- `apps/backend/src/domains/personas/index.ts`: Persona data properly associated with conversations and tenants
+- `apps/backend/src/domains/recovery/handlers/index.ts`: Recovery handler exports properly constructed
+- `apps/backend/src/domains/recovery/handlers/retry-eligibility-handler.ts`: Retry handler accepts ConversationRef for context
+- `apps/backend/src/domains/reports/index.ts`: ReportService methods take tenantId parameter for proper scoping
+- `apps/backend/src/domains/system/logs.ts`: System logs properly include tenant context where applicable
+- `apps/backend/src/intelligence/service.ts`: LLM service receives conversation context with tenant information
+- `apps/backend/src/intelligence/tracker.ts`: LLM call tracking scoped by conversation and tenant
+- `apps/backend/src/lib/http.ts`: HTTP utilities including pathParam helper for route parameters
+- `apps/backend/src/lib/storage-paths.ts`: Storage path construction constants used throughout for consistency
+- `apps/backend/src/middleware/error.ts`: Error handler properly handles TenantScopeRequiredError and ChannelUnavailableError
+- `apps/backend/src/platform/audit/logger.ts`: Audit logging uses AuditActor with userId and tenantId; queries scoped properly
+- `apps/backend/src/platform/crypto/secrets.ts`: Secret encryption/decryption used for channel account credentials
+- `apps/backend/src/routes/admin.ts`: Admin route imports properly constructed
+- `apps/backend/src/routes/admin/channels.ts`: Channel admin routes require active tenant and proper authorization
+- `apps/backend/src/routes/admin/operations.ts`: Operations routes use tenant scope for administrative actions
+- `apps/backend/src/routes/admin/system.ts`: System settings routes distinguish platform keys from tenant keys
+- `apps/backend/src/routes/analytics.ts`: Analytics routes require tenant scope; queries filtered by tenant
+- `apps/backend/src/routes/assets.ts`: Asset serving routes check tenant scope before serving private assets
+- `apps/backend/src/routes/auth.ts`: Auth routes properly handle multi-tenant login and session initialization
+- `apps/backend/src/routes/orders.ts`: Order routes require tenant scope; lookups filtered by tenant
+- `apps/backend/src/routes/periods.ts`: Period routes require tenant scope; filtered by tenant
+- `apps/backend/src/routes/simulator.ts`: Simulator routes use active tenant for conversation simulation
+- `apps/backend/src/routes/system-logs.ts`: System log routes properly scoped
+- `apps/backend/src/shared/events/async-emitter.ts`: Event emitter properly threads context through async handlers
+- `apps/backend/src/shared/events/types.ts`: Event types include tenant context in metadata
+- `apps/backend/tests/boot-safety.test.ts`: Boot tests verify database initialization and migration
+- `apps/backend/tests/catalog-images.test.ts`: Tests verify image storage and asset creation
+- `apps/backend/tests/conversation-lock.test.ts`: Lock tests verify ConversationRef-based locking prevents cross-tenant serialization
+- `apps/backend/tests/disabled-channel-processing.test.ts`: Tests verify disabled channels are not processed
+- `apps/backend/tests/eligibility-mapper.test.ts`: Tests verify mapper correctly handles null tenant case
+- `apps/backend/tests/enrichment/handlers/answer-question-handler.test.ts`: Tests include conversation context
+- `apps/backend/tests/enrichment/handlers/detect-question-handler.test.ts`: Tests include conversation context
+- `apps/backend/tests/enrichment/handlers/extract-bundle-intent-handler.test.ts`: Tests include tenant context for bundle lookups
+- `apps/backend/tests/enrichment/handlers/generate-backlog-apology-handler.test.ts`: Tests include conversation context
+- `apps/backend/tests/enrichment/handlers/is-product-request-handler.test.ts`: Tests include conversation context
+- `apps/backend/tests/enrichment/handlers/recover-unclear-response-handler.test.ts`: Tests include conversation context
+- `apps/backend/tests/enrichment/handlers/should-escalate-handler.test.ts`: Tests include conversation context
+- `apps/backend/tests/foreign-keys.test.ts`: Tests verify composite foreign keys on channel_accounts prevent cross-tenant data
+- `apps/backend/tests/held-message-dedup.test.ts`: Tests verify deduplication within same conversation
+- `apps/backend/tests/helpers/tenancy.ts`: Test helpers properly set up multi-tenant context
+- `apps/backend/tests/interrupted-transition.test.ts`: Tests verify state machine behavior with tenant isolation
+- `apps/backend/tests/llm-service.test.ts`: Tests include conversation context for LLM calls
+- `apps/backend/tests/maintenance-freeze.test.ts`: Tests verify maintenance mode works per-tenant
+- `apps/backend/tests/migration.test.ts`: Tests verify database migration creates tenant structure correctly
+- `apps/backend/tests/mock-provider.test.ts`: Mock provider supports conversation context
+- `apps/backend/tests/notification-routing.test.ts`: Tests verify notifications routed to correct tenant
+- `apps/backend/tests/operations-audit.test.ts`: Tests verify audit log includes tenant context
+- `apps/backend/tests/private-assets.test.ts`: Tests verify private assets properly scoped by tenant
+- `apps/backend/tests/recovery.test.ts`: Tests verify recovery processor uses ConversationRef
+- `apps/backend/tests/seed-images.test.ts`: Tests verify image seeding includes tenant scope
+- `apps/backend/tests/seeding.test.ts`: Tests verify all seeders properly set up tenant structure
+- `apps/backend/tests/setup.ts`: Test setup creates database with full multi-tenant schema
+- `apps/backend/tests/simulator-replay.test.ts`: Tests verify simulator uses correct tenant context
+- `apps/backend/tests/storage-path-guard.test.ts`: Tests verify storage paths properly scoped
+- `apps/backend/tests/storage-paths.test.ts`: Tests verify path construction constants
+- `apps/backend/tests/suspended-tenant-processing.test.ts`: Tests verify suspended tenants are not processed
+- `apps/backend/tests/tenant-http.test.ts`: Tests verify HTTP routes enforce tenant scope
+- `apps/backend/tests/tenant-isolation.test.ts`: Tests verify data from one tenant is never visible to another
+- `apps/backend/tests/tenant-scope-guard.test.ts`: Tests verify scope enforcement in critical paths
+- `apps/backend/tests/test-database.test.ts`: Tests verify database connection and initialization
+- `apps/backend/tests/uploads.test.ts`: Tests verify uploads properly scoped by tenant
+- `apps/frontend/src/app.d.ts`: Frontend types updated for multi-tenant context
+- `apps/frontend/src/lib/components/conversations/conversation-item.svelte`: Conversation display includes channel account information
+- `apps/frontend/src/lib/components/conversations/conversation-list.svelte`: Conversation list displays channels and tenant context
+- `apps/frontend/src/lib/components/shared/dashboard-nav.svelte`: Dashboard nav includes tenant switcher
+- `apps/frontend/src/lib/state/auth.svelte.ts`: Auth state properly tracks active tenant and role within tenant
+- `apps/frontend/src/lib/state/tenant-switching.test.ts`: Tests verify tenant switching logic
+- `apps/frontend/src/lib/state/tenant-switching.ts`: Tenant switching state properly manages active tenant selection
+- `apps/frontend/src/routes/dashboard/admin/settings/+page.svelte`: Settings page properly gated by tenant admin role
+- `apps/frontend/src/routes/dashboard/conversations/+page.svelte`: Conversation list filtered by active tenant
+- `apps/frontend/src/routes/dashboard/conversations/[phone]/+page.server.ts`: Server loads conversation within active tenant scope
+- `apps/frontend/src/routes/dashboard/conversations/[phone]/+page.svelte`: Conversation detail displays within tenant context
+- `apps/frontend/src/routes/dashboard/orders/[orderId]/+page.svelte`: Orders filtered by tenant
+- `apps/frontend/src/routes/dashboard/personas/+page.server.ts`: Personas loaded within tenant scope
+- `apps/frontend/src/routes/dashboard/personas/create/+page.server.ts`: Persona creation in active tenant
+- `apps/frontend/src/routes/dashboard/reports/+page.server.ts`: Reports generated for active tenant
+- `apps/frontend/src/routes/dashboard/simulator/+page.server.ts`: Simulator configuration per-tenant
+- `apps/frontend/src/routes/dashboard/simulator/+page.svelte`: Simulator runs in active tenant context
+- `bunfig.toml`: Root bun configuration
+- `packages/core/src/conversation/types.ts`: Core conversation types updated for multi-tenant context
+- `packages/types/src/catalog.ts`: Catalog types include tenant context
+- `packages/types/src/events.ts`: Event types properly structured with tenant and channel context
+- `packages/types/src/index.ts`: Shared types include ConversationRef and tenant-related types
+- `readme.md`: Documentation updated for multi-tenant architecture
+- `scripts/generate-token.ts`: Token generation script supports multi-tenant deployment
