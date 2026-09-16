@@ -59,8 +59,20 @@ ensure_user_entrypoint() {
   fi
 }
 
+ensure_gh_stack() {
+  have gh || return 0
+  gh stack --help >/dev/null 2>&1 && return 0
+
+  # cap-deliver calls gh stack link to register stacked PRs on GitHub; without
+  # the extension that call is a silent no-op, so ensure it here rather than
+  # at delivery time, where a missing tool should not block shipping a task.
+  gh extension install github/gh-stack >/dev/null 2>&1 ||
+    warn "could not install the gh-stack extension; run: gh extension install github/gh-stack"
+}
+
 ensure_repo_setup() {
   ensure_user_entrypoint
+  ensure_gh_stack
   git_ensure_attribution_hook "$CAP_HOME" 2>/dev/null || true
 }
 
@@ -112,6 +124,8 @@ report() {
 
   printf 'gh auth\t%s\n' \
     "$(gh auth status >/dev/null 2>&1 && echo ok || echo 'not logged in')"
+  printf 'gh-stack extension\t%s\n' \
+    "$(gh stack --help >/dev/null 2>&1 && echo ok || echo missing)"
   printf 'claude status line\t%s\n' \
     "$(jq -r '.statusLine.command // "none"' "$HOME/.claude/settings.json" 2>/dev/null || echo none)"
 

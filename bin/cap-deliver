@@ -203,6 +203,21 @@ deliver_pr() {
 	task_env_set "$slug" CAP_PR "$url"
 	printf 'PR: %s\n' "$url"
 
+	# GitHub only renders a stack (icon, stack map, ordered merge) once a stack
+	# object links the PRs; --base chaining alone leaves them looking unrelated.
+	# cap doctor installs the gh-stack extension this needs, so its absence
+	# here is a broken host, not an expected path.
+	if [ -n "${CAP_PARENT:-}" ]; then
+		parent_pr=$(task_field "$CAP_PARENT" CAP_PR)
+		if [ -n "$parent_pr" ]; then
+			if gh stack link "$parent_pr" "$url" >/dev/null 2>&1; then
+				printf 'stacked on %s\n' "$parent_pr"
+			else
+				warn "could not register a GitHub stack for $url onto $parent_pr; run cap doctor"
+			fi
+		fi
+	fi
+
 	if [ "$do_merge" != 1 ]; then
 		printf 'not merged. Run: cap deliver %s --merge\n' "$slug"
 		return

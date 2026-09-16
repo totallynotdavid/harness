@@ -16,7 +16,9 @@ project's tools can answer. Passing checks do not replace model review: they do
 not establish that the change is correct for cases the project does not test.
 
 mise run doctor checks Captain's repository setup. cap doctor also repairs the
-local cap path. The built-in mise doctor remains a host diagnostic.
+local cap path and installs the gh-stack extension cap deliver needs to
+register stacked PRs on GitHub. The built-in mise doctor remains a host
+diagnostic.
 
 ## Review a task
 
