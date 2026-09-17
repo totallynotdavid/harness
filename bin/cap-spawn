@@ -358,7 +358,9 @@ EOF
 launch_agent() {
 	kick="Read $dir/contract.md and carry it out."
 
-	read -r pane tabid session_id <<<"$("$CAP_BIN/cap-launch" --task "$slug" --dir "$tree" \
+	label=$(task_agent_label "$project" "$slug" "$(session_identity)")
+
+	read -r pane tabid session_id <<<"$("$CAP_BIN/cap-launch" --task "$slug" --label "$label" --dir "$tree" \
 		--harness "$harness" --model "$model" --effort "$effort" "${guard[@]}" "$kick")"
 
 	[ -n "$pane" ] || die "$slug: could not start the agent session"

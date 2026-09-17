@@ -16,6 +16,7 @@ import caplib  # noqa: E402
 def main():
     parser = argparse.ArgumentParser(prog="cap-launch")
     parser.add_argument("--task", required=True)
+    parser.add_argument("--label", help="tab label; defaults to --task")
     parser.add_argument("--dir", required=True)
     parser.add_argument("--harness", required=True, choices=["claude", "codex"])
     parser.add_argument("--model", default="-")
@@ -58,7 +59,7 @@ def main():
 
     session = caplib.launch(
         args.dir,
-        args.task,
+        args.label or args.task,
         argv,
         turn_dir,
         env={"CAP_TASK": args.task},
