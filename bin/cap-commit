@@ -58,7 +58,7 @@ prepare_commit_plan() {
 Return exactly one fenced json block with this shape:
 {\"commits\":[{\"summary\":\"lowercase imperative subject\",\"body\":null,\"paths\":[\"relative/path\"]}]}
 
-Every changed path must appear exactly once. Keep files that form one logical change in the same group. The groups are written in the listed order. Use body null for a small, obvious, or pure rename change. For a change that spans several files, changes behavior, or needs context, set body to the complete description. Its first line must be \"Why: <reason>\"; it may contain further paragraphs. Encode paragraph breaks as \\n inside the JSON string. Keep the subject direct and concise. Do not use conventional-commit prefixes or a trailing period.
+Every changed path must appear exactly once. Keep files that form one logical change in the same group. The groups are written in the listed order. Use body null for a small, obvious, or pure rename change. For a change that spans several files, changes behavior, or needs context, set body to the complete description. Its first line must be \"Why: <reason>\"; it may contain further paragraphs. Encode paragraph breaks as \\n inside the JSON string. Keep the subject direct and concise. Do not use a conventional-commit prefix or a trailing period. A conventional-commit prefix is any of these words followed by a colon, with or without a (scope): revert, feat, fix, docs, style, refactor, perf, test, build, ci, chore. A change that touches only docs or only tests still needs a real area prefix naming the part of Captain being changed (e.g. \"watch: document ...\", \"watch: add a cursor-isolation test\"), never the word \"docs\" or \"test\" itself.
 
 Changed paths:
 $changed"
