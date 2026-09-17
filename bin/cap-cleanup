@@ -47,8 +47,10 @@ base=$(diff_base "$CAP_TREE" "$CAP_BASE")
 reviewable=$(git -C "$CAP_TREE" diff --name-only "$base" | wc -l)
 reviewable=$((reviewable + $(git -C "$CAP_TREE" ls-files --others --exclude-standard | wc -l)))
 
-[ "$reviewable" != 0 ] ||
-  die "$slug's worktree has no changes against $CAP_BASE; nothing to clean up"
+if [ "$reviewable" = 0 ]; then
+  printf 'cap: %s has no changes against %s; nothing to clean up\n' "$slug" "$CAP_BASE"
+  exit 0
+fi
 
 prompt="Read $CAP_HOME/rules/comments.md and the Readability section of
 $CAP_HOME/rules/code.md, then apply them to every file this worktree changes

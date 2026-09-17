@@ -205,8 +205,10 @@ full_since=$(diff_base "$CAP_TREE" "$CAP_BASE")
 reviewable=$(reviewable_files "$CAP_TREE" "$full_since") ||
   die "$slug: could not determine the reviewable diff"
 
-[ -n "$reviewable" ] ||
-  die "$slug has no reviewable changes against $CAP_BASE; the work is already in the base"
+if [ -z "$reviewable" ]; then
+  printf 'cap: %s has no reviewable changes against %s; the work is already in the base\n' "$slug" "$CAP_BASE"
+  exit 0
+fi
 
 if [ "$full" = 1 ]; then
   since=$full_since

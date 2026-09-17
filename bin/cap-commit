@@ -75,7 +75,17 @@ task_lock "$slug"
 if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 cap_completion_start commit "$slug"
 
-[ "$(git_dirty "$CAP_TREE")" != 0 ] || die "$slug's worktree is clean; nothing to commit"
+if [ "$(git_dirty "$CAP_TREE")" = 0 ]; then
+  # A clean tree with commits already ahead of base means a previous, successful
+  # run already committed this task's changes (e.g. a second cap commit dispatched
+  # after the first one finished). That is not a failure to report.
+  if [ -n "$(git -C "$CAP_TREE" log --format=%H "$CAP_BASE..HEAD")" ]; then
+    printf 'cap: %s already committed; nothing new to commit\n' "$slug"
+    exit 0
+  fi
+
+  die "$slug's worktree is clean; nothing to commit"
+fi
 
 snapshot_tree
 prepare_commit_plan
