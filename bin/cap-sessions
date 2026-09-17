@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# cap-sessions - list all agent sessions running on this machine.
+# cap-sessions - list agent sessions running on this machine, grouped by
+# which captain session owns each dispatched task. CAP_OWNER already
+# records that link (bin/lib/60-task.sh); this only reads it.
 
 . "$(dirname "$(readlink -f "$0")")/lib.sh"
 
@@ -21,26 +23,36 @@ session_kind() {
 	esac
 }
 
+task_slug_for_cwd() {
+	local cwd=$1 slug
+
+	case $cwd in
+	"$CAP_WORK_ROOT"/*)
+		slug=${cwd#"$CAP_WORK_ROOT"/}
+		slug=${slug%%/*}
+		[ -d "$TASKS/$slug" ] && printf '%s\n' "$slug"
+		;;
+	esac
+}
+
 session_location() {
 	local cwd=$1
-	local slug
-	local name remote path _mode _model
+	local slug name remote path _mode _model
 
 	if [ "$cwd" = "$CAP_HOME" ]; then
 		printf 'Captain repository\n'
 		return
 	fi
 
+	slug=$(task_slug_for_cwd "$cwd")
+	if [ -n "$slug" ]; then
+		printf 'task %s\n' "$slug"
+		return
+	fi
+
 	case $cwd in
 	"$CAP_WORK_ROOT"/*)
-		slug=${cwd#"$CAP_WORK_ROOT"/}
-		slug=${slug%%/*}
-
-		if [ -d "$TASKS/$slug" ]; then
-			printf 'task %s\n' "$slug"
-		else
-			printf 'task %s (no record)\n' "$slug"
-		fi
+		printf 'task %s (no record)\n' "${cwd#"$CAP_WORK_ROOT"/}"
 		return
 		;;
 	esac
@@ -59,28 +71,92 @@ session_location() {
 	printf '%s\n' "$cwd"
 }
 
-rows=""
+declare -A captain_label=()
+declare -A agent_rows_by_slug=()
+declare -A other_rows=()
+captain_ids=()
 
 for harness in claude codex; do
 	for pid in $(pgrep -x "$harness" 2>/dev/null || true); do
 		cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
 		[ -n "$cwd" ] || continue
 
-		kind=$(session_kind "$pid")
 		where=$(session_location "$cwd")
 		rss=$(awk '/^VmRSS:/{print int($2/1024)}' "/proc/$pid/status" 2>/dev/null || echo 0)
 		age=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ' || echo '?')
 
-		rows="$rows$pid"$'\t'"$harness"$'\t'"$kind"$'\t'"${rss}M"$'\t'"$age"$'\t'"$where"$'\n'
+		if [ "$cwd" = "$CAP_HOME" ]; then
+			stamp=$(proc_stat_field "$pid" 20 2>/dev/null || true)
+			id=$pid@$stamp
+			captain_ids+=("$id")
+			captain_label[$id]="$pid"$'\t'"$harness"$'\t'"${rss}M"$'\t'"$age"
+			continue
+		fi
+
+		slug=$(task_slug_for_cwd "$cwd")
+		row=$(printf '    agent %-8s %-7s %-10s %-6s %-10s %s\n' \
+			"$pid" "$harness" "$(session_kind "$pid")" "${rss}M" "$age" "$where")$'\n'
+		if [ -n "$slug" ]; then
+			agent_rows_by_slug[$slug]+="$row"
+		else
+			other_rows[$pid]="$row"
+		fi
 	done
 done
 
-if [ -z "$rows" ]; then
+if [ "${#captain_ids[@]}" -eq 0 ] && [ "${#other_rows[@]}" -eq 0 ] && [ "${#agent_rows_by_slug[@]}" -eq 0 ]; then
 	echo "no agent sessions running"
 	exit 0
 fi
 
-{
-	printf 'PID\tHARNESS\tKIND\tRSS\tAGE\tWHERE\n'
-	printf '%s' "$rows"
-} | column -t -s"$(printf '\t')"
+claimed_slugs=""
+
+for id in "${captain_ids[@]}"; do
+	IFS=$'\t' read -r pid harness rss age <<<"${captain_label[$id]}"
+	printf 'CAPTAIN %s  %s  %s  %s  Captain repository\n' "$pid" "$harness" "$rss" "$age"
+
+
+	owned=0
+	for dir in "$TASKS"/*/; do
+		[ -d "$dir" ] || continue
+		slug=$(basename "$dir")
+		owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
+		[ "$owner" = "$id" ] || continue
+
+		project=$(task_field "$slug" CAP_PROJECT 2>/dev/null || true)
+		kind=$(task_field "$slug" CAP_KIND 2>/dev/null || true)
+		printf '  task %s (%s, %s)\n' "$slug" "$kind" "$project"
+		if [ -n "${agent_rows_by_slug[$slug]:-}" ]; then
+			printf '%s' "${agent_rows_by_slug[$slug]}"
+		else
+			printf '    (no agent process running)\n'
+		fi
+		claimed_slugs="$claimed_slugs $slug"
+		owned=1
+	done
+
+	[ "$owned" = 1 ] || printf '  (no owned tasks)\n'
+	echo
+done
+
+for slug in "${!agent_rows_by_slug[@]}"; do
+	case " $claimed_slugs " in
+	*" $slug "*) continue ;;
+	esac
+
+	owner=$(task_field "$slug" CAP_OWNER 2>/dev/null || true)
+	if [ -n "$owner" ]; then
+		printf 'UNOWNED (recorded owner %s is not a running captain): task %s\n' "$owner" "$slug"
+	else
+		printf 'UNOWNED (never claimed): task %s\n' "$slug"
+	fi
+	printf '%s' "${agent_rows_by_slug[$slug]}"
+	echo
+done
+
+if [ "${#other_rows[@]}" -gt 0 ]; then
+	printf 'OTHER SESSIONS (outside the task model)\n'
+	for pid in "${!other_rows[@]}"; do
+		printf '%s' "${other_rows[$pid]}"
+	done
+fi
