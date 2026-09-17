@@ -71,7 +71,7 @@ for harness in claude codex; do
 		rss=$(awk '/^VmRSS:/{print int($2/1024)}' "/proc/$pid/status" 2>/dev/null || echo 0)
 		age=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ' || echo '?')
 
-		rows="$rows$pid\t$harness\t$kind\t${rss}M\t$age\t$where\n"
+		rows="$rows$pid"$'\t'"$harness"$'\t'"$kind"$'\t'"${rss}M"$'\t'"$age"$'\t'"$where"$'\n'
 	done
 done
 
