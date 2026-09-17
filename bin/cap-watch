@@ -4,9 +4,15 @@
 
 timeout=1800
 interval=10
+task=""
+notify=0
 
 while [ $# -gt 0 ]; do
 	case $1 in
+	--task)
+		task=${2:?}
+		shift 2
+		;;
 	--timeout)
 		timeout=${2:?}
 		shift 2
@@ -15,19 +21,52 @@ while [ $# -gt 0 ]; do
 		interval=${2:?}
 		shift 2
 		;;
+	--notify)
+		notify=1
+		shift
+		;;
 	*)
 		die "unknown flag $1"
 		;;
 	esac
 done
 
+watch_slugs() {
+	if [ -n "$task" ]; then
+		printf '%s\n' "$task"
+		return 0
+	fi
+
+	task_slugs
+}
+
+notification_sound() {
+	case $1 in
+	DONE) printf 'done' ;;
+	*) printf 'request' ;;
+	esac
+}
+
+notify_report() {
+	local kind=$1 slug=$2 line=$3
+
+	have herdr || return 0
+	herdr notification show "Captain: $slug" \
+		--body "$kind: $line" \
+		--sound "$(notification_sound "$kind")" >/dev/null 2>&1 || true
+}
+
 report() {
 	printf '%s %s %s\n' "$1" "$2" "$3"
+	if [ "$notify" = 1 ]; then
+		notify_report "$1" "$2" "$3"
+	fi
 	found_event=1
 }
 
 check_status() {
 	local slug=$1
+	local cursor=${2:-}
 	local line verb
 
 	while IFS= read -r line; do
@@ -39,15 +78,21 @@ check_status() {
 		needs-input) report NEEDS_INPUT "$slug" "$line" ;;
 		failed) report FAILED "$slug" "$line" ;;
 		esac
-	done <<<"$(task_status_lines "$slug")"
+	done <<<"$(task_status_lines "$slug" "$cursor")"
 }
 
 check_task() {
 	local slug=$1
 	local reported=$TASKS/$slug/reported
+	local cursor=$TASKS/$slug/status.cursor
 	local age changed
 
 	[ -f "$TASKS/$slug/task.env" ] || return 0
+
+	if [ "$notify" = 1 ]; then
+		reported=$TASKS/$slug/notification.reported
+		cursor=$TASKS/$slug/notification.cursor
+	fi
 
 	if ! pane_live "$slug"; then
 		if grep -qx exited "$reported" 2>/dev/null; then
@@ -60,7 +105,7 @@ check_task() {
 	fi
 
 	live=$((live + 1))
-	check_status "$slug"
+	check_status "$slug" "$cursor"
 
 	[ "$found_event" = 1 ] && return
 
@@ -82,8 +127,8 @@ check_task() {
 
 deadline=$(($(now) + timeout))
 
-while [ "$(now)" -lt "$deadline" ]; do
-	slugs=$(task_slugs)
+while [ "$timeout" = 0 ] || [ "$(now)" -lt "$deadline" ]; do
+	slugs=$(watch_slugs)
 
 	if [ -z "$slugs" ]; then
 		echo "NONE no agents running"

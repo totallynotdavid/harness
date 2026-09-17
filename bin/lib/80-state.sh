@@ -150,7 +150,7 @@ task_state_stale_age() {
 
 task_status_lines() {
   local file=$TASKS/$1/status.log
-  local cursor=$TASKS/$1/status.cursor
+  local cursor=${2:-$TASKS/$1/status.cursor}
   local start=0 line bytes pid read_from
   local LC_ALL=C
 

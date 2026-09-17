@@ -22,7 +22,8 @@ AGENTS
   cap batch [list|check|spawn] <name>         dispatch a partitioned set of tasks
   cap peek <slug> [lines]                     show recent agent output
   cap send <slug|session> [--take] "<text>"   send a message to an agent
-  cap watch [--timeout S] [--interval S]      wait until an agent needs input
+  cap watch [--task SLUG] [--notify] [--timeout S] [--interval S]
+                                                   wait until an agent needs input
 
 REVIEW AND DELIVERY
   cap check <slug>                            run checks for an agent

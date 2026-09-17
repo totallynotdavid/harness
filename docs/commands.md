@@ -15,7 +15,7 @@ Run `cap help` when the installed script is the source of truth.
 | `cap sessions` | Show every agent session on this machine. |
 | `cap peek <slug> [lines]` | Show recent agent output. |
 | `cap send <slug\|session> "<text>"` | Send a message to a task agent or live ask session. Labels include `gate-A-<slug>`, `commit-<slug>`, and `cleanup-<slug>`. |
-| `cap watch` | Wait until an agent needs input. |
+| `cap watch [--task SLUG] [--notify]` | Wait until an agent needs input; cap spawn arms the notification form automatically. |
 
 ## Review and delivery
 
