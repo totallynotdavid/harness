@@ -50,6 +50,7 @@ done
 merge_method=${merge_method:-rebase}
 
 task_load "$slug"
+task_forbid_self_dispatch "$slug" "cap deliver"
 task_lock "$slug"
 
 if [ "$take" = 1 ]; then

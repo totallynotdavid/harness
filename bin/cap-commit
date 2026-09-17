@@ -71,6 +71,7 @@ $changed"
 
 parse_args "$@"
 task_load "$slug"
+task_forbid_self_dispatch "$slug" "cap commit"
 task_lock "$slug"
 if [ "$take" = 1 ]; then task_owner_take "$slug"; else task_owner_claim "$slug"; fi
 cap_completion_start commit "$slug"
