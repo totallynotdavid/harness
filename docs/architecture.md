@@ -9,6 +9,7 @@ read or update one state store under an explicit lock when the state is shared.
 | Concern | Source | Main implementation |
 | --- | --- | --- |
 | Projects | config/projects.tsv | bin/cap-map, bin/lib/ |
+| Local project paths (per host) | state/local-paths.tsv | bin/lib/, bin/cap-map, bin/cap-doctor |
 | Models and profiles | config/captain.conf | bin/lib/, bin/cap-spawn |
 | Tasks | state/tasks/<slug>/ | bin/cap-spawn, bin/lib/ |
 | Worktrees | Git and CAP_WORK_ROOT | bin/cap-spawn, bin/cap-drop |

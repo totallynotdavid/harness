@@ -10,6 +10,11 @@ repositories store project source. A task gets a project worktree under
 CAP_WORK_ROOT, outside this repository, so project agents cannot change Captain
 or inherit its CLAUDE.md.
 
+config/projects.tsv keys each project by its origin remote, not its local
+path, so the registry is the same file on every host. Local clone location is
+a per-host cache under state/, rebuilt by scanning CAP_ROOTS; a project
+registered but not yet cloned on this host resolves to nothing until it is.
+
 A ship task uses a branch because it will produce a deliverable. A scout task
 uses a detached worktree because it produces a report and no branch.
 
@@ -36,6 +41,7 @@ same pass. The child worktree must be clean before that rewrite.
 - pr pushes a branch and opens a pull request.
 - local merges the branch into the configured base.
 - scout writes a report without delivering source changes.
+- ignore refuses dispatch; the registry keeps a decision not to run work here.
 
 The project registry supplies the mode. A scout task always uses scout mode.
 

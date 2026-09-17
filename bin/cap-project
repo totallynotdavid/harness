@@ -5,7 +5,7 @@
 name=${1:-}
 
 if [ -z "$name" ]; then
-	printf 'PROJECT\tPATH\tMODE\tMODEL\n'
+	printf 'PROJECT\tREMOTE\tMODE\tMODEL\n'
 	cat "$PROJECTS" 2>/dev/null
 	exit 0
 fi
@@ -23,8 +23,8 @@ if [ -z "$mode" ]; then
 fi
 
 case $mode in
-pr | local | scout) ;;
-*) die "mode must be pr|local|scout" ;;
+pr | local | scout | ignore) ;;
+*) die "mode must be pr|local|scout|ignore" ;;
 esac
 
 if [ -z "$model" ]; then

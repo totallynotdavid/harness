@@ -372,6 +372,8 @@ parse_args "$@"
 repo=$(proj_path "$project")
 mode=$(proj_mode "$project")
 
+[ "$mode" != ignore ] || die "$project is marked ignore in config/projects.tsv"
+
 [ -d "$repo/.git" ] || die "$repo is not a git repo"
 [ "$kind" = ship ] || mode=scout
 

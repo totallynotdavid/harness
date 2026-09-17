@@ -19,7 +19,85 @@ proj_field() {
     die "unknown project '$1' (cap map --sync to register)"
 }
 
-proj_path() { proj_field "$1" 2; }
+# Prints name\tpath\tremote for every git repo directly under CAP_ROOTS,
+# excluding this checkout. remote is empty when origin is not configured.
+cap_scan_roots() {
+  local -a roots
+  local root dir path name remote
+
+  IFS=: read -ra roots <<<"$CAP_ROOTS"
+
+  for root in "${roots[@]}"; do
+    [ -d "$root" ] || continue
+
+    for dir in "$root"/*/; do
+      [ -d "$dir.git" ] || continue
+
+      path=${dir%/}
+      [ "$path" = "$CAP_HOME" ] && continue
+
+      name=$(basename "$path")
+      remote=$(git -C "$path" remote get-url origin 2>/dev/null) || remote=""
+      printf '%s\t%s\t%s\n' "$name" "$path" "$remote"
+    done
+  done
+}
+
+# config/projects.tsv keys a project by its origin remote, which is the same
+# on every host. Local clone location varies per host, so it lives here
+# instead: a cache, rebuilt by scanning CAP_ROOTS, never committed.
+local_index_rebuild() {
+  mkdir -p "$(dirname "$LOCAL_INDEX")"
+  cap_scan_roots | awk -F'\t' '$3 != "" { print $3 "\t" $2 }' >"$LOCAL_INDEX.new"
+  mv "$LOCAL_INDEX.new" "$LOCAL_INDEX"
+}
+
+local_index_lookup() {
+  local remote=$1
+  local path
+
+  [ -n "$remote" ] && [ -f "$LOCAL_INDEX" ] || return 1
+
+  path=$(awk -F'\t' -v r="$remote" '$1 == r { print $2; found = 1 } END { exit !found }' "$LOCAL_INDEX") ||
+    return 1
+  [ -d "$path" ] || return 1
+
+  printf '%s' "$path"
+}
+
+# Resolves column 2 of a projects.tsv row to a local path: the cached index
+# first, one rebuild per process on a miss, then a fallback for a row that
+# stores a bare path because its repo has no origin remote to key on.
+proj_resolve() {
+  local remote=$1
+  local path
+
+  [ -n "$remote" ] || return 1
+
+  path=$(local_index_lookup "$remote") && { printf '%s' "$path"; return 0; }
+
+  if [ -z "${CAP_LOCAL_INDEX_REBUILT:-}" ]; then
+    local_index_rebuild
+    CAP_LOCAL_INDEX_REBUILT=1
+    path=$(local_index_lookup "$remote") && { printf '%s' "$path"; return 0; }
+  fi
+
+  [ -d "$remote/.git" ] && { printf '%s' "$remote"; return 0; }
+
+  return 1
+}
+
+proj_path() {
+  local name=$1
+  local remote
+  local path
+
+  remote=$(proj_field "$name" 2)
+  path=$(proj_resolve "$remote") ||
+    die "$name is registered but not cloned on this host (remote: $remote)"
+
+  printf '%s' "$path"
+}
 
 proj_mode() {
   local mode

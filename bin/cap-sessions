@@ -24,7 +24,7 @@ session_kind() {
 session_location() {
 	local cwd=$1
 	local slug
-	local name path _meta _mode
+	local name remote path _mode _model
 
 	if [ "$cwd" = "$CAP_HOME" ]; then
 		printf 'Captain repository\n'
@@ -45,7 +45,9 @@ session_location() {
 		;;
 	esac
 
-	while IFS=$'\t' read -r name path _meta _mode; do
+	while IFS=$'\t' read -r name remote _mode _model; do
+		path=$(proj_resolve "$remote") || continue
+
 		case $cwd in
 		"$path" | "$path"/*)
 			printf 'project %s\n' "$name"

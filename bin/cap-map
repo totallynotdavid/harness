@@ -10,36 +10,32 @@ fi
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
-IFS=: read -ra roots <<<"$CAP_ROOTS"
-
-for root in "${roots[@]}"; do
-	[ -d "$root" ] || continue
-
-	for dir in "$root"/*/; do
-		[ -d "$dir.git" ] || continue
-
-		path=${dir%/}
-		[ "$path" = "$CAP_HOME" ] && continue
-
-		name=$(basename "$path")
-		printf '%s\t%s\n' "$name" "$path" >>"$tmp"
-	done
-done
+cap_scan_roots >"$tmp"
 
 if [ "$sync" = 1 ]; then
 	touch "$PROJECTS"
 	added=0
+	skipped=0
 
-	while IFS=$'\t' read -r name path; do
+	while IFS=$'\t' read -r name _path remote; do
 		awk -F'\t' -v name="$name" '$1 == name { found = 1 } END { exit !found }' "$PROJECTS" &&
 			continue
 
-		printf '%s\t%s\t%s\t%s\n' "$name" "$path" pr - >>"$PROJECTS"
+		if [ -z "$remote" ]; then
+			skipped=$((skipped + 1))
+			continue
+		fi
+
+		printf '%s\t%s\t%s\t%s\n' "$name" "$remote" pr - >>"$PROJECTS"
 		added=$((added + 1))
 	done <"$tmp"
 
 	sort -o "$PROJECTS" "$PROJECTS"
-	printf 'registered %s new project(s)\n' "$added"
+	local_index_rebuild
+
+	printf 'registered %s new project(s)' "$added"
+	[ "$skipped" = 0 ] || printf ', skipped %s with no origin remote' "$skipped"
+	printf '\n'
 fi
 
 {
@@ -48,7 +44,7 @@ fi
 	printf '| project | path | branch | dirty | last commit | mode |\n'
 	printf '|---|---|---|---|---|---|\n'
 
-	while IFS=$'\t' read -r name path; do
+	while IFS=$'\t' read -r name path _remote; do
 		mode=$(awk -F'\t' -v name="$name" '$1 == name { print $3 }' "$PROJECTS" 2>/dev/null)
 		last_commit=$(git -C "$path" log -1 --format=%cs 2>/dev/null || echo '-')
 		display_path=$(printf '%s' "$path" | sed "s|^$HOME|~|")

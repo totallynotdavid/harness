@@ -73,7 +73,21 @@ ensure_gh_stack() {
 ensure_repo_setup() {
   ensure_user_entrypoint
   ensure_gh_stack
+  local_index_rebuild
   git_ensure_attribution_hook "$CAP_HOME" 2>/dev/null || true
+}
+
+projects_missing_locally() {
+  local name remote mode _model missing=0
+
+  [ -f "$PROJECTS" ] || { printf 0; return; }
+
+  while IFS=$'\t' read -r name remote mode _model; do
+    [ "$mode" = ignore ] && continue
+    proj_resolve "$remote" >/dev/null 2>&1 || missing=$((missing + 1))
+  done <"$PROJECTS"
+
+  printf '%s' "$missing"
 }
 
 report() {
@@ -107,6 +121,7 @@ report() {
     "$(grep -c . "$PROJECTS" 2>/dev/null || echo 0)"
   printf 'projects.tsv checksum\t%s\n' \
     "$(sha256sum "$PROJECTS" 2>/dev/null | cut -c1-16 || echo none)"
+  printf 'projects missing locally\t%s\n' "$(projects_missing_locally)"
   printf 'env HERDR_ENV\t%s\n' "${HERDR_ENV:+set}"
   printf 'env CAP_WORK_ROOT\t%s\n' "$CAP_WORK_ROOT"
 

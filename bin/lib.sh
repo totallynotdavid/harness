@@ -13,6 +13,7 @@ export CAP_BIN
 . "$CAP_HOME/config/captain.conf"
 
 PROJECTS=$CAP_HOME/config/projects.tsv
+LOCAL_INDEX=$CAP_HOME/state/local-paths.tsv
 TASKS=$CAP_HOME/state/tasks
 COMPLETIONS=$CAP_HOME/state/completions
 

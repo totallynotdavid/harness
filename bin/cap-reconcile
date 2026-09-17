@@ -20,7 +20,10 @@ esac
 printf '## Local\n\n'
 
 rows=""
-while IFS=$'\t' read -r name path _mode _model; do
+while IFS=$'\t' read -r name remote mode _model; do
+	[ "$mode" = ignore ] && continue
+
+	path=$(proj_resolve "$remote") || continue
 	[ -d "$path/.git" ] || continue
 
 	branch=$(git_branch "$path")
