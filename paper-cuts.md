@@ -14,3 +14,6 @@ A defect belongs here only while it is open.
 
 - [ ] #1 2026-08-30 `unsorted` - https://github.com/anthropics/claude-code/issues/82563: prompt cache behavior changes between adjacent turns. Captain cannot correct the client behavior. Recheck after a CLI release.
 - [ ] #2 2026-08-30 `unsorted` - https://github.com/anthropics/claude-code/issues/89327: the skill catalog is sent twice per session. Keep installed skill snapshots small until the client changes.
+- [ ] #3 2026-09-17 `sessions` - cap sessions builds its row string with literal \t/\n in a double-quoted var instead of $'\t'/$'\n', so the column output prints as a single unbroken line.
+- [ ] #4 2026-09-17 `statusline` - Global ~/.claude/settings.json points statusLine at a custom script instead of bin/cap-statusline, so Captain never records claude-tier usage snapshots under state/usage/; cap budget's claude quota reading stays permanently unmeasured until an operator rewires it by hand.
+- [ ] #5 2026-09-17 `models` - cap models intermittently fails with 'the codex app-server did not answer; codex profiles are unchecked' even though cap budget reaches the same app-server moments later; looks like a startup race, not a persistent config problem.
