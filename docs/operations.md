@@ -45,6 +45,14 @@ current tree is ready to deliver. status.log explains a blocked, failed, or
 input-needed task. No log word can override the live pane or a stale gate
 fingerprint.
 
+cap spawn starts one detached cap watch --task SLUG --notify process for the
+task. It sends completion and attention events through Herdr's notification
+surface, so the operator does not need to submit another prompt. The automatic
+watcher uses notification.cursor and notification.reported; manual cap watch
+uses status.cursor and reported, so either watcher can run without consuming
+the other's events. Dropping a task removes both cursors with its state
+directory.
+
 cap send continues a live agent session. It checks context and compacts the
 session before taking the task lock. If another command owns the task, the
 message goes to a durable queue and the command returns. Queue delivery happens

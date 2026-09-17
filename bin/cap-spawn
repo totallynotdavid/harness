@@ -367,6 +367,26 @@ launch_agent() {
 		"$pane" "$tabid" "$session_id" >>"$dir/task.env"
 }
 
+start_notification_watcher() {
+	local log=$dir/notification.log
+	local fd
+
+	# The watcher must outlive this command so a completed pane can notify the
+	# operator after cap spawn has returned to the calling session.
+	(
+		# Do not let the detached child keep cap spawn's task lock open.
+		for fd in "${CAP_LOCK_FDS[@]}"; do
+			eval "exec ${fd}>&-"
+		done
+		unset CAP_LOCKS CAP_LOCK_EXIT_ARMED
+		exec nohup "$CAP_BIN/cap-watch" \
+			--task "$slug" \
+			--notify \
+			--timeout 0 \
+			--interval 10
+	) >"$log" 2>&1 </dev/null &
+}
+
 parse_args "$@"
 
 repo=$(proj_path "$project")
@@ -384,6 +404,7 @@ check_memory
 prepare_worktree
 write_contract
 launch_agent
+start_notification_watcher
 
 done=1
 
