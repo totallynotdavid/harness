@@ -70,7 +70,6 @@ $text"
 	launch_output=$(
 		"$CAP_BIN/cap-launch" \
 			--task "$slug" \
-			--label "$(task_agent_label "$CAP_PROJECT" "$slug" "$(task_field "$slug" CAP_OWNER)")" \
 			--dir "$CAP_TREE" \
 			--harness "$CAP_HARNESS" \
 			--model "$CAP_MODEL" \

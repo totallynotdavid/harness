@@ -121,17 +121,6 @@ task_forbid_self_dispatch() {
   return 0
 }
 
-task_agent_label() {
-  local project=$1 slug=$2 owner=$3
-  local pid=${owner%%@*}
-
-  if [ -n "$pid" ]; then
-    printf '%s/%s (captain %s)' "$project" "$slug" "$pid"
-  else
-    printf '%s/%s' "$project" "$slug"
-  fi
-}
-
 task_owner_free() {
   local slug=$1
   local owner
