@@ -1,0 +1,4 @@
+# A raw conflict here can only be resolved by hand-editing outside
+# cap-papercut's own lock. Union merge keeps every side's lines instead.
+paper-cuts.jsonl merge=union
+paper-cuts.md merge=union

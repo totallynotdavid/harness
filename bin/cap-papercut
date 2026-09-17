@@ -163,7 +163,18 @@ def close(ident):
 
             entries.pop(index)
             save(entries)
-            print(f"removed #{entry['id']}")
+            remaining = sum(1 for e in entries if str(e["id"]) == ident)
+
+            if remaining:
+                print(
+                    f"removed one #{ident} entry ({entry['text'][:60]!r}); "
+                    f"{remaining} more entr{'y' if remaining == 1 else 'ies'} "
+                    f"still use #{ident} (two sessions logged at the same "
+                    f"time) - run close again for each"
+                )
+            else:
+                print(f"removed #{ident}")
+
             return
 
     raise caplib.CapError(f"no paper cut #{ident}")
