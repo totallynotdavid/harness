@@ -19,7 +19,6 @@ codex_rpc() {
   local params=${2:-'{}'}
   local dir writer server
   local rc=1
-  local i
 
   command -v codex >/dev/null 2>&1 || return 1
 
@@ -42,7 +41,12 @@ codex_rpc() {
   timeout 30 codex app-server <"$dir/in" >"$dir/out" 2>/dev/null &
   server=$!
 
-  for ((i = 0; i < 100; i++)); do
+  # Poll for as long as the app-server's own timeout allows. A shorter poll
+  # window than the timeout given to the server is a race: a reply that
+  # arrives after the poll gives up, but before the server actually dies,
+  # reads as a startup failure.
+  local deadline=$((SECONDS + 30))
+  while ((SECONDS < deadline)); do
     if grep -q '"id":2' "$dir/out" 2>/dev/null; then
       rc=0
       break
