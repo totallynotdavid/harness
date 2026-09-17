@@ -13,15 +13,8 @@ fake_bin=$scratch/bin
 mkdir -p "$home/config" "$home/state/tasks" "$fake_bin"
 cp "$root/config/captain.conf" "$home/config/captain.conf"
 
-# harness_ancestor_pid finds the nearest ancestor process named claude/codex
-# by reading /proc/<pid>/comm, which the kernel sets from the executed
-# file's own name - a "#!/usr/bin/env bash" script would run as a process
-# named "bash", not "claude". A real copy of the bash binary, invoked as
-# "claude", does get comm=claude. It cd's into the task's tree and forks
-# (the parenthesized subshell defeats bash's tail-call exec optimization,
-# which would otherwise replace this process's image - and its name - with
-# the child's) so it stays alive as a "claude"-named ancestor while its
-# child runs, exactly like a real dispatched agent's harness process.
+# /proc/<pid>/comm comes from the executed file's own name, not a shebang
+# script's name - so this must be a real binary named "claude".
 cp "$(command -v bash)" "$fake_bin/claude"
 
 tree=$scratch/tree

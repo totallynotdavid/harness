@@ -112,9 +112,6 @@ task_dispatched_here() {
   agent_cwd_matches "$1" "$pid"
 }
 
-# Commit and delivery decide whether a task's work ships. Only the
-# orchestrating Captain session makes that call - a dispatched agent running
-# this from inside its own worktree must leave the work uncommitted instead.
 task_forbid_self_dispatch() {
   local slug=$1 command=$2
 
