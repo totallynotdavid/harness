@@ -333,6 +333,7 @@ write_contract() {
 - Report failures plainly, with the output that shows them.
 - Found a second problem inside your scope? Fix it and say what you fixed. A brief is what the operator could see; you can see more. Outside your scope, report it instead, because a write there belongs to another task's work.
 - A tool you need is missing? Install it from its official instructions and carry on. Add it to \`config/tools/$project\` in Captain so the next worktree has it.
+- Stuck on a step that needs a different model, not more of this one? \`cap ask <profile> "<prompt>"\` runs one turn on another profile (Claude or Codex) and prints its answer; \`cap ask --help\` lists profiles.
 ${owns:+- You own \`$owns\` and nothing else. Writes outside it are blocked. Need a change elsewhere? Say so in your report.
 }${preflight_note:+
 $preflight_note
