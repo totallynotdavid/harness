@@ -172,7 +172,7 @@ history=$(printf '%s\n' "$diff_text" | awk '
 	}
 	generated { next }
 	/^\+[[:space:]]*#!/ { next }
-	/^\+[[:space:]]*(\/\/|#|\*|--)/ {
+	/^\+[[:space:]]*(\/\/|#|\*|--([[:space:]]|$))/ {
 		line = tolower($0)
 		if (line ~ /used to (be|have|[[:alpha:]]+ed)([[:space:]]|$)|previously|no longer|before this|originally|was (failing|timing|broken)|had to be/) {
 			print substr($0, 2)
@@ -196,7 +196,7 @@ long=$(printf '%s\n' "$diff_text" | awk '
 	}
 	generated { next }
 	/^\+[[:space:]]*#!/ { n = 0; next }
-	/^\+[[:space:]]*(\/\/|#|\*|--)/ { n++; next }
+	/^\+[[:space:]]*(\/\/|#|\*|--([[:space:]]|$))/ { n++; next }
 	{ if (n > 6) c++; n = 0 }
 	END { if (n > 6) c++; print c + 0 }')
 
