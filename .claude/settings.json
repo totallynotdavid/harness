@@ -23,15 +23,6 @@
             "command": "\"$CLAUDE_PROJECT_DIR\"/bin/hooks/guard-project-writes.sh"
           }
         ]
-      },
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/hooks/guard-subagent-dispatch.sh"
-          }
-        ]
       }
     ],
     "UserPromptSubmit": [
