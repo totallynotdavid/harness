@@ -1,0 +1,23 @@
+# Tools needed to render this project's pages for evidence (screenshots of
+# rendered routes/states), beyond `bun install` / `bun run build` / `bun run
+# lint` / `bun run format:check`, which a fresh worktree already covers.
+#
+# No `chromium-cli` binary is available in this environment. The Playwright
+# Chromium browser itself is already cached at ~/.cache/ms-playwright (shared
+# across worktrees, survives a fresh worktree checkout), but the `playwright`
+# npm package is not a dependency of this project (it has no browser tests)
+# and isn't resolvable via plain `node -e "require('playwright')"`. Installing
+# it into the project's own node_modules would touch package.json/bun.lock,
+# which most tasks in this repo don't own -- install it into a scratch
+# directory instead (e.g. the session scratchpad) and drive the dev server
+# from a small script there:
+#
+#   mkdir -p /tmp/pw-evidence && cd /tmp/pw-evidence && bun add playwright
+#   # then a Node script: import { chromium } from "playwright"; ... page.goto /
+#   # click / fill / screenshot against the `bun run dev` server.
+#
+# `npx playwright install chromium` is a no-op if the cache above already has
+# a matching version; only run it if `chromium.launch()` fails with a missing
+# executable error.
+sh   mkdir -p /tmp/pw-evidence
+sh   cd /tmp/pw-evidence && bun add playwright
