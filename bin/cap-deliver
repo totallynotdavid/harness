@@ -209,7 +209,18 @@ deliver_pr() {
 	# cap doctor installs the gh-stack extension this needs, so its absence
 	# here is a broken host, not an expected path.
 	if [ -n "${CAP_PARENT:-}" ]; then
-		parent_pr=$(task_field "$CAP_PARENT" CAP_PR)
+		# The parent's task record is gone once it has been delivered and
+		# dropped, so its PR comes from CAP_BASE's own open PR instead; a
+		# stacked branch survives on the remote for exactly this reason
+		# (see the kept-branch comment below). task_field returns 1 for a
+		# missing file, which set -e would otherwise treat as a failure.
+		parent_pr=$(task_field "$CAP_PARENT" CAP_PR || true)
+		if [ -z "$parent_pr" ]; then
+			parent_pr=$(
+				cd "$CAP_TREE" &&
+					gh pr view "$CAP_BASE" --repo "$repo_url" --json url --jq .url 2>/dev/null
+			) || true
+		fi
 		if [ -n "$parent_pr" ]; then
 			if gh stack link "$parent_pr" "$url" >/dev/null 2>&1; then
 				printf 'stacked on %s\n' "$parent_pr"
