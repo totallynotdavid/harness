@@ -75,6 +75,7 @@ ensure_repo_setup() {
   ensure_gh_stack
   local_index_rebuild
   git_ensure_attribution_hook "$CAP_HOME" 2>/dev/null || true
+  git_ensure_push_hook "$CAP_HOME" 2>/dev/null || true
 }
 
 projects_missing_locally() {

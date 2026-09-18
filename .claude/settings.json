@@ -34,6 +34,16 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/hooks/sync-captain-repo.sh"
+          }
+        ]
+      }
     ]
   }
 }

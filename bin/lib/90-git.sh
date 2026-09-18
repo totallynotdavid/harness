@@ -325,6 +325,40 @@ HOOK
   chmod +x "$hook" 2>/dev/null || true
 }
 
+git_ensure_push_hook() {
+  local tree=$1 gitdir hook
+
+  gitdir=$(git -C "$tree" rev-parse --git-common-dir 2>/dev/null) || return 0
+
+  case $gitdir in
+  /*) ;;
+  *) gitdir=$tree/$gitdir ;;
+  esac
+
+  hook=$gitdir/hooks/post-commit
+
+  [ -f "$hook" ] &&
+    grep -qF 'Captain: push after every commit' "$hook" 2>/dev/null &&
+    return 0
+
+  mkdir -p "$gitdir/hooks" || return 0
+
+  cat >"$hook" <<'HOOK' || return 0
+#!/usr/bin/env bash
+# Captain: push after every commit in this checkout. Every host runs an
+# independent clone with no other sync, so an unpushed fix here is a bug
+# another host will hit again. A post-commit hook cannot block the commit
+# it fires after, and this never forces: a rejected push leaves the local
+# commit for task-status.sh's ahead-count line to surface.
+branch=$(git symbolic-ref --short -q HEAD) || exit 0
+git push -q origin "HEAD:$branch" 2>/dev/null &&
+  printf 'captain: pushed to origin/%s\n' "$branch"
+exit 0
+HOOK
+
+  chmod +x "$hook" 2>/dev/null || true
+}
+
 ai_trailer_report() {
   local tree=$1 base=$2 commit hashes
 
