@@ -20,6 +20,21 @@ while IFS= read -r completion; do
   [ -n "$completion" ] && add "$completion"
 done <<<"$completions"
 
+# Captain runs as an independent clone on every host that uses it, with no
+# sync between them. Comparing against the remote-tracking ref costs nothing
+# (no fetch, no network) and is the only thing that surfaces a fix pushed
+# from one host before another one hits the same bug it already fixed.
+branch=$(git_branch "$CAP_HOME" 2>/dev/null || true)
+if [ -n "$branch" ] && [ "$branch" != '-' ] &&
+  git -C "$CAP_HOME" rev-parse -q --verify "origin/$branch" >/dev/null 2>&1; then
+  ahead=$(git -C "$CAP_HOME" rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo 0)
+  behind=$(git -C "$CAP_HOME" rev-list --count "HEAD..origin/$branch" 2>/dev/null || echo 0)
+  [ "${ahead:-0}" -gt 0 ] &&
+    add "  this captain checkout has $ahead unpushed commit(s) on $branch: git push"
+  [ "${behind:-0}" -gt 0 ] &&
+    add "  this captain checkout is $behind commit(s) behind origin/$branch (as of the last fetch): git pull"
+fi
+
 for slug in $(task_slugs); do
   (task_load "$slug") 2>/dev/null || continue
 
