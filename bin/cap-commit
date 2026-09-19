@@ -50,7 +50,7 @@ extract_commit_plan() {
 
 prepare_commit_plan() {
   local changed plan_answer plan_json problems
-  changed=$(git -C "$CAP_TREE" diff --no-renames --name-only "$snap_commit^" "$snap_commit")
+  changed=$(git -C "$CAP_TREE" diff --no-renames --name-only "$snap_commit^" "$snap_commit" | sort -u)
   [ -n "$changed" ] || die "$slug has no changed paths to plan"
   plan_path=$TASKS/$slug/commit-plan.json
   plan_prompt="Read $CAP_HOME/rules/commits.md in full. Inspect the current working-tree changes without editing them or committing anything. Design the exact commit groups and messages before Captain writes the history.
