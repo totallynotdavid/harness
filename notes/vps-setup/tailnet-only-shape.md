@@ -128,24 +128,44 @@ as in S2; a 100.x source address would also match OpenSSH over the tailnet); del
 9. Delivery mode is `local`. You sign commits, and GitHub's rebase merge in `pr` mode strips
    signatures. Captain merges the task branch with `--no-ff`, and I push the result.
 
+## Verified end to end (2026-09-19, v0.1.0)
+
+A fresh Contabo box (Ubuntu 26.04.1, root+password). The delivered build was streamed in as
+`curl | bash -s install`. Its sha256 (`66de7be6…`) equals the release asset.
+
+| Step | Result |
+|---|---|
+| `install` with `TS_AUTHKEY_FILE` (one-use, tagged key, trailing newline in the file) | joined the tailnet, exit 0 |
+| `verify.sh installed` | 8 of 8 |
+| `install` again after the key was spent | exit 0 in 14 s, no re-authentication |
+| `close-ssh` inside the Tailscale session, strict host-key checking | exit 0, host key `eHMqo7…` unchanged (R5) |
+| `verify.sh closed` | 9 of 9 |
+| reboot, then `verify.sh closed` | back on the tailnet in about 38 s, 9 of 9 |
+| release `v0.1.0` | CI built it. The asset equals the tested build and `sha256sum -c` passes. |
+
+Findings from the run:
+
+- **Device approval.** This tailnet holds a new node until an admin approves it, and the key
+  was not pre-approved. `tailscale up` printed "To approve your machine" and waited, and
+  `tailscale status` said "Machine is not yet approved by tailnet admin." While it waited,
+  steps 30 to 90 had not run, so the firewall was untouched. The captain approved with about
+  ten seconds left of the 10-minute timeout. The timeout path itself was not run. The README
+  did not say any of this. A follow-up task documents it.
+- **Transient connect timeout.** The first tailnet connection after the re-run's ufw reload
+  timed out at 15 s. `tailscale ping` showed a direct path. A retry with a 45 s connect
+  timeout worked, and the close had not run.
+- On the closed spike box earlier: `install` and `close-ssh` re-runs converged, and a detached
+  process chain (parent PID 1) made `close-ssh` refuse.
+
 ## Not verified
 
-- Ubuntu 24.04. No disposable box for it.
-- `--auth-key=file:` end to end. It needs a Tailscale auth key from you: tagged, one-use,
-  short expiry.
+- Ubuntu 24.04. The OS gate refuses it.
 - The cloud-init path. That Contabo accepts user data (API at order time, or Reinstall in the
   panel) comes from Contabo's docs via a web search. I did not run it.
-- A second run of `install` (R8) is designed, not yet run.
-
-## Demonstrable end
-
-On a freshly reinstalled 26.04 box: run the script, then `tests/e2e/verify.sh installed …`,
-then the close inside the Tailscale session, then `verify.sh closed …`, then a reboot and
-`closed` again. Reinstalling the box is the reset, and only you can do that in the Contabo
-panel.
+- The script's own login-URL mode. The spike ran `tailscale up` by hand.
+- The 10-minute join timeout path, and a pre-approved key.
 
 ## State left behind
 
-`vps-spike` is still on the tailnet as `tag:prod`, on the closed-down box. Nothing can reach
-it except your own tailnet identity. Remove it in the admin console when the e2e run needs a
-fresh box.
+`vps-e2e` is on the tailnet as `tag:prod`, on the closed-down box. Its root password is locked
+and the one-use auth key is spent. Delete the node in the admin console when done.
