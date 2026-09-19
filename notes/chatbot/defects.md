@@ -73,3 +73,22 @@ they are fixed in a follow-up pull request, not in the tenancy one.
   adapter while tests mock Cloud API response shapes, and gate B saw the default
   command time out or report `send_failed`. Setting `NODE_ENV=test` passed the same
   suites there. A full run here passed 486 of 487 without it.
+
+## Open, found after the tenancy landing
+
+- [ ] `packages/core/src/validation/affirmation.ts:5` and `:64` - CodeQL
+  `js/polynomial-redos` (high, alerts #5 and #6, open since 2026-01-19).
+  `isAffirmative` and `isNegative` strip trailing punctuation with
+  `/[¡!¿?.,:;]+$/`, which backtracks quadratically on a long run of punctuation.
+  Measured: 4000 `!` plus one letter takes 11.6 ms, so the cost is bounded, but
+  the webhook accepts unsigned payloads (first entry above). One shared linear
+  helper that scans from the end removes both alerts and the duplicated line.
+
+- [ ] Comment debt on `master` from the tenancy landing: `cap check` reports 119
+  added comment blocks over six lines and 8 comments that narrate history
+  (`no longer`, `used to`) in `736c2ee~1..2cd7ff3`. Run `cap cleanup` after
+  `vendeya-fix-preexisting` lands, since both touch the same files.
+
+- [ ] The 33 commits from `736c2ee` to `2cd7ff3` are unsigned on GitHub. Each was
+  signed locally; GitHub's rebase merge re-created them. Every earlier commit on
+  `master` is verified. See paper cut #6.
