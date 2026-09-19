@@ -282,11 +282,6 @@ prepare_dependencies() {
 	preflight_tools "$project"
 	printf 'cap: preparing %s\n' "$tree" >&2
 
-	# gitignored .env files do not follow the checkout into a worktree.
-	if [ -f "$repo/.env" ] && [ ! -e "$tree/.env" ]; then
-		cp "$repo/.env" "$tree/.env"
-	fi
-
 	plog=$dir/preflight.log
 	prc=0
 	preflight_deps "$tree" >"$plog" 2>&1 || prc=$?
@@ -314,6 +309,7 @@ prepare_worktree() {
 	cap_exit_add cleanup_worktree
 	write_task_record
 	write_ownership_guard
+	seed_ignored_files "$repo" "$tree" .env CLAUDE.md AGENTS.md
 	prepare_dependencies
 }
 

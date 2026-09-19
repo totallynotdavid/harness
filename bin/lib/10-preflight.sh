@@ -201,3 +201,24 @@ compose_down() {
   warn "$tree: could not stop the compose stack"
   return 1
 }
+
+# A worktree checks out tracked files only, so a contract or secret the project
+# keeps out of git never reaches the agent. Copy each one in, but only when the
+# worktree already ignores it: cap commit stages with `git add -A`, and an
+# unignored copy would land in the agent's history as its own work.
+seed_ignored_files() {
+  local repo=$1 tree=$2 name
+  shift 2
+
+  for name in "$@"; do
+    [ -f "$repo/$name" ] || continue
+    [ ! -e "$tree/$name" ] || continue
+
+    if ! git -C "$tree" check-ignore -q -- "$name"; then
+      warn "$repo/$name is untracked but not ignored, so $tree does not get it; ignore it or commit it"
+      continue
+    fi
+
+    cp "$repo/$name" "$tree/$name"
+  done
+}

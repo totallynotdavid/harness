@@ -18,6 +18,12 @@ registered but not yet cloned on this host resolves to nothing until it is.
 A ship task uses a branch because it will produce a deliverable. A scout task
 uses a detached worktree because it produces a report and no branch.
 
+A worktree checks out tracked files only, so Captain copies `.env`, `CLAUDE.md`,
+and `AGENTS.md` in from the project checkout when the project ignores them. An
+agent then reads the same contract and configuration the operator does. A file
+that is untracked but not ignored is reported instead of copied, because
+`cap commit` stages everything else the worktree holds.
+
 ## Task lifecycle
 
 The task record is the durable handoff between commands:
