@@ -22,7 +22,7 @@ recovery.
 | R4 | A second command, run inside a Tailscale SSH session, closes public SSH. A new tailnet session works afterwards and after a reboot. | spiked |
 | R5 | The close keeps the SSH host key, so the operator sees no host-key warning. | spiked |
 | R6 | The script refuses an OS version it has not been run on. | known |
-| R7 | The auth key never appears in argv. With no key, the script prints the login URL and waits. | URL spiked, key open |
+| R7 | The auth key never appears in argv. With no key, the script prints the login URL and waits. | key path verified end to end, URL mode spiked by hand |
 | R8 | Running `install` twice changes nothing. | known |
 | R9 | The artifact does nothing unless fully downloaded, and ships with a checksum. | known |
 | R10 | After install: ufw active with default-deny incoming, unattended-upgrades active, only 22 open publicly until the close. | spiked |
@@ -40,7 +40,7 @@ Box: Contabo, Ubuntu 26.04.1 ("resolute"), fresh, root+password. Node `vps-spike
 | S5. What does removing OpenSSH break? | `apt-get -s purge` lists only `openssh-server` and `openssh-sftp-server`. But `purge` deletes `/etc/ssh/ssh_host_*`, and Tailscale SSH serves those keys. After the purge the host key changed (`6/M7ej…` to `Vzh1Fo…`) and clients printed "REMOTE HOST IDENTIFICATION HAS CHANGED". `apt-get remove` keeps the key files. I reinstalled, then ran `remove`: the served fingerprint stayed `f+Af45…`. |
 | S6. Does the closed state survive a reboot? | Yes. Back on the tailnet in about 35 s. Listeners: loopback DNS and tailscaled on tailnet IPs only. ssh units inactive, root locked (`passwd -S root` = `L`), `Health: []`, host key unchanged, public :22 closed/filtered from outside. |
 | S7. Does sudo work as expected on 26.04? | It is `sudo-rs 0.2.13`. `visudo -cf /etc/sudoers.d/dubu` parses. `sudo -n true` works over Tailscale SSH. |
-| S8. Can the key stay out of argv? | `tailscale up --help` (1.102.4): `--auth-key` accepts `file:<path>`. Not run end to end. See "Not verified". |
+| S8. Can the key stay out of argv? | `tailscale up --help` (1.102.4): `--auth-key` accepts `file:<path>`. Run end to end, see "Verified end to end". |
 | S9. Is Tailscale's apt repo published for 26.04? | Yes. `resolute.noarmor.gpg` and `resolute.tailscale-keyring.list` under `https://pkgs.tailscale.com/stable/ubuntu/` both fetch. |
 
 Other observed traps: `apt` prints `needrestart` noise (`NEEDRESTART_MODE=a`);
