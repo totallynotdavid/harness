@@ -90,5 +90,5 @@ they are fixed in a follow-up pull request, not in the tenancy one.
   `vendeya-fix-preexisting` lands, since both touch the same files.
 
 - [ ] The 33 commits from `736c2ee` to `2cd7ff3` are unsigned on GitHub. Each was
-  signed locally; GitHub's rebase merge re-created them. Every earlier commit on
-  `master` is verified. See paper cut #6.
+  signed locally; GitHub's rebase merge re-created them. The 233 commits before
+  them are all verified. See paper cut #6.
