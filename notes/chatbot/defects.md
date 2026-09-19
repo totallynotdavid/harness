@@ -76,7 +76,3 @@ task on this project should read this before starting.
   added comment blocks over six lines and 8 comments that narrate history
   (`no longer`, `used to`) in `736c2ee~1..2cd7ff3`. Run `cap cleanup` on a task
   branch and review the removals; it has stripped genuine comments before.
-
-- [ ] The 33 commits from `736c2ee` to `2cd7ff3` are unsigned on GitHub. Each was
-  signed locally; GitHub's rebase merge re-created them. The 233 commits before
-  them are all verified. See paper cut #6.
