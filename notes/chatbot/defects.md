@@ -38,3 +38,38 @@ task on this project should read this before starting.
   tenants whose ids share a prefix apart" exceeds the default 5s (6579ms here).
   `PRAGMA synchronous = OFF` on those databases took `accounts.test.ts` from 55s
   to 7.5s.
+
+## Open, confirmed by gate B on the tenancy branch, present on master before it
+
+Gate B (luna) failed the branch on these. Each matches `master` line for line, so
+they are fixed in a follow-up pull request, not in the tenancy one.
+
+- [ ] `apps/backend/src/adapters/whatsapp/index.ts:126` - the adapters return
+  `null` on an HTTP error, a network error, or a timeout, and the service records
+  status `failed` and resolves. Command execution then persists the phase and the
+  inbox marks the message processed, so a customer's reply is lost with no retry.
+
+- [ ] `apps/backend/src/domains/analytics/index.ts:47` - `getFunnelStats` binds
+  ISO strings to `created_at BETWEEN ? AND ?`, but the column is INTEGER
+  milliseconds. SQLite orders every integer before every string, so the range
+  matches nothing. Reproduced: one in-range row returns 0 with ISO strings and 1
+  with millisecond bounds. The funnel reports zero for real events.
+
+- [ ] `apps/backend/src/domains/reports/index.ts:40` - `generateDailyReport` binds
+  ISO strings to `last_activity_at`, an INTEGER millisecond column. Conversations
+  in range are missing from the daily report.
+
+- [ ] `apps/backend/src/routes/admin/users.ts:80` - see the password entry above;
+  gate B confirmed it. Create needs a minimum and reset should match the 12 the
+  account command enforces.
+
+- [ ] `apps/backend/src/adapters/whatsapp/parsers/cloud-api-parser.ts:20` - an
+  unknown message type (reaction, location, sticker) falls through to `text` with
+  an empty body, which bypasses the webhook's non-text guard, so it is queued and
+  processed as an empty customer message.
+
+- [ ] `apps/backend/package.json:12` - `test` runs `bun test --env-file=../../.env`
+  without `NODE_ENV=test`. With a development `.env` the suite selects the dev
+  adapter while tests mock Cloud API response shapes, and gate B saw the default
+  command time out or report `send_failed`. Setting `NODE_ENV=test` passed the same
+  suites there. A full run here passed 486 of 487 without it.
