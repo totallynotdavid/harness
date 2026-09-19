@@ -175,8 +175,8 @@ history=$(printf '%s\n' "$diff_text" | awk '
 	/^\+[[:space:]]*(\/\/|#|\*|--([[:space:]]|$))/ {
 		line = tolower($0)
 		if (line ~ /used to (be|have|[[:alpha:]]+ed)([[:space:]]|$)|previously|no longer|before this|originally|was (failing|timing|broken)|had to be/) {
-			print substr($0, 2)
-			if (++hits >= 8) exit
+			# No early exit: it would SIGPIPE the printf feeding this under pipefail.
+			if (++hits <= 8) print substr($0, 2)
 		}
 	}')
 
