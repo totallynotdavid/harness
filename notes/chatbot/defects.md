@@ -13,12 +13,6 @@ task on this project should read this before starting.
   file). A forged payload that names a known `phone_number_id` is accepted as if
   Meta sent it. Present before the tenancy work, so it is not a regression.
 
-- [ ] `apps/backend/src/routes/admin/users.ts:80` - creating a user checks that
-  the password is present and nothing else, so a tenant admin can create an
-  account with a one-character password. The reset route at `:217` requires 6.
-  `MIN_PASSWORD_LENGTH` in `domains/accounts/index.ts` requires 12 and only the
-  `bun run account` command applies it.
-
 - [ ] `apps/backend/src/db/schema.sql:434` - `audit_log.user_id` is NOT NULL, so
   `bun run account create` and `promote` cannot record who created or promoted
   an account. Granting cross-tenant powers leaves no record outside the
@@ -41,40 +35,34 @@ task on this project should read this before starting.
 
 ## Open, confirmed by gate B on the tenancy branch, present on master before it
 
-Gate B (luna) failed the branch on these. Each matches `master` line for line, so
-they are fixed in a follow-up pull request, not in the tenancy one.
-
 - [ ] `apps/backend/src/adapters/whatsapp/index.ts:126` - the adapters return
   `null` on an HTTP error, a network error, or a timeout, and the service records
   status `failed` and resolves. Command execution then persists the phase and the
   inbox marks the message processed, so a customer's reply is lost with no retry.
-
-- [ ] `apps/backend/src/domains/analytics/index.ts:47` - `getFunnelStats` binds
-  ISO strings to `created_at BETWEEN ? AND ?`, but the column is INTEGER
-  milliseconds. SQLite orders every integer before every string, so the range
-  matches nothing. Reproduced: one in-range row returns 0 with ISO strings and 1
-  with millisecond bounds. The funnel reports zero for real events.
-
-- [ ] `apps/backend/src/domains/reports/index.ts:40` - `generateDailyReport` binds
-  ISO strings to `last_activity_at`, an INTEGER millisecond column. Conversations
-  in range are missing from the daily report.
-
-- [ ] `apps/backend/src/routes/admin/users.ts:80` - see the password entry above;
-  gate B confirmed it. Create needs a minimum and reset should match the 12 the
-  account command enforces.
-
-- [ ] `apps/backend/src/adapters/whatsapp/parsers/cloud-api-parser.ts:20` - an
-  unknown message type (reaction, location, sticker) falls through to `text` with
-  an empty body, which bypasses the webhook's non-text guard, so it is queued and
-  processed as an empty customer message.
-
-- [ ] `apps/backend/package.json:12` - `test` runs `bun test --env-file=../../.env`
-  without `NODE_ENV=test`. With a development `.env` the suite selects the dev
-  adapter while tests mock Cloud API response shapes, and gate B saw the default
-  command time out or report `send_failed`. Setting `NODE_ENV=test` passed the same
-  suites there. A full run here passed 486 of 487 without it.
+  Needs shaping first: what a retry means for a reply that may have been sent.
 
 ## Open, found after the tenancy landing
+
+- [ ] `apps/backend/src/domains/reports/index.ts:40` - the daily report cuts the
+  day at the server's local time, while the dashboard shows America/Lima. On a UTC
+  server a Lima day is reported five hours off.
+
+- [ ] `/api/reports/daily` with an invalid `date` throws a `RangeError` at the
+  `toISOString()` that builds the filename and returns 500.
+
+- [ ] `apps/backend/src/domains/analytics/index.ts:43` - a date-only end such as
+  `2026-03-10` is read as UTC midnight, so the funnel excludes that day. Nothing in
+  the frontend calls `/api/analytics/funnel` yet.
+
+- [ ] `packages/types/src/index.ts:129` types `Conversation.last_activity_at` as
+  `string`, but the column is INTEGER milliseconds and `routes/conversations.ts:52`
+  returns it raw.
+
+- [ ] `MessageType` in `packages/types/src/whatsapp.ts` is wider than
+  `messages.type`, which `schema.sql:221` restricts to `text` and `image`.
+  Document, audio, video and `unknown` would throw at the CHECK if a caller stored
+  one. Unreachable today: the webhook returns before logging a non-text message.
+  Give the parser its own type and keep `MessageType` for what is stored.
 
 - [ ] `packages/core/src/validation/affirmation.ts:5` and `:64` - CodeQL
   `js/polynomial-redos` (high, alerts #5 and #6, open since 2026-01-19).
@@ -86,8 +74,8 @@ they are fixed in a follow-up pull request, not in the tenancy one.
 
 - [ ] Comment debt on `master` from the tenancy landing: `cap check` reports 119
   added comment blocks over six lines and 8 comments that narrate history
-  (`no longer`, `used to`) in `736c2ee~1..2cd7ff3`. Run `cap cleanup` after
-  `vendeya-fix-preexisting` lands, since both touch the same files.
+  (`no longer`, `used to`) in `736c2ee~1..2cd7ff3`. Run `cap cleanup` on a task
+  branch and review the removals; it has stripped genuine comments before.
 
 - [ ] The 33 commits from `736c2ee` to `2cd7ff3` are unsigned on GitHub. Each was
   signed locally; GitHub's rebase merge re-created them. The 233 commits before
