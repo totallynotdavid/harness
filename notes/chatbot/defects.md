@@ -8,11 +8,6 @@ task on this project should read this before starting.
 
 ## Open, found while landing vendeya-tenant-foundation
 
-- [ ] `apps/backend/src/routes/webhook.ts:252` - the POST handler never verifies
-  Meta's `X-Hub-Signature-256` (no `hub-signature` or `hmac` anywhere in the
-  file). A forged payload that names a known `phone_number_id` is accepted as if
-  Meta sent it. Present before the tenancy work, so it is not a regression.
-
 - [ ] `apps/backend/src/db/schema.sql:434` - `audit_log.user_id` is NOT NULL, so
   `bun run account create` and `promote` cannot record who created or promoted
   an account. Granting cross-tenant powers leaves no record outside the
@@ -64,13 +59,15 @@ task on this project should read this before starting.
   one. Unreachable today: the webhook returns before logging a non-text message.
   Give the parser its own type and keep `MessageType` for what is stored.
 
-- [ ] `packages/core/src/validation/affirmation.ts:5` and `:64` - CodeQL
-  `js/polynomial-redos` (high, alerts #5 and #6, open since 2026-01-19).
-  `isAffirmative` and `isNegative` strip trailing punctuation with
-  `/[¡!¿?.,:;]+$/`, which backtracks quadratically on a long run of punctuation.
-  Measured: 4000 `!` plus one letter takes 11.6 ms, so the cost is bounded, but
-  the webhook accepts unsigned payloads (first entry above). One shared linear
-  helper that scans from the end removes both alerts and the duplicated line.
+- [ ] `apps/backend/src/routes/webhook.ts` and `apps/frontend/src/routes/api/webhook/+server.ts`
+  read the whole request body before anything else, with no size limit. Meta's
+  payloads are small, so a cap of about 1 MiB on both loses nothing.
+
+- [ ] `apps/notifier/src/message-forwarder.ts` posts a Cloud API-shaped payload to
+  `/api/webhook` with no signature and no `metadata.phone_number_id`. Since the
+  tenancy work the route answers it `unroutable_no_phone_number_id`, so it has been
+  dead; the signature check turns that answer into a 401. Repair it (it needs its
+  own authenticated endpoint, not the public webhook) or remove it.
 
 - [ ] Comment debt on `master` from the tenancy landing: `cap check` reports 119
   added comment blocks over six lines and 8 comments that narrate history
